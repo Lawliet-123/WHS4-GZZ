@@ -187,6 +187,21 @@ class TransformTests(unittest.TestCase):
         memory.put(child + 0x170, struct.pack("<3d", 1.0, 2.0, 1.0))
         self.assertIsNone(reader._component_world_transform_snapshot(child))
 
+    def test_moving_attachment_chain_accepts_newer_same_topology(self):
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        child, parent = 0x10000, 0x20000
+        parent_reads = [100.0, 101.0]
+
+        def relative(component):
+            if component == child:
+                return parent, (10.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+            return 0, (parent_reads.pop(0), 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+
+        reader._component_relative_transform = relative
+        snapshot = reader._component_world_transform_from_chain(child)
+        self.assertIsNotNone(snapshot)
+        self.assertAlmostEqual(snapshot[1][2][0], 111.0)
+
 
 class LayoutTests(unittest.TestCase):
     def test_pe_fingerprint_parser(self):
@@ -208,6 +223,11 @@ class LayoutTests(unittest.TestCase):
     def test_current_steam_build_is_explicitly_supported(self):
         self.assertIn(
             (0x0A3FB000, 0x018D3C6F, 0x0A046E92),
+            esp.MecchaESP.SUPPORTED_BUILD_FINGERPRINTS)
+
+    def test_august_31_steam_build_is_explicitly_supported(self):
+        self.assertIn(
+            (0x0A3FB000, 0x4F2390A3, 0x0A03AB06),
             esp.MecchaESP.SUPPORTED_BUILD_FINGERPRINTS)
 
     def test_unknown_build_uses_reflection_without_native_fallbacks(self):
@@ -248,6 +268,31 @@ class LayoutTests(unittest.TestCase):
         self.assertTrue(esp.weak_object_ptr_is_null(struct.pack("<ii", 0, 0)))
         self.assertTrue(esp.weak_object_ptr_is_null(struct.pack("<ii", -1, 0)))
         self.assertFalse(esp.weak_object_ptr_is_null(struct.pack("<ii", 42, 7)))
+
+    def test_stable_pointer_array_retries_reallocation(self):
+        array_address = 0x1000
+        first_data, second_data = 0x2000, 0x3000
+
+        class ReallocatingMemory:
+            def __init__(self):
+                self.header_reads = 0
+
+            def read_bytes(self, address, size):
+                if address == array_address and size == 0x10:
+                    self.header_reads += 1
+                    data = first_data if self.header_reads == 1 else second_data
+                    return struct.pack("<Qii", data, 1, 1)
+                if address == first_data and size == 8:
+                    return struct.pack("<Q", 0xAAAA)
+                if address == second_data and size == 8:
+                    return struct.pack("<Q", 0xBBBB)
+                raise RuntimeError("unexpected read")
+
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader.pm = ReallocatingMemory()
+        snapshot = reader._stable_pointer_array_values(array_address, 8)
+        self.assertEqual(snapshot, ((0xBBBB,), 1, 1))
+        self.assertEqual(reader.pm.header_reads, 4)
 
     def test_offset_resolver_walks_more_than_one_superclass(self):
         memory = Memory()
@@ -625,6 +670,17 @@ class SnapshotArchitectureTests(unittest.TestCase):
             store.publish(sequence)
         self.assertEqual(store.latest(), 99)
 
+    def test_old_skeleton_enrichment_cannot_replace_newer_base(self):
+        now = esp.time.monotonic()
+        first = esp.FrameRenderSnapshot(
+            1, now, now, 0.0, None, None, (), (), (), None)
+        second = esp.FrameRenderSnapshot(
+            2, now, now, 0.0, None, None, (), (), (), None)
+        store = esp.LatestSnapshotStore(first)
+        store.publish(second)
+        self.assertFalse(store.publish_if_sequence(first, 1))
+        self.assertIs(store.latest(), second)
+
     def test_camera_snapshot_is_detached_and_immutable(self):
         source = {"loc": [1.0, 2.0, 3.0], "rot": [4.0, 5.0, 6.0],
                   "fov": 90.0}
@@ -780,6 +836,31 @@ class SnapshotArchitectureTests(unittest.TestCase):
         overlay._process_close_lock = esp.threading.Lock()
         overlay._snapshot_loop()
         self.assertEqual(overlay.esp.pm.closes, 1)
+
+    def test_process_closes_only_after_both_workers_finish_in_either_order(self):
+        for order in (("base", "skeleton"), ("skeleton", "base")):
+            with self.subTest(order=order):
+                class PM:
+                    def __init__(self):
+                        self.closes = 0
+
+                    def close_process(self):
+                        self.closes += 1
+
+                overlay = esp.Overlay.__new__(esp.Overlay)
+                overlay.esp = type("FakeESP", (), {"pm": PM()})()
+                overlay._process_closed = False
+                overlay._process_close_lock = esp.threading.Lock()
+                overlay._worker_state_lock = esp.threading.Lock()
+                overlay._active_workers = {"base", "skeleton"}
+
+                overlay._worker_finished(order[0])
+                self.assertEqual(overlay.esp.pm.closes, 0)
+                overlay._worker_finished(order[1])
+                self.assertEqual(overlay.esp.pm.closes, 1)
+                overlay._worker_finished(order[0])
+                overlay._worker_finished(order[1])
+                self.assertEqual(overlay.esp.pm.closes, 1)
 
     def test_collector_feature_gates_expensive_geometry_reads(self):
         actor = 0x12340
@@ -1001,10 +1082,10 @@ class SnapshotArchitectureTests(unittest.TestCase):
         self.assertIsNone(base.players[0].pose)
         enriched = overlay._enrich_snapshot_with_cached_skeletons(base)
         self.assertIsNotNone(enriched)
-        self.assertEqual(overlay.esp.mesh_reads, 1)
+        self.assertEqual(overlay.esp.mesh_reads, 0)
         self.assertIsNotNone(enriched.players[0].pose)
 
-    def test_skeleton_refresh_hard_caps_one_sample_per_cycle(self):
+    def test_skeleton_refresh_batch_stops_after_one_slow_sample(self):
         actors = (0x10000, 0x20000)
 
         class FakeClock:
@@ -1050,8 +1131,59 @@ class SnapshotArchitectureTests(unittest.TestCase):
         with mock.patch.object(esp.time, "monotonic", FakeClock.monotonic):
             overlay._refresh_skeleton_cache(frame)
 
-        self.assertEqual(len(overlay.esp.pose_reads), 1)
-        self.assertAlmostEqual(FakeClock.now, 200.001)
+        self.assertEqual(len(overlay.esp.pose_reads), 2)
+        self.assertAlmostEqual(FakeClock.now, 201.907)
+
+    def test_fast_batch_refreshes_and_merges_fifteen_players(self):
+        actors = tuple(0x10000 + index * 0x100 for index in range(15))
+
+        class FakeClock:
+            now = 300.0
+
+            @classmethod
+            def monotonic(cls):
+                return cls.now
+
+        class FakeESP:
+            def __init__(self):
+                self._world_epoch = 1
+                self._skeleton_failure_counts = {}
+                self.pose_reads = []
+
+            def read_skeleton_pose(self, actor, position):
+                self.pose_reads.append(actor)
+                FakeClock.now += 0.001
+                return esp.SkeletonPose(
+                    "batch", (tuple(position),
+                              (position[0], position[1], position[2] + 80.0)),
+                    ((0, 1),),
+                    ((0.0, 0.0, 0.0), (0.0, 0.0, 80.0)), actor)
+
+        players = tuple(
+            esp.PlayerRenderSnapshot(
+                False, (1000.0, float(index * 2), 0.0), index,
+                actor, "survivor", None, None)
+            for index, actor in enumerate(actors))
+        frame = esp.FrameRenderSnapshot(
+            1, FakeClock.now, FakeClock.now, 0.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "hunter", players,
+            (("collection_valid", True), ("world_epoch", 1)), (), None)
+        overlay = esp.Overlay.__new__(esp.Overlay)
+        overlay.esp = FakeESP()
+        overlay.config = esp.Config(skeleton_esp=True)
+        overlay._viewport_size = (1920, 1080)
+        overlay._snapshot_stop = esp.threading.Event()
+
+        with mock.patch.object(esp.time, "monotonic", FakeClock.monotonic):
+            overlay._refresh_skeleton_cache(frame)
+            merged = overlay._enrich_snapshot_with_cached_skeletons(frame)
+
+        self.assertEqual(set(overlay.esp.pose_reads), set(actors))
+        self.assertEqual(set(overlay._skeleton_pose_cache), set(actors))
+        self.assertIsNotNone(merged)
+        self.assertTrue(all(player.pose is not None for player in merged.players))
 
     def test_stale_base_frame_skips_skeleton_enrichment(self):
         actor = 0x10000
@@ -1080,57 +1212,170 @@ class SnapshotArchitectureTests(unittest.TestCase):
         overlay._refresh_skeleton_cache(frame)
         self.assertEqual(overlay.esp.pose_reads, 0)
 
-    def test_worker_publishes_before_optional_skeleton_refresh(self):
+    def test_base_worker_queues_but_never_runs_skeleton_refresh(self):
         events = []
         base_frame = object()
-        enriched_frame = object()
         overlay = esp.Overlay.__new__(esp.Overlay)
         overlay.config = esp.Config()
         overlay.COLLECT_INTERVAL = 0.0
         overlay._snapshot_stop = esp.threading.Event()
         overlay._collect_snapshot = lambda: base_frame
         overlay._snapshots = type("Store", (), {
-            "publish": lambda self, frame: events.append(
-                "publish_base" if frame is base_frame else "publish_enriched")})()
-        overlay._enrich_snapshot_with_cached_skeletons = (
-            lambda frame: enriched_frame)
+            "publish": lambda self, frame: events.append("publish_base")})()
 
-        def refresh(frame):
-            events.append("refresh")
+        def submit(frame):
+            events.append("queue_skeleton")
             overlay._snapshot_stop.set()
 
-        overlay._refresh_skeleton_cache = refresh
+        overlay._submit_skeleton_frame = submit
         overlay._close_process_once = lambda: None
         overlay._snapshot_loop()
-        self.assertEqual(
-            events, ["publish_base", "publish_enriched", "refresh"])
+        self.assertEqual(events, ["publish_base", "queue_skeleton"])
 
-    def test_skeleton_refresh_exception_does_not_kill_reader_loop(self):
+    def test_next_base_publish_preserves_cached_pose_without_rpm(self):
+        actor = 0x12340
+        old_root = esp.decode_ftransform(pack_ftransform(
+            translation=(1000.0, 0.0, 0.0)))
+        new_root = esp.decode_ftransform(pack_ftransform(
+            translation=(1100.0, 0.0, 0.0)))
+        captured_at = esp.time.monotonic()
+        cached_pose = esp.SkeletonPose(
+            "cached", ((1000.0, 0.0, 0.0), (1000.0, 0.0, 80.0)),
+            ((0, 1),), ((0.0, 0.0, 0.0), (0.0, 0.0, 80.0)), actor)
+        player = esp.PlayerRenderSnapshot(
+            False, (1100.0, 0.0, 0.0), 7, actor, "hunter",
+            esp.CapsuleGeometry((1100.0, 0.0, 0.0), 90.0, 40.0),
+            None, new_root)
+        base = esp.FrameRenderSnapshot(
+            2, captured_at, captured_at, 1.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "survivor", (player,),
+            (("collection_valid", True), ("world_epoch", 1)), (), None)
+
+        overlay = esp.Overlay.__new__(esp.Overlay)
+        overlay.esp = type("NoRPM", (), {"_world_epoch": 1})()
+        overlay.config = esp.Config(skeleton_esp=True)
+        overlay.COLLECT_INTERVAL = 0.0
+        overlay._viewport_size = (1920, 1080)
+        overlay._snapshot_stop = esp.threading.Event()
+        overlay._snapshots = esp.LatestSnapshotStore(None)
+        overlay._collect_snapshot = lambda: base
+        overlay._ensure_skeleton_state()
+        overlay._skeleton_pose_cache[actor] = esp.CachedSkeletonPose(
+            captured_at, cached_pose, old_root[2], old_root, 1)
+
+        def submit(frame):
+            overlay._snapshot_stop.set()
+
+        overlay._submit_skeleton_frame = submit
+        overlay._worker_finished = lambda name: None
+        overlay._snapshot_loop()
+        latest = overlay._snapshots.latest()
+        self.assertEqual(latest.sequence, 2)
+        self.assertEqual(latest.players[0].position, (1100.0, 0.0, 0.0))
+        self.assertEqual(latest.players[0].index, 7)
+        self.assertIsNotNone(latest.players[0].pose)
+        self.assertEqual(latest.players[0].pose_captured_at, captured_at)
+        self.assertAlmostEqual(latest.players[0].pose.world_points[1][0], 1100.0)
+
+    def test_skeleton_refresh_exception_does_not_kill_skeleton_loop(self):
         overlay = esp.Overlay.__new__(esp.Overlay)
         overlay.config = esp.Config()
-        overlay.COLLECT_INTERVAL = 0.0
         overlay._snapshot_stop = esp.threading.Event()
-        overlay._collect_snapshot = lambda: object()
-        publish_count = [0]
-
-        def publish(frame):
-            publish_count[0] += 1
-            if publish_count[0] == 2:
-                overlay._snapshot_stop.set()
-
-        overlay._snapshots = type("Store", (), {"publish": lambda self, frame: publish(frame)})()
+        frames = [object(), object()]
+        overlay._take_skeleton_frame = lambda: frames.pop(0)
+        overlay._sync_skeleton_epoch = lambda: 1
+        overlay._enrich_snapshot_with_cached_skeletons = lambda frame: None
+        overlay._snapshots = type("Store", (), {})()
         refresh_count = [0]
 
         def refresh(frame):
             refresh_count[0] += 1
             if refresh_count[0] == 1:
                 raise RuntimeError("synthetic refresh failure")
+            overlay._snapshot_stop.set()
 
         overlay._refresh_skeleton_cache = refresh
         overlay._close_process_once = lambda: None
-        overlay._snapshot_loop()
-        self.assertEqual(publish_count[0], 2)
+        overlay._skeleton_loop()
         self.assertEqual(refresh_count[0], 2)
+
+    def test_transient_invalid_frame_does_not_replace_last_good(self):
+        now = esp.time.monotonic()
+        good = esp.FrameRenderSnapshot(
+            1, now, now, 1.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "survivor", (), (("collection_valid", True),), (), None)
+        invalid = esp.FrameRenderSnapshot(
+            2, now, now, 1.0, None, None, (),
+            (("collection_valid", False),), (), None)
+        self.assertTrue(esp.Overlay._base_frame_is_publishable(good))
+        self.assertFalse(esp.Overlay._base_frame_is_publishable(invalid))
+
+    def test_blocked_skeleton_worker_does_not_block_second_base_frame(self):
+        now = esp.time.monotonic()
+        first = esp.FrameRenderSnapshot(
+            1, now, now, 1.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "survivor", (), (("collection_valid", True),), (), None)
+        second = esp.FrameRenderSnapshot(
+            2, now, now, 1.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "survivor", (), (("collection_valid", True),), (), None)
+
+        overlay = esp.Overlay.__new__(esp.Overlay)
+        overlay.config = esp.Config()
+        overlay.COLLECT_INTERVAL = 0.0
+        overlay._snapshot_stop = esp.threading.Event()
+        overlay._snapshots = esp.LatestSnapshotStore(None)
+        overlay._ensure_skeleton_job_state()
+        overlay._sync_skeleton_epoch = lambda: 1
+        overlay._enrich_snapshot_with_cached_skeletons = lambda frame: None
+        overlay._close_process_once = lambda: None
+
+        skeleton_started = esp.threading.Event()
+        release_skeleton = esp.threading.Event()
+
+        def blocked_refresh(frame):
+            skeleton_started.set()
+            release_skeleton.wait(1.0)
+
+        overlay._refresh_skeleton_cache = blocked_refresh
+        frames = [first, second]
+
+        def collect():
+            frame = frames.pop(0)
+            if frame is second:
+                overlay._snapshot_stop.set()
+            return frame
+
+        overlay._collect_snapshot = collect
+        original_submit = overlay._submit_skeleton_frame
+
+        def submit(frame):
+            original_submit(frame)
+            if frame is first:
+                self.assertTrue(skeleton_started.wait(0.5))
+
+        overlay._submit_skeleton_frame = submit
+        skeleton_worker = esp.threading.Thread(target=overlay._skeleton_loop)
+        overlay._skeleton_thread = skeleton_worker
+        base_worker = esp.threading.Thread(target=overlay._snapshot_loop)
+
+        skeleton_worker.start()
+        base_worker.start()
+        base_worker.join(0.75)
+        try:
+            self.assertFalse(base_worker.is_alive())
+            self.assertEqual(overlay._snapshots.latest().sequence, 2)
+            self.assertTrue(skeleton_started.is_set())
+        finally:
+            release_skeleton.set()
+            skeleton_worker.join(1.0)
 
     def test_cached_component_pose_uses_current_mesh_transform_and_expires(self):
         actor = 0x12340
@@ -1139,7 +1384,7 @@ class SnapshotArchitectureTests(unittest.TestCase):
         current_root = esp.decode_ftransform(pack_ftransform(
             translation=(100.0, 0.0, 0.0)))
         pose = esp.SkeletonPose(
-            "test", ((999.0, 999.0, 999.0),), (),
+            "test", ((1.0, 2.0, 3.0),), (),
             ((1.0, 2.0, 3.0),), mesh)
 
         class FakeESP:
@@ -1170,10 +1415,43 @@ class SnapshotArchitectureTests(unittest.TestCase):
         for actual, expected in zip(
                 rebased.world_points[0], (101.0, 2.0, 3.0)):
             self.assertAlmostEqual(actual, expected)
-        self.assertEqual(overlay.esp.mesh_refreshes, [True])
+        self.assertEqual(overlay.esp.mesh_refreshes, [])
 
         self.assertIsNone(overlay._cached_skeleton_for_player(
             actor, (100.0, 0.0, 0.0), current_root, 10.2, 7))
+
+    def test_cached_pose_rebases_rotation_and_translation_without_rpm(self):
+        actor = 0x12340
+        root_two = 2.0 ** -0.5
+        old_root = esp.decode_ftransform(pack_ftransform(
+            quaternion=(0.0, 0.0, root_two, root_two),
+            translation=(100.0, 20.0, 5.0)))
+        new_root = esp.decode_ftransform(pack_ftransform(
+            translation=(300.0, -40.0, 10.0)))
+        local_points = ((10.0, 2.0, 3.0), (-4.0, 8.0, 70.0))
+        old_world = tuple(
+            esp.transform_position_row(point, old_root[0])
+            for point in local_points)
+        expected = tuple(
+            esp.transform_position_row(point, new_root[0])
+            for point in local_points)
+        pose = esp.SkeletonPose("test", old_world, ((0, 1),))
+
+        overlay = esp.Overlay.__new__(esp.Overlay)
+        overlay.esp = type("NoRPM", (), {"_world_epoch": 7})()
+        overlay._ensure_skeleton_state()
+        overlay._skeleton_cache_epoch = 7
+        overlay._skeleton_pose_cache[actor] = esp.CachedSkeletonPose(
+            10.0, pose, old_root[2], old_root, 7)
+        rebased = overlay._cached_skeleton_for_player(
+            actor, new_root[2], new_root, 10.05, 7)
+
+        self.assertIsNotNone(rebased)
+        for actual, wanted in zip(rebased.world_points, expected):
+            for value, expected_value in zip(actual, wanted):
+                self.assertAlmostEqual(value, expected_value, places=5)
+        self.assertEqual(
+            overlay._skeleton_pose_cache[actor].pose.world_points, old_world)
 
     def test_slow_pose_reprojects_component_points_at_current_mesh(self):
         actor = 0x12340
@@ -1711,6 +1989,53 @@ class PlayerFilterTests(unittest.TestCase):
         self.assertEqual(actors, {survivor_pawn})
         self.assertEqual(reader._last_iter_stats["state_unreadable"], 1)
 
+    def test_local_marker_does_not_validate_all_remote_position_failures(self):
+        reader, hunter_pawn, survivor_pawn, dead_pawn = \
+            self._reader_for_cleon_role("survivor")
+        list(reader.iter_players(include_local=True, include_actor=True))
+        self.assertTrue(reader._last_iter_stats["collection_valid"])
+
+        local_pawn = reader._test_local_pawn
+        reader._actor_position = lambda pawn: (
+            (50.0, 5.0, 5.0) if pawn == local_pawn else None)
+        rows = list(reader.iter_players(include_local=True, include_actor=True))
+        self.assertEqual({row[3] for row in rows}, {local_pawn})
+        self.assertEqual(reader._last_iter_stats["rendered"], 1)
+        self.assertEqual(reader._last_iter_stats["pa_valid"], 0)
+        self.assertGreater(
+            reader._last_iter_stats["position_unreadable"], 0)
+        self.assertFalse(reader._last_iter_stats["collection_valid"])
+
+    def test_same_world_player_array_collapse_gets_short_grace(self):
+        reader, _, _, _ = self._reader_for_cleon_role("survivor")
+        list(reader.iter_players(include_local=True, include_actor=True))
+        self.assertEqual(reader._last_iter_stats["pa_total"], 4)
+        self.assertTrue(reader._last_iter_stats["collection_valid"])
+
+        gamestate = 0x20000
+        controller = 0x30000
+        local_ps = 0x40000
+        player_array = 0x60000
+        # Possession can disappear in the same replication window as the array.
+        # The guard must rely on the unchanged context, not on local_pawn.
+        reader.pm.put(
+            controller + reader.offsets["APlayerController::AcknowledgedPawn"],
+            struct.pack("<Q", 0))
+        reader.pm.put(
+            local_ps + reader.offsets["APlayerState::PawnPrivate"],
+            struct.pack("<Q", 0))
+        reader.pm.put(
+            gamestate + reader.offsets["AGameStateBase::PlayerArray"],
+            struct.pack("<Qii", player_array, 1, 4))
+        for _ in range(reader.PLAYER_ARRAY_DROP_GRACE_CYCLES):
+            list(reader.iter_players(include_local=True, include_actor=True))
+            self.assertFalse(reader._last_iter_stats["collection_valid"])
+            self.assertTrue(reader._last_iter_stats["array_drop_guarded"])
+
+        list(reader.iter_players(include_local=True, include_actor=True))
+        self.assertTrue(reader._last_iter_stats["collection_valid"])
+        self.assertEqual(reader._last_iter_stats["pa_total"], 1)
+
     def test_live_survivor_roster_does_not_override_dead_flag(self):
         reader, hunter_pawn, survivor_pawn, dead_pawn = \
             self._reader_for_cleon_role("survivor")
@@ -1800,6 +2125,26 @@ class PlayerFilterTests(unittest.TestCase):
         self.assertTrue(reader.character_dead_state(actor))
         memory.put(actor + 0x5AA, b"\x02")
         self.assertIsNone(reader.character_dead_state(actor))
+
+    def test_dead_flag_retries_one_transient_read_failure(self):
+        actor = 0x70000
+
+        class FlakyMemory:
+            def __init__(self):
+                self.reads = 0
+
+            def read_bytes(self, address, size):
+                self.reads += 1
+                if self.reads == 1:
+                    raise RuntimeError("synthetic transient read failure")
+                return b"\x00"
+
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader.pm = FlakyMemory()
+        reader.offsets = {"BP_FirstPersonCharacter_Main_C::Dead": 0x5AA}
+        reader._object_is_a = lambda found_actor, class_name: True
+        self.assertFalse(reader.character_dead_state(actor))
+        self.assertEqual(reader.pm.reads, 3)
 
     def test_dead_flag_resolves_lazily_from_loaded_pawn_class(self):
         memory = Memory()

@@ -100,6 +100,12 @@ NATIVE_BUILD_OFFSET_KEYS = (
     "USkinnedMeshComponent::CurrentReadComponentTransforms",
 )
 
+LAZY_BLUEPRINT_PROPERTY_KEYS = frozenset((
+    "BP_FirstPersonCharacter_Main_C::Mesh",
+    "BP_FirstPersonCharacter_Main_C::BodyCapsule",
+    "BP_FirstPersonCharacter_Main_C::Dead",
+))
+
 
 @dataclass(frozen=True)
 class SkeletonProfile:
@@ -187,6 +193,14 @@ class LatestSnapshotStore:
     def publish(self, snapshot):
         with self._lock:
             self._latest = snapshot
+
+    def publish_if_sequence(self, snapshot, expected_sequence):
+        """Replace only the still-current base frame with its enrichment."""
+        with self._lock:
+            if getattr(self._latest, "sequence", None) != expected_sequence:
+                return False
+            self._latest = snapshot
+            return True
 
     def latest(self):
         with self._lock:
@@ -752,12 +766,14 @@ class MecchaESP:
     CLEON_ROSTER_REFRESH_SECONDS = 0.10
     CONTEXT_POINTER_REFRESH_SECONDS = 0.50
     REFLECTED_OFFSET_RETRY_SECONDS = 1.0
-    # (SizeOfImage, TimeDateStamp, CheckSum).  The second entry is the current
+    PLAYER_ARRAY_DROP_GRACE_CYCLES = 6
+    # (SizeOfImage, TimeDateStamp, CheckSum).  The final entry is the current
     # Steam executable; the relevant UE 5.6 component layouts were rechecked in
     # that binary before enabling native (non-reflected) skeleton offsets.
     SUPPORTED_BUILD_FINGERPRINTS = frozenset((
         (0x0A3FA000, 0x15CBD51C, 0x0A041AE7),
         (0x0A3FB000, 0x018D3C6F, 0x0A046E92),
+        (0x0A3FB000, 0x4F2390A3, 0x0A03AB06),
     ))
 
     GUOBJECT_SIG = bytes([
@@ -848,6 +864,9 @@ class MecchaESP:
         self._skeleton_failure_counts = {}
         self._world_epoch = 0
         self._runtime_context_identity = None
+        self._last_nontrivial_player_array_count = 0
+        self._player_array_drop_streak = 0
+        self._last_remote_rendered_count = 0
         self._last_actor_transforms = {}
         self._local_controller_cache = None
         self._camera_manager_cache = None
@@ -888,7 +907,8 @@ class MecchaESP:
                     self._add_layout_warning(
                         f"{key}: runtime {resolved:#x} != SDK {expected:#x}")
                 continue
-            if self._advanced_build_ok:
+            if (self._advanced_build_ok
+                    and key not in LAZY_BLUEPRINT_PROPERTY_KEYS):
                 self.offsets[key] = expected
                 self._add_layout_warning(
                     f"{key}: runtime unresolved; using exact SDK {expected:#x}")
@@ -963,12 +983,15 @@ class MecchaESP:
         self._last_role_gamestate = identity[1]
         self._last_known_local_role = None
         self._last_cleon_roster_snapshot = None
+        self._last_nontrivial_player_array_count = 0
+        self._player_array_drop_streak = 0
+        self._last_remote_rendered_count = 0
         self._world_epoch = getattr(self, "_world_epoch", 0) + 1
         for cache_name in (
                 "_character_component_cache", "_actor_root_cache",
                 "_skeleton_binding_cache", "_skeleton_profile_miss_cache",
                 "_capsule_dimensions_cache", "_object_class_cache",
-                "_reflected_offset_miss_cache"):
+                "_reflected_offset_miss_cache", "_isa_cache"):
             cache = getattr(self, cache_name, None)
             if cache is not None:
                 cache.clear()
@@ -1017,14 +1040,13 @@ class MecchaESP:
     def get_camera(self):
         world = self._get_world()
         if not world:
-            self._set_runtime_context(0, 0)
             return None
-        try:
-            gamestate = rp(
-                self.pm, world + self.offsets["UWorld::GameState"])
-        except Exception:
-            gamestate = 0
-        self._set_runtime_context(world, gamestate)
+        gamestate = rp(self.pm, world + self.offsets["UWorld::GameState"])
+        # A single failed RPM must not look like a real world transition and
+        # invalidate every pointer-bound cache.  A later nonzero identity will
+        # still commit an actual map/GameState change immediately.
+        if gamestate:
+            self._set_runtime_context(world, gamestate)
         pc = self._get_local_controller(world)
         if not pc:
             return None
@@ -1103,10 +1125,20 @@ class MecchaESP:
             if not current or current in seen:
                 break
             seen.add(current)
-            if self.objects._obj_name(current) == target_class_name:
+            class_name = self.objects._obj_name(current)
+            if not class_name:
+                # Name and SuperStruct reads can fail transiently.  Never turn
+                # one such miss into a process-lifetime negative type cache.
+                return False
+            if class_name == target_class_name:
                 self._isa_cache[cache_key] = True
                 return True
-            current = rp(self.pm, current + OFFSETS["UStruct::SuperStruct"])
+            try:
+                raw_super = self.pm.read_bytes(
+                    current + OFFSETS["UStruct::SuperStruct"], 8)
+                current = struct.unpack("<Q", raw_super)[0]
+            except Exception:
+                return False
         self._isa_cache[cache_key] = False
         return False
 
@@ -1185,14 +1217,16 @@ class MecchaESP:
             "BP_FirstPersonCharacter_Main_C::Dead", actor)
         if offset is None:
             return None
-        try:
-            before = self.pm.read_bytes(actor + offset, 1)
-            after = self.pm.read_bytes(actor + offset, 1)
-        except Exception:
-            return None
-        if len(before) != 1 or before != after or before[0] not in (0, 1):
-            return None
-        return bool(before[0])
+        for _ in range(2):
+            try:
+                before = self.pm.read_bytes(actor + offset, 1)
+                after = self.pm.read_bytes(actor + offset, 1)
+            except Exception:
+                continue
+            if (len(before) == 1 and before == after
+                    and before[0] in (0, 1)):
+                return bool(before[0])
+        return None
 
     def _pointer_array_snapshot(self, address, max_count=64):
         """Read one bounded UObject-pointer TArray header and payload."""
@@ -1209,6 +1243,20 @@ class MecchaESP:
             pointer for pointer in struct.unpack(f"<{count}Q", raw)
             if pointer) if count else ()
         return header, raw, pointers
+
+    def _stable_pointer_array_values(self, address, max_count=64):
+        """Return one header/payload pair repeated unchanged, including nulls."""
+        for _ in range(2):
+            before = self._pointer_array_snapshot(address, max_count)
+            after = self._pointer_array_snapshot(address, max_count)
+            if (before is None or after is None
+                    or before[0] != after[0] or before[1] != after[1]):
+                continue
+            _data, count, capacity = struct.unpack("<Qii", before[0])
+            values = (
+                struct.unpack(f"<{count}Q", before[1]) if count else ())
+            return values, count, capacity
+        return None
 
     def _cleon_live_rosters(self, gamestate):
         """Return replicated (hunters, live survivors, phase), or None."""
@@ -1423,14 +1471,25 @@ class MecchaESP:
                 current = parent
             return None
 
-        # Require one complete, adjacent repeat so a game-thread attachment or
-        # transform update cannot mix child and parent generations.
+        # Re-read attached chains to confirm topology.  Location/rotation are
+        # expected to change while a character moves, so use the newer complete
+        # sample instead of requiring byte-identical transform values.
         chain = None
         for _ in range(2):
             before = _read_chain()
-            after = _read_chain()
-            if before is not None and before == after:
+            if (before is not None and len(before) == 1
+                    and before[0][1] == 0):
                 chain = before
+                break
+            after = _read_chain()
+            before_topology = (
+                tuple((node[0], node[1]) for node in before)
+                if before is not None else None)
+            after_topology = (
+                tuple((node[0], node[1]) for node in after)
+                if after is not None else None)
+            if before_topology is not None and before_topology == after_topology:
+                chain = after
                 break
         if chain is None:
             return None
@@ -1915,14 +1974,22 @@ class MecchaESP:
         self._object_class_cache = {}
         world = self._get_world()
         if not world:
-            self._set_runtime_context(0, 0)
             self._last_iter_stats = {"pa_total": 0, "pa_valid": 0,
                                      "level_total": 0, "level_valid": 0,
                                      "dead_filtered": 0, "state_unreadable": 0,
                                      "role_filtered": 0, "rendered": 0,
-                                     "local_pawn": False, "roster_mode": "none"}
+                                     "local_pawn": False, "roster_mode": "none",
+                                     "collection_valid": False}
             return
         gamestate = rp(self.pm, world + self.offsets["UWorld::GameState"])
+        if not gamestate:
+            self._last_iter_stats = {"pa_total": 0, "pa_valid": 0,
+                                     "level_total": 0, "level_valid": 0,
+                                     "dead_filtered": 0, "state_unreadable": 1,
+                                     "role_filtered": 0, "rendered": 0,
+                                     "local_pawn": False, "roster_mode": "none",
+                                     "collection_valid": False}
+            return
         self._set_runtime_context(world, gamestate)
         pc = self._get_local_controller(world)
         local_ps = rp(self.pm, pc + self.offsets["AController::PlayerState"]) if pc else 0
@@ -1962,8 +2029,11 @@ class MecchaESP:
         stats = {"pa_total": 0, "pa_valid": 0,
                  "level_total": 0, "level_valid": 0,
                  "dead_filtered": 0, "state_unreadable": 0,
+                 "position_unreadable": 0, "pawn_unavailable": 0,
+                 "type_filtered": 0,
                  "role_filtered": 0, "rendered": 0,
                  "local_pawn": bool(local_pawn),
+                 "collection_valid": True,
                  "roster_mode": (
                      f"authoritative-{getattr(self, '_cleon_roster_source', 'live')}"
                      if roster_authoritative
@@ -1981,6 +2051,7 @@ class MecchaESP:
             # Restrict candidates to the game's actual player-character base.
             # A substring check also matched BP_CharacterAreaTrigger_C at runtime.
             if not self._object_is_a(pawn, "BP_FirstPersonCharacter_Main_C"):
+                stats["type_filtered"] += 1
                 return False
             # `pawn` is the PawnPrivate value read immediately before this call.
             # Re-reading the same pointer doubled one RPM per player without
@@ -2021,9 +2092,11 @@ class MecchaESP:
         def _emit_actor(actor, idx, stat_key):
             pos = self._actor_position(actor)
             if pos is None:
+                stats["position_unreadable"] += 1
                 return
             # Drop uninitialized / origin-only positions.
             if abs(pos[0]) < 0.01 and abs(pos[1]) < 0.01 and abs(pos[2]) < 0.01:
+                stats["position_unreadable"] += 1
                 return
             stats[stat_key] += 1
             stats["rendered"] += 1
@@ -2046,26 +2119,46 @@ class MecchaESP:
 
         # Pass 1: GameState->PlayerArray. Persistent-level scans can include
         # NPCs/dummies and are intentionally not merged into player rendering.
-        player_array_usable = False
         if gamestate:
-            pa_data, pa_count, pa_capacity = read_array(
-                self.pm, gamestate + self.offsets["AGameStateBase::PlayerArray"])
+            player_array = self._stable_pointer_array_values(
+                gamestate + self.offsets["AGameStateBase::PlayerArray"], 256)
+            if player_array is None:
+                stats["collection_valid"] = False
+                stats["state_unreadable"] += 1
+                self._last_iter_stats = stats
+                return
+            playerstates, pa_count, pa_capacity = player_array
             stats["pa_total"] = pa_count
-            player_array_usable = (
-                0 <= pa_count <= pa_capacity <= 256
-                and (pa_count == 0 or bool(pa_data)))
-            if player_array_usable and pa_count > 0:
-                try:
-                    playerstate_raw = self.pm.read_bytes(pa_data, pa_count * 8)
-                    playerstates = struct.unpack(f"<{pa_count}Q", playerstate_raw)
-                except Exception:
-                    playerstates = ()
-                    stats["state_unreadable"] += pa_count
+            previous_count = getattr(
+                self, "_last_nontrivial_player_array_count", 0)
+            if previous_count > 1 and pa_count <= 1:
+                self._player_array_drop_streak = getattr(
+                    self, "_player_array_drop_streak", 0) + 1
+                if (self._player_array_drop_streak
+                        <= self.PLAYER_ARRAY_DROP_GRACE_CYCLES):
+                    # Two identical TArray reads prove memory stability, not that
+                    # replication has finished updating the array.  Keep the last
+                    # complete frame during a short same-world N -> 0/1 collapse.
+                    stats["collection_valid"] = False
+                    stats["array_drop_guarded"] = True
+                    stats["state_unreadable"] += 1
+                    self._last_iter_stats = stats
+                    return
+                self._last_nontrivial_player_array_count = pa_count
+                self._player_array_drop_streak = 0
+            else:
+                self._player_array_drop_streak = 0
+                if pa_count > 1:
+                    self._last_nontrivial_player_array_count = pa_count
+            if pa_count > 0:
                 for i, ps in enumerate(playerstates):
                     if not ps or ps == local_ps:
                         continue
                     pawn = rp(self.pm, ps + self.offsets["APlayerState::PawnPrivate"])
-                    if not pawn or pawn == local_pawn or pawn in seen:
+                    if not pawn:
+                        stats["pawn_unavailable"] += 1
+                        continue
+                    if pawn == local_pawn or pawn in seen:
                         continue
                     seen.add(pawn)
                     if not _is_valid_target(pawn, ps):
@@ -2075,6 +2168,23 @@ class MecchaESP:
         # Deliberately do not merge PersistentLevel actors. PlayerArray plus the
         # stable PawnPrivate ownership check is authoritative; level actors retain
         # unpossessed corpse pawns and non-player Character-named triggers.
+
+        # Never publish an all-empty frame whose only explanation is transient
+        # pointer/type/death/transform read failure.  Valid dead/role filtering
+        # remains publishable, so corpses and same-role Hunters stay hidden.
+        transient_failures = sum(stats[key] for key in (
+            "state_unreadable", "position_unreadable", "pawn_unavailable"))
+        unexpected_type_collapse = (
+            getattr(self, "_last_remote_rendered_count", 0) > 0
+            and stats["type_filtered"] > 0
+            and stats["dead_filtered"] == 0
+            and stats["role_filtered"] == 0)
+        if (pa_count > 1 and stats["pa_valid"] == 0
+                and (transient_failures or unexpected_type_collapse)):
+            stats["collection_valid"] = False
+
+        if stats["collection_valid"]:
+            self._last_remote_rendered_count = stats["pa_valid"]
 
         self._last_iter_stats = stats
 
@@ -2766,8 +2876,8 @@ class Overlay(QWidget):
     COLLECT_INTERVAL = 1.0 / 30.0
     STALE_AFTER_SECONDS = 0.25
     WINDOW_SYNC_INTERVAL = 0.25
-    SKELETON_ENRICH_BUDGET_SECONDS = 0.020
-    MAX_SKELETON_ENRICH_PER_CYCLE = 4
+    SKELETON_REFRESH_BUDGET_SECONDS = 0.020
+    MAX_SKELETON_REFRESH_PER_CYCLE = 16
     SKELETON_CACHE_TTL_SECONDS = 0.25
     SKELETON_SLOW_SAMPLE_SECONDS = 0.20
     SKELETON_SUSPEND_SECONDS = 1.0
@@ -2801,6 +2911,9 @@ class Overlay(QWidget):
         self._last_rendered_frame = None
         self._process_closed = False
         self._process_close_lock = threading.Lock()
+        self._worker_state_lock = threading.Lock()
+        self._active_workers = {"base", "skeleton"}
+        self._skeleton_cache_lock = threading.Lock()
         self._skeleton_pose_cache = {}
         self._skeleton_failure_cooldowns = {}
         self._skeleton_actor_queue = deque()
@@ -2809,6 +2922,9 @@ class Overlay(QWidget):
         self._last_skeleton_refresh_ms = 0.0
         self._last_skeleton_refresh_attempts = 0
         self._last_skeleton_failures = ()
+        self._skeleton_job_lock = threading.Lock()
+        self._skeleton_job_event = threading.Event()
+        self._skeleton_pending_frame = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_overlay)
@@ -2816,8 +2932,11 @@ class Overlay(QWidget):
 
         self.game_hwnd = self._find_game_window()
         self._resize_to_game()
+        self._skeleton_thread = threading.Thread(
+            target=self._skeleton_loop, name="MecchaESPSkeleton", daemon=False)
         self._snapshot_thread = threading.Thread(
             target=self._snapshot_loop, name="MecchaESPReader", daemon=False)
+        self._skeleton_thread.start()
         self._snapshot_thread.start()
         app = QApplication.instance()
         if app is not None:
@@ -2880,6 +2999,10 @@ class Overlay(QWidget):
 
     def _ensure_skeleton_state(self):
         try:
+            self._skeleton_cache_lock
+        except (AttributeError, RuntimeError):
+            self._skeleton_cache_lock = threading.Lock()
+        try:
             self._skeleton_pose_cache
         except (AttributeError, RuntimeError):
             self._skeleton_pose_cache = {}
@@ -2898,62 +3021,78 @@ class Overlay(QWidget):
         self._ensure_skeleton_state()
         epoch = getattr(self.esp, "_world_epoch", 0)
         if epoch != self._skeleton_cache_epoch:
-            self._skeleton_cache_epoch = epoch
-            self._skeleton_pose_cache.clear()
+            with self._skeleton_cache_lock:
+                self._skeleton_cache_epoch = epoch
+                self._skeleton_pose_cache.clear()
             self._skeleton_failure_cooldowns.clear()
             self._skeleton_actor_queue.clear()
             self._skeleton_suspended_until = 0.0
         return epoch
 
     def _cached_skeleton_for_player(
-            self, actor, position, root_transform, now, world_epoch):
-        cached = self._skeleton_pose_cache.get(actor)
+            self, actor, position, root_transform, now, world_epoch,
+            cached=None):
+        """Rebase one cached pose without any process-memory access."""
+        self._ensure_skeleton_state()
+        if cached is None:
+            with self._skeleton_cache_lock:
+                cached = self._skeleton_pose_cache.get(actor)
         if cached is None:
             return None
         if (cached.world_epoch != world_epoch
                 or now - cached.captured_at > self.SKELETON_CACHE_TTL_SECONDS):
-            self._skeleton_pose_cache.pop(actor, None)
             return None
 
-        # Never reuse cached world-space points.  The pose reader stores the
-        # component-space translations that came from the stable payload; bind
-        # them to the actor's *current* verified mesh transform on every fast
-        # frame.  This handles translation and rotation without mixing the pose
-        # sample with an older/newer actor-root timestamp.
-        local_points = cached.pose.component_points
-        mesh_reader = getattr(self.esp, "_character_mesh", None)
-        transform_reader = getattr(
-            self.esp, "_component_world_transform_snapshot", None)
-        if (not local_points
-                or len(local_points) != len(cached.pose.world_points)
-                or not cached.pose.mesh
-                or not callable(mesh_reader)
-                or not callable(transform_reader)):
-            self._skeleton_pose_cache.pop(actor, None)
-            return None
-        try:
-            current_mesh = mesh_reader(actor, refresh=True)
-            transform_snapshot = (
-                transform_reader(current_mesh) if current_mesh else None)
-        except Exception:
-            current_mesh = 0
-            transform_snapshot = None
-        if current_mesh != cached.pose.mesh or transform_snapshot is None:
-            self._skeleton_pose_cache.pop(actor, None)
+        old_points = cached.pose.world_points
+        if not old_points:
             return None
 
-        local_to_world = transform_snapshot[1][0]
         points = []
-        for local_point in local_points:
-            world_point = transform_position_row(local_point, local_to_world)
-            if (world_point is None or not finite_vector(world_point)
-                    or dist(world_point, position) > 5000.0):
-                self._skeleton_pose_cache.pop(actor, None)
+        old_root = cached.root_transform
+        if old_root is not None and root_transform is not None:
+            try:
+                old_world_to_root = old_root[1]
+                current_root_to_world = root_transform[0]
+            except (IndexError, TypeError):
                 return None
-            points.append(world_point)
+            for old_world_point in old_points:
+                root_point = transform_position_row(
+                    old_world_point, old_world_to_root)
+                world_point = (
+                    transform_position_row(root_point, current_root_to_world)
+                    if root_point is not None else None)
+                if (world_point is None or not finite_vector(world_point)
+                        or dist(world_point, position) > 5000.0):
+                    return None
+                points.append(world_point)
+        else:
+            if (not finite_vector(cached.actor_position)
+                    or not finite_vector(position)):
+                return None
+            delta = tuple(
+                position[index] - cached.actor_position[index]
+                for index in range(3))
+            for old_world_point in old_points:
+                world_point = tuple(
+                    old_world_point[index] + delta[index]
+                    for index in range(3))
+                if (not finite_vector(world_point)
+                        or dist(world_point, position) > 5000.0):
+                    return None
+                points.append(world_point)
         return SkeletonPose(
             cached.pose.profile_name, tuple(points), cached.pose.draw_edges,
             cached.pose.component_points, cached.pose.mesh)
+
+    def _skeleton_cache_snapshot(self):
+        self._ensure_skeleton_state()
+        with self._skeleton_cache_lock:
+            return dict(self._skeleton_pose_cache), self._skeleton_cache_epoch
+
+    def _skeleton_cache_size(self):
+        self._ensure_skeleton_state()
+        with self._skeleton_cache_lock:
+            return len(self._skeleton_pose_cache)
 
     def _skeleton_candidates(self, frame):
         if frame.camera is None:
@@ -2974,84 +3113,60 @@ class Overlay(QWidget):
         return candidates
 
     def _enrich_snapshot_with_cached_skeletons(self, frame):
-        """Attach fresh poses after the box-only base frame is already visible."""
+        """Merge the independent pose layer into a fresh base frame in memory."""
         self._ensure_skeleton_state()
         if (not self.config.enabled or not self.config.skeleton_esp
                 or frame.error or frame.camera is None):
             return None
-        world_epoch = self._sync_skeleton_epoch()
         now = time.monotonic()
         if max(0.0, now - frame.started_at) >= self.STALE_AFTER_SECONDS:
             return None
-        candidate_players = {
-            player.actor: player for player in self._skeleton_candidates(frame)
-            if player.actor in self._skeleton_pose_cache}
-        if not candidate_players:
+        cache, cache_epoch = self._skeleton_cache_snapshot()
+        world_epoch = dict(frame.stats).get("world_epoch", cache_epoch)
+        candidate_actors = {
+            player.actor for player in self._skeleton_candidates(frame)}
+        if not candidate_actors or not cache:
             return None
-        # Prefer the newest samples when the optional transform budget cannot
-        # cover every cached actor; the sampling deque separately guarantees
-        # actor fairness over subsequent cycles.
-        priority = sorted(
-            candidate_players,
-            key=lambda actor: self._skeleton_pose_cache[actor].captured_at,
-            reverse=True)
-        projected = {}
-        attached = 0
-        attempts = 0
-        enrich_started = time.monotonic()
-        for actor in priority:
-            attempt_started = time.monotonic()
-            if (max(0.0, attempt_started - frame.started_at)
-                    >= self.STALE_AFTER_SECONDS):
-                return None
-            if (attempts >= self.MAX_SKELETON_ENRICH_PER_CYCLE
-                    or (attempts > 0
-                        and attempt_started - enrich_started
-                        >= self.SKELETON_ENRICH_BUDGET_SECONDS)):
-                break
-            player = candidate_players[actor]
-            pose = self._cached_skeleton_for_player(
-                actor, player.position, player.root_transform,
-                attempt_started, world_epoch)
-            attempts += 1
-            if pose is not None:
-                cached = self._skeleton_pose_cache.get(actor)
-                if cached is not None:
-                    projected[actor] = (pose, cached.captured_at)
-                    attached += 1
 
+        attached = 0
         enriched_players = []
         for player in frame.players:
-            pose, captured_at = projected.get(player.actor, (None, None))
+            pose = None
+            captured_at = None
+            cached = cache.get(player.actor)
+            if player.actor in candidate_actors and cached is not None:
+                pose = self._cached_skeleton_for_player(
+                    player.actor, player.position, player.root_transform,
+                    now, world_epoch, cached=cached)
+                if pose is not None:
+                    captured_at = cached.captured_at
+                    attached += 1
             enriched_players.append(replace(
                 player, pose=pose, pose_captured_at=captured_at))
 
-        finished = time.monotonic()
-        if (not attached
-                or max(0.0, finished - frame.started_at)
-                >= self.STALE_AFTER_SECONDS
-                or getattr(self.esp, "_world_epoch", world_epoch) != world_epoch):
+        if not attached:
             return None
         stats = dict(frame.stats)
         stats.update({
             "skeleton_refresh_ms": self._last_skeleton_refresh_ms,
             "skeleton_attempts": self._last_skeleton_refresh_attempts,
-            "skeleton_cache": len(self._skeleton_pose_cache),
-            "skeleton_enrich_attempts": attempts,
+            "skeleton_cache": len(cache),
+            "skeleton_enrich_attempts": len(candidate_actors),
         })
         return replace(
             frame, players=tuple(enriched_players), stats=tuple(stats.items()),
             skeleton_failures=tuple(self._last_skeleton_failures))
 
     def _refresh_skeleton_cache(self, frame):
-        """Refresh optional poses after the fast frame has already been published."""
+        """Refresh a fair batch of poses on the skeleton-only worker."""
         self._ensure_skeleton_state()
         started = time.monotonic()
         self._last_skeleton_refresh_attempts = 0
         if (not self.config.enabled or not self.config.skeleton_esp
                 or frame.error or frame.camera is None):
             if not self.config.skeleton_esp:
-                self._skeleton_pose_cache.clear()
+                with self._skeleton_cache_lock:
+                    self._skeleton_pose_cache.clear()
                 self._skeleton_failure_cooldowns.clear()
                 self._skeleton_actor_queue.clear()
                 self._skeleton_suspended_until = 0.0
@@ -3064,19 +3179,19 @@ class Overlay(QWidget):
         oldest_age = max(0.0, now - frame.started_at)
         if (frame.collection_ms >= self.STALE_AFTER_SECONDS * 1000.0
                 or oldest_age >= self.STALE_AFTER_SECONDS):
-            # Do not make recovery even later by enriching a base frame that the
-            # painter is required to reject.
+            # Do not spend pose reads on a base frame the painter must reject.
             self._last_skeleton_refresh_ms = (now - started) * 1000.0
             self._last_skeleton_failures = ()
             return
 
         active_actors = {player.actor for player in frame.players}
-        for actor in tuple(self._skeleton_pose_cache):
-            cached = self._skeleton_pose_cache[actor]
-            if (actor not in active_actors
-                    or now - cached.captured_at
-                    > self.SKELETON_CACHE_TTL_SECONDS):
-                self._skeleton_pose_cache.pop(actor, None)
+        with self._skeleton_cache_lock:
+            for actor in tuple(self._skeleton_pose_cache):
+                cached = self._skeleton_pose_cache[actor]
+                if (actor not in active_actors
+                        or now - cached.captured_at
+                        > self.SKELETON_CACHE_TTL_SECONDS):
+                    self._skeleton_pose_cache.pop(actor, None)
         for actor in tuple(self._skeleton_failure_cooldowns):
             if actor not in active_actors:
                 self._skeleton_failure_cooldowns.pop(actor, None)
@@ -3099,16 +3214,8 @@ class Overlay(QWidget):
                 queue.append(player.actor)
                 queued.add(player.actor)
 
-        player = None
-        for _ in range(len(queue)):
-            actor = queue.popleft()
-            queue.append(actor)
-            now = time.monotonic()
-            if now < self._skeleton_failure_cooldowns.get(actor, 0.0):
-                continue
-            player = candidates_by_actor[actor]
-            break
-        if player is None or not self.config.enabled or not self.config.skeleton_esp:
+        if (not queue or not self.config.enabled
+                or not self.config.skeleton_esp):
             self._last_skeleton_refresh_ms = (
                 time.monotonic() - started) * 1000.0
             self._last_skeleton_failures = ()
@@ -3116,48 +3223,81 @@ class Overlay(QWidget):
 
         failure_totals = {}
         self.esp._skeleton_source_counts = {}
-        self.esp._skeleton_failure_counts = {}
-        sample_started = time.monotonic()
-        try:
-            pose = self.esp.read_skeleton_pose(player.actor, player.position)
-        except Exception:
-            pose = None
-            self.esp._skeleton_failure_counts = {"exception": 1}
-        sample_finished = time.monotonic()
-        actor_failures = dict(
-            getattr(self.esp, "_skeleton_failure_counts", {}))
-        if (pose is not None
-                and (not pose.component_points or not pose.mesh
-                     or len(pose.component_points) != len(pose.world_points))):
-            pose = None
-            actor_failures["pose_space"] = 1
-        for reason, value in actor_failures.items():
-            failure_totals[reason] = failure_totals.get(reason, 0) + value
+        attempts = 0
+        checked = 0
+        queue_span = len(queue)
+        while (checked < queue_span
+               and attempts < self.MAX_SKELETON_REFRESH_PER_CYCLE):
+            if (attempts > 0
+                    and time.monotonic() - started
+                    >= self.SKELETON_REFRESH_BUDGET_SECONDS):
+                break
+            try:
+                stopping = self._snapshot_stop.is_set()
+            except (AttributeError, RuntimeError):
+                stopping = False
+            if (stopping or not self.config.enabled
+                    or not self.config.skeleton_esp):
+                break
+            actor = queue.popleft()
+            queue.append(actor)
+            checked += 1
+            now = time.monotonic()
+            if now < self._skeleton_failure_cooldowns.get(actor, 0.0):
+                continue
+            player = candidates_by_actor[actor]
 
-        if pose is not None:
-            self._skeleton_pose_cache[player.actor] = CachedSkeletonPose(
-                # The exact payload can be no newer than the start of a
-                # synchronous read; a conservative timestamp prevents the TTL
-                # from granting the full read duration again.
-                sample_started, pose, player.position,
-                player.root_transform, world_epoch)
-            self._skeleton_failure_cooldowns.pop(player.actor, None)
-        else:
-            self._skeleton_pose_cache.pop(player.actor, None)
-            persistent = any(reason in {
-                "build", "identity", "layout", "leader", "no_mesh", "profile",
-                "pose_space"
-            } for reason in actor_failures)
-            retry_delay = 2.0 if persistent else 0.10
-            self._skeleton_failure_cooldowns[player.actor] = (
-                sample_finished + retry_delay)
+            self.esp._skeleton_failure_counts = {}
+            sample_started = time.monotonic()
+            try:
+                pose = self.esp.read_skeleton_pose(
+                    player.actor, player.position)
+            except Exception:
+                pose = None
+                self.esp._skeleton_failure_counts = {"exception": 1}
+            sample_finished = time.monotonic()
+            attempts += 1
+            actor_failures = dict(
+                getattr(self.esp, "_skeleton_failure_counts", {}))
+            if (pose is not None
+                    and (not pose.component_points or not pose.mesh
+                         or len(pose.component_points)
+                         != len(pose.world_points))):
+                pose = None
+                actor_failures["pose_space"] = 1
+            if getattr(self.esp, "_world_epoch", world_epoch) != world_epoch:
+                pose = None
+                actor_failures["epoch"] = 1
+            for reason, value in actor_failures.items():
+                failure_totals[reason] = (
+                    failure_totals.get(reason, 0) + value)
 
-        if (sample_finished - sample_started
-                >= self.SKELETON_SLOW_SAMPLE_SECONDS):
-            self._skeleton_suspended_until = (
-                sample_finished + self.SKELETON_SUSPEND_SECONDS)
+            with self._skeleton_cache_lock:
+                if pose is not None:
+                    self._skeleton_pose_cache[player.actor] = CachedSkeletonPose(
+                        # The payload/mesh transform transaction starts here.
+                        # A read slower than the TTL expires naturally instead
+                        # of extending the life of already-old animation data.
+                        sample_started, pose, player.position,
+                        player.root_transform, world_epoch)
+                    self._skeleton_failure_cooldowns.pop(player.actor, None)
+                else:
+                    self._skeleton_pose_cache.pop(player.actor, None)
+                    persistent = any(reason in {
+                        "build", "identity", "layout", "leader", "no_mesh",
+                        "profile", "pose_space"
+                    } for reason in actor_failures)
+                    retry_delay = 2.0 if persistent else 0.10
+                    self._skeleton_failure_cooldowns[player.actor] = (
+                        sample_finished + retry_delay)
 
-        self._last_skeleton_refresh_attempts = 1
+            if (sample_finished - sample_started
+                    >= self.SKELETON_SLOW_SAMPLE_SECONDS):
+                self._skeleton_suspended_until = (
+                    sample_finished + self.SKELETON_SUSPEND_SECONDS)
+                break
+
+        self._last_skeleton_refresh_attempts = attempts
         self._last_skeleton_refresh_ms = (
             time.monotonic() - started) * 1000.0
         self._last_skeleton_failures = tuple(sorted(failure_totals.items()))
@@ -3175,7 +3315,7 @@ class Overlay(QWidget):
             finished = time.monotonic()
             return FrameRenderSnapshot(
                 sequence, started, finished, (finished - started) * 1000.0,
-                None, None, (), (), (), None)
+                None, None, (), (("collection_valid", True),), (), None)
 
         try:
             initial_camera = self._copy_camera(self.esp.get_camera())
@@ -3183,7 +3323,7 @@ class Overlay(QWidget):
                 finished = time.monotonic()
                 return FrameRenderSnapshot(
                     sequence, started, finished, (finished - started) * 1000.0,
-                    None, None, (), (), (), None)
+                    None, None, (), (("collection_valid", False),), (), None)
             initial_context = getattr(
                 self.esp, "_runtime_context_identity", None)
             initial_epoch = getattr(self.esp, "_world_epoch", None)
@@ -3208,7 +3348,6 @@ class Overlay(QWidget):
                     root_transform, None))
 
             players_ms = (time.monotonic() - players_started) * 1000.0
-            self._sync_skeleton_epoch()
             final_camera_started = time.monotonic()
             final_camera = self._copy_camera(self.esp.get_camera())
             final_context = getattr(
@@ -3226,18 +3365,21 @@ class Overlay(QWidget):
                 "camera_ms": camera_ms,
                 "players_ms": players_ms,
                 "capsule_ms": capsule_ms,
+                "world_epoch": initial_epoch,
                 "skeleton_refresh_ms": self._last_skeleton_refresh_ms,
                 "skeleton_attempts": self._last_skeleton_refresh_attempts,
-                "skeleton_cache": len(self._skeleton_pose_cache),
+                "skeleton_cache": self._skeleton_cache_size(),
             })
-            stats = tuple(stats_dict.items())
             failures = tuple(self._last_skeleton_failures)
             finished = time.monotonic()
             if context_changed:
+                stats_dict["context_changed"] = True
+                stats = tuple(stats_dict.items())
                 return FrameRenderSnapshot(
                     sequence, started, finished,
                     (finished - started) * 1000.0,
                     None, None, (), stats, failures, None)
+            stats = tuple(stats_dict.items())
             snapshot = FrameRenderSnapshot(
                 sequence, started, finished, (finished - started) * 1000.0,
                 camera, local_role, tuple(players), stats, failures, None)
@@ -3246,29 +3388,61 @@ class Overlay(QWidget):
             finished = time.monotonic()
             return FrameRenderSnapshot(
                 sequence, started, finished, (finished - started) * 1000.0,
-                None, None, (), (), (), f"{type(exc).__name__}: {exc}")
+                None, None, (), (("collection_valid", False),), (),
+                f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _base_frame_is_publishable(frame):
+        stats = dict(getattr(frame, "stats", ()))
+        if stats.get("context_changed"):
+            return True
+        if (getattr(frame, "error", None)
+                or getattr(frame, "camera", True) is None):
+            return False
+        return stats.get("collection_valid", True) is True
+
+    def _ensure_skeleton_job_state(self):
+        try:
+            self._skeleton_job_lock
+        except (AttributeError, RuntimeError):
+            self._skeleton_job_lock = threading.Lock()
+            self._skeleton_job_event = threading.Event()
+            self._skeleton_pending_frame = None
+
+    def _submit_skeleton_frame(self, frame):
+        """Overwrite the pending skeleton job; old frames never form a queue."""
+        self._ensure_skeleton_job_state()
+        with self._skeleton_job_lock:
+            self._skeleton_pending_frame = frame
+            self._skeleton_job_event.set()
+
+    def _take_skeleton_frame(self):
+        self._ensure_skeleton_job_state()
+        self._skeleton_job_event.wait(0.10)
+        if self._snapshot_stop.is_set():
+            return None
+        with self._skeleton_job_lock:
+            frame = self._skeleton_pending_frame
+            self._skeleton_pending_frame = None
+            self._skeleton_job_event.clear()
+            return frame
 
     def _snapshot_loop(self):
         deadline = time.monotonic()
         try:
             while not self._snapshot_stop.is_set():
                 frame = self._collect_snapshot()
-                self._snapshots.publish(frame)
-                # Publish visual data before optional skeleton enrichment work.
-                # A slow pose read must not delay the fresh box frame.
-                try:
-                    enriched = self._enrich_snapshot_with_cached_skeletons(frame)
-                    if enriched is not None:
-                        self._snapshots.publish(enriched)
-                except Exception:
-                    self._last_skeleton_failures = (("enrich_exception", 1),)
-                try:
-                    self._refresh_skeleton_cache(frame)
-                except Exception:
-                    # Optional enrichment must never terminate the only reader
-                    # thread; the next cycle can still publish boxes.
-                    self._last_skeleton_refresh_attempts = 0
-                    self._last_skeleton_failures = (("refresh_exception", 1),)
+                if self._base_frame_is_publishable(frame):
+                    try:
+                        enriched = self._enrich_snapshot_with_cached_skeletons(
+                            frame)
+                        if enriched is not None:
+                            frame = enriched
+                    except Exception:
+                        self._last_skeleton_failures = (
+                            ("enrich_exception", 1),)
+                    self._snapshots.publish(frame)
+                    self._submit_skeleton_frame(frame)
                 deadline += self.COLLECT_INTERVAL
                 now = time.monotonic()
                 if deadline <= now:
@@ -3277,11 +3451,61 @@ class Overlay(QWidget):
                     continue
                 self._snapshot_stop.wait(deadline - now)
         finally:
-            # If GUI shutdown times out while one RPM call is still blocked, the
-            # worker owns eventual cleanup and closes only after all reads stop.
+            self._snapshot_stop.set()
+            self._ensure_skeleton_job_state()
+            self._skeleton_job_event.set()
+            self._worker_finished("base")
+
+    def _skeleton_loop(self):
+        """Run every pose/mesh read away from the base collector."""
+        try:
+            while not self._snapshot_stop.is_set():
+                frame = self._take_skeleton_frame()
+                if frame is None:
+                    continue
+                self._sync_skeleton_epoch()
+                try:
+                    self._refresh_skeleton_cache(frame)
+                except Exception:
+                    self._last_skeleton_refresh_attempts = 0
+                    self._last_skeleton_failures = (("refresh_exception", 1),)
+        finally:
+            # A fatal exit from either reader stops its peer.  The last worker
+            # alone owns process-handle cleanup, so an active RPM is never closed
+            # underneath the other thread.
+            self._snapshot_stop.set()
+            self._ensure_skeleton_job_state()
+            self._skeleton_job_event.set()
+            self._worker_finished("skeleton")
+
+    def _ensure_worker_state(self, worker_name=None):
+        try:
+            self._worker_state_lock
+        except (AttributeError, RuntimeError):
+            self._worker_state_lock = threading.Lock()
+            self._active_workers = set()
+        try:
+            self._active_workers
+        except (AttributeError, RuntimeError):
+            self._active_workers = set()
+        if worker_name is not None and not self._active_workers:
+            self._active_workers.add(worker_name)
+
+    def _worker_finished(self, worker_name):
+        self._ensure_worker_state(worker_name)
+        with self._worker_state_lock:
+            if worker_name not in self._active_workers:
+                return
+            self._active_workers.remove(worker_name)
+            close_process = not self._active_workers
+        if close_process:
             self._close_process_once()
 
     def _close_process_once(self):
+        try:
+            self._process_close_lock
+        except (AttributeError, RuntimeError):
+            self._process_close_lock = threading.Lock()
         with self._process_close_lock:
             if getattr(self, "_process_closed", False):
                 return
@@ -3296,11 +3520,21 @@ class Overlay(QWidget):
         if timer is not None:
             timer.stop()
         self._snapshot_stop.set()
+        self._ensure_skeleton_job_state()
+        self._skeleton_job_event.set()
         worker = getattr(self, "_snapshot_thread", None)
         if (worker is not None and worker.is_alive()
                 and threading.current_thread() is not worker):
             worker.join(timeout=1.0)
-        if worker is None or not worker.is_alive():
+        try:
+            skeleton_worker = self._skeleton_thread
+        except (AttributeError, RuntimeError):
+            skeleton_worker = None
+        if (skeleton_worker is not None and skeleton_worker.is_alive()
+                and threading.current_thread() is not skeleton_worker):
+            skeleton_worker.join(timeout=1.0)
+        if ((worker is None or not worker.is_alive())
+                and (skeleton_worker is None or not skeleton_worker.is_alive())):
             self._close_process_once()
 
     def closeEvent(self, event):
