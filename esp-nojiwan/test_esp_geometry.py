@@ -696,6 +696,24 @@ class SnapshotArchitectureTests(unittest.TestCase):
         self.assertNotIn("iter_players", source)
         self.assertNotIn("read_skeleton_pose", source)
 
+    def test_hunter_color_does_not_depend_on_local_role(self):
+        config = esp.Config(
+            enemy_color=(10, 20, 30), hunter_color=(40, 50, 60),
+            local_color=(70, 80, 90))
+        hunter = esp.PlayerRenderSnapshot(
+            False, (1.0, 2.0, 3.0), 1, 0x1000, "hunter", None, None)
+        survivor = esp.PlayerRenderSnapshot(
+            False, (1.0, 2.0, 3.0), 2, 0x2000, "survivor", None, None)
+        local = esp.PlayerRenderSnapshot(
+            True, (1.0, 2.0, 3.0), 0, 0x3000, "hunter", None, None)
+
+        self.assertEqual(
+            esp.Overlay._player_color(config, hunter), config.hunter_color)
+        self.assertEqual(
+            esp.Overlay._player_color(config, survivor), config.enemy_color)
+        self.assertEqual(
+            esp.Overlay._player_color(config, local), config.local_color)
+
     def test_paint_and_render_helpers_use_snapshot_only(self):
         class ExplodingESP:
             def __getattribute__(self, name):
@@ -2088,28 +2106,151 @@ class PlayerFilterTests(unittest.TestCase):
         self.assertEqual(actors, {hunter_pawn, survivor_pawn})
         self.assertEqual(reader._last_iter_stats["roster_mode"], "fallback")
 
+    def test_phase_two_roster_assigns_roles_to_generic_pawns(self):
+        reader, hunter_pawn, survivor_pawn, dead_pawn = \
+            self._reader_for_cleon_role("survivor")
+        local_ps, hunter_ps, survivor_ps = 0x40000, 0x41000, 0x42000
+        reader.character_role = lambda pawn: None
+        reader._cleon_live_rosters = lambda found_gamestate: (
+            frozenset((hunter_ps,)),
+            frozenset((local_ps, survivor_ps)), 2)
+
+        rows = list(reader.iter_players(include_actor=True))
+        actors = {row[3] for row in rows}
+        self.assertEqual(actors, {hunter_pawn, survivor_pawn})
+        self.assertNotIn(dead_pawn, actors)
+        self.assertEqual(reader._last_local_role, "survivor")
+        self.assertEqual(reader._last_actor_roles[hunter_pawn], "hunter")
+        self.assertEqual(reader._last_actor_roles[survivor_pawn], "survivor")
+        self.assertTrue(
+            reader._last_iter_stats["roster_mode"].startswith("authoritative-"))
+
+    def test_phase_zero_empty_roster_is_not_authoritative(self):
+        reader, hunter_pawn, survivor_pawn, dead_pawn = \
+            self._reader_for_cleon_role("survivor")
+        reader.character_role = lambda pawn: None
+        reader._cleon_live_rosters = lambda found_gamestate: (
+            frozenset(), frozenset(), 0)
+
+        rows = list(reader.iter_players(include_actor=True))
+        actors = {row[3] for row in rows}
+        self.assertEqual(actors, {hunter_pawn, survivor_pawn})
+        self.assertNotIn(dead_pawn, actors)
+        self.assertEqual(reader._last_iter_stats["roster_mode"], "fallback")
+
+    def test_roster_without_local_membership_cannot_remove_live_players(self):
+        reader, hunter_pawn, survivor_pawn, dead_pawn = \
+            self._reader_for_cleon_role("survivor")
+        hunter_ps = 0x41000
+        reader.character_role = lambda pawn: None
+        reader._cleon_live_rosters = lambda found_gamestate: (
+            frozenset((hunter_ps,)), frozenset(), 2)
+
+        rows = list(reader.iter_players(include_actor=True))
+        actors = {row[3] for row in rows}
+        self.assertEqual(actors, {hunter_pawn, survivor_pawn})
+        self.assertNotIn(dead_pawn, actors)
+        self.assertEqual(reader._last_actor_roles[hunter_pawn], "hunter")
+        self.assertEqual(reader._last_iter_stats["roster_mode"], "fallback")
+
+    def test_playerstate_role_cache_survives_generic_pawn_transition(self):
+        reader, hunter_pawn, survivor_pawn, _ = \
+            self._reader_for_cleon_role("survivor")
+        local_pawn = reader._test_local_pawn
+        role_by_pawn = {
+            local_pawn: "survivor",
+            hunter_pawn: "hunter",
+            survivor_pawn: "survivor",
+        }
+        reader._cleon_live_rosters = lambda found_gamestate: None
+        reader.character_role = lambda pawn: role_by_pawn.get(pawn)
+
+        list(reader.iter_players(include_actor=True))
+        role_by_pawn.clear()
+        rows = list(reader.iter_players(include_actor=True))
+
+        self.assertEqual({row[3] for row in rows}, {hunter_pawn, survivor_pawn})
+        self.assertEqual(reader._last_local_role, "survivor")
+        self.assertEqual(reader._last_actor_roles[hunter_pawn], "hunter")
+        self.assertEqual(reader._last_actor_roles[survivor_pawn], "survivor")
+
     def test_missing_cleon_roster_fields_are_not_resolved_every_frame(self):
         class Resolver:
             def __init__(self):
                 self.calls = []
 
-            def resolve(self, class_name, field_name):
-                self.calls.append((class_name, field_name))
+            def resolve_from_class(self, class_pointer, field_name):
+                self.calls.append((class_pointer, field_name))
                 return None
 
         reader = esp.MecchaESP.__new__(esp.MecchaESP)
         reader._object_is_a = lambda obj, class_name: True
+        reader._object_class = lambda obj: 0x25000
         reader._cleon_roster_offsets = None
+        reader._cleon_roster_offset_retry_after = 0.0
         reader._last_cleon_roster_snapshot = None
         reader.resolver = Resolver()
 
-        self.assertIsNone(reader._cleon_live_rosters(0x20000))
-        self.assertEqual(len(reader.resolver.calls), 3)
-        self.assertIs(reader._cleon_roster_offsets, False)
-        self.assertEqual(reader._cleon_roster_source, "resolver-unavailable")
+        with mock.patch.object(esp.time, "monotonic", return_value=100.0):
+            self.assertIsNone(reader._cleon_live_rosters(0x20000))
+            self.assertEqual(len(reader.resolver.calls), 3)
+            self.assertIsNone(reader._cleon_roster_offsets)
+            self.assertEqual(reader._cleon_roster_source, "resolver-unavailable")
 
-        self.assertIsNone(reader._cleon_live_rosters(0x20000))
-        self.assertEqual(len(reader.resolver.calls), 3)
+            self.assertIsNone(reader._cleon_live_rosters(0x20000))
+            self.assertEqual(len(reader.resolver.calls), 3)
+            self.assertEqual(reader._cleon_roster_source, "resolver-cooldown")
+
+        with mock.patch.object(esp.time, "monotonic", return_value=101.01):
+            self.assertIsNone(reader._cleon_live_rosters(0x20000))
+            self.assertEqual(len(reader.resolver.calls), 6)
+
+    def test_cleon_roster_offsets_resolve_from_loaded_gamestate_class(self):
+        memory = Memory()
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader.pm = memory
+        gamestate, game_state_class = 0x20000, 0x25000
+        hunter_data, survivor_data = 0x30000, 0x31000
+        hunter_ps, survivor_ps = 0x40000, 0x41000
+        memory.put(
+            gamestate + 0x3A0, struct.pack("<Qii", hunter_data, 1, 1))
+        memory.put(
+            gamestate + 0x348, struct.pack("<Qii", survivor_data, 1, 1))
+        memory.put(gamestate + 0x418, b"\x02")
+        memory.put(hunter_data, struct.pack("<Q", hunter_ps))
+        memory.put(survivor_data, struct.pack("<Q", survivor_ps))
+
+        class Resolver:
+            OFFSETS = {
+                "HuntersPlayerState": 0x3A0,
+                "LiveSurvivors_PlayerState": 0x348,
+                "MainGamePhase": 0x418,
+            }
+
+            def __init__(self):
+                self.calls = []
+
+            def resolve_from_class(self, class_pointer, field_name):
+                self.calls.append((class_pointer, field_name))
+                return self.OFFSETS[field_name]
+
+        reader.resolver = Resolver()
+        reader._object_is_a = lambda obj, class_name: True
+        reader._object_class = lambda obj: game_state_class
+        reader._cleon_roster_offsets = None
+        reader._cleon_roster_offset_retry_after = 0.0
+        reader._last_cleon_roster_snapshot = None
+
+        result = reader._cleon_live_rosters(gamestate)
+
+        self.assertEqual(
+            result,
+            (frozenset((hunter_ps,)), frozenset((survivor_ps,)), 2))
+        self.assertEqual(reader._cleon_roster_offsets, (0x3A0, 0x348, 0x418))
+        self.assertEqual(reader._cleon_roster_source, "live")
+        self.assertEqual(
+            {class_pointer for class_pointer, _ in reader.resolver.calls},
+            {game_state_class})
 
     def test_dead_flag_is_independent_stable_byte(self):
         memory = Memory()

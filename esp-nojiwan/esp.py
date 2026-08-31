@@ -764,6 +764,7 @@ class MecchaESP:
     MODULE_NAME = "PenguinHotel-Win64-Shipping.exe"
     SKELETON_PROFILE_MISS_RETRY_SECONDS = 2.0
     CLEON_ROSTER_REFRESH_SECONDS = 0.10
+    CLEON_ROSTER_OFFSET_RETRY_SECONDS = 1.0
     CONTEXT_POINTER_REFRESH_SECONDS = 0.50
     REFLECTED_OFFSET_RETRY_SECONDS = 1.0
     PLAYER_ARRAY_DROP_GRACE_CYCLES = 6
@@ -856,11 +857,14 @@ class MecchaESP:
         self._skeleton_binding_cache = {}
         self._skeleton_profile_miss_cache = {}
         self._capsule_dimensions_cache = {}
-        # These optional Blueprint fields do not exist in the supplied Dumper-7
-        # SDK.  Runtime reflection misses can scan the full UObject/FField graph,
-        # so this verified build starts directly in the PlayerArray/Dead fallback.
-        self._cleon_roster_offsets = False
+        # These Blueprint fields are absent from a home-lobby SDK dump, but are
+        # present once the cLeon gameplay package is loaded.  Resolve them from
+        # the live GameState class on first use instead of permanently disabling
+        # the roster path from the incomplete dump alone.
+        self._cleon_roster_offsets = None
+        self._cleon_roster_offset_retry_after = 0.0
         self._last_cleon_roster_snapshot = None
+        self._playerstate_role_cache = {}
         self._skeleton_failure_counts = {}
         self._world_epoch = 0
         self._runtime_context_identity = None
@@ -983,6 +987,8 @@ class MecchaESP:
         self._last_role_gamestate = identity[1]
         self._last_known_local_role = None
         self._last_cleon_roster_snapshot = None
+        self._cleon_roster_offset_retry_after = 0.0
+        self._playerstate_role_cache = {}
         self._last_nontrivial_player_array_count = 0
         self._player_array_drop_streak = 0
         self._last_remote_rendered_count = 0
@@ -1276,28 +1282,36 @@ class MecchaESP:
             return None
 
         offsets = getattr(self, "_cleon_roster_offsets", None)
-        if offsets is False:
-            # A missing Blueprint field used to trigger a full 512-field FName
-            # walk every 30 Hz collection.  The class layout cannot change while
-            # this process is running, so keep the safe PlayerArray/Dead fallback.
-            return _recent_snapshot("resolver-unavailable")
         if offsets is None:
+            retry_after = getattr(
+                self, "_cleon_roster_offset_retry_after", 0.0)
+            if now < retry_after:
+                return _recent_snapshot("resolver-cooldown")
             try:
-                hunter_offset = self.resolver.resolve(
-                    "BP_GameState_cLeon_C", "HuntersPlayerState")
-                survivor_offset = self.resolver.resolve(
-                    "BP_GameState_cLeon_C", "LiveSurvivors_PlayerState")
-                phase_offset = self.resolver.resolve(
-                    "BP_GameState_cLeon_C", "MainGamePhase")
+                game_state_class = self._object_class(gamestate)
+                hunter_offset = self.resolver.resolve_from_class(
+                    game_state_class, "HuntersPlayerState")
+                survivor_offset = self.resolver.resolve_from_class(
+                    game_state_class, "LiveSurvivors_PlayerState")
+                phase_offset = self.resolver.resolve_from_class(
+                    game_state_class, "MainGamePhase")
             except Exception:
-                self._cleon_roster_offsets = False
+                self._cleon_roster_offset_retry_after = (
+                    now + self.CLEON_ROSTER_OFFSET_RETRY_SECONDS)
                 return _recent_snapshot("resolver-unavailable")
-            if (hunter_offset is None or survivor_offset is None
-                    or phase_offset is None):
-                self._cleon_roster_offsets = False
+            resolved_offsets = (hunter_offset, survivor_offset, phase_offset)
+            if (not game_state_class
+                    or any(value is None or isinstance(value, bool)
+                           or not isinstance(value, int)
+                           or not 0 < value < 0x10000
+                           for value in resolved_offsets)
+                    or len(set(resolved_offsets)) != len(resolved_offsets)):
+                self._cleon_roster_offset_retry_after = (
+                    now + self.CLEON_ROSTER_OFFSET_RETRY_SECONDS)
                 return _recent_snapshot("resolver-unavailable")
-            offsets = (hunter_offset, survivor_offset, phase_offset)
+            offsets = resolved_offsets
             self._cleon_roster_offsets = offsets
+            self._cleon_roster_offset_retry_after = 0.0
         else:
             cached = getattr(self, "_last_cleon_roster_snapshot", None)
             if (cached is not None and cached[0] == gamestate
@@ -2003,24 +2017,41 @@ class MecchaESP:
                 self.pm, local_ps + self.offsets["APlayerState::PawnPrivate"])
         cleon_mode = self._object_is_a(gamestate, "BP_GameState_cLeon_C")
         rosters = self._cleon_live_rosters(gamestate) if cleon_mode else None
+        role_cache = getattr(self, "_playerstate_role_cache", None)
+        if role_cache is None:
+            role_cache = {}
+            self._playerstate_role_cache = role_cache
+        class_local_role = self.character_role(local_pawn)
         local_role = (
-            self.character_role(local_pawn)
+            class_local_role
+            or role_cache.get(local_ps)
             or getattr(self, "_last_known_local_role", None))
         hunters = frozenset()
         live_survivors = frozenset()
         main_phase = None
         if rosters is not None:
             hunters, live_survivors, main_phase = rosters
-            if local_ps:
-                if local_ps in hunters:
-                    local_role = "hunter"
-                    self._last_known_local_role = local_role
-                elif local_ps in live_survivors:
-                    local_role = "survivor"
-                    self._last_known_local_role = local_role
-        roster_authoritative = (
+        # Live observation shows phase 0 can expose two valid but empty arrays.
+        # Treating that transition as authoritative removes every player.  In
+        # phases 1/2 a non-empty Hunter roster is stable and role-defining.
+        roster_roles_available = (
             cleon_mode and rosters is not None
-            and main_phase in (0, 1, 2))
+            and main_phase in (1, 2) and bool(hunters))
+        local_roster_member = bool(
+            local_ps and local_ps in (hunters | live_survivors))
+        if roster_roles_available and local_ps:
+            if local_ps in hunters:
+                local_role = "hunter"
+            elif local_ps in live_survivors:
+                local_role = "survivor"
+        if local_role in ("hunter", "survivor"):
+            self._last_known_local_role = local_role
+            if local_ps:
+                role_cache[local_ps] = local_role
+        # Membership still supplies role colors when the local player is between
+        # Pawns, but only a roster that also accounts for the local PlayerState may
+        # declare an absent remote PlayerState dead.
+        roster_authoritative = roster_roles_available and local_roster_member
         self._last_local_role = local_role
         self._last_actor_roles = {}
         if local_pawn:
@@ -2060,17 +2091,20 @@ class MecchaESP:
                 stats["state_unreadable"] += 1
                 return False
 
-            role = self.character_role(pawn)
-            if roster_authoritative:
+            role = self.character_role(pawn) or role_cache.get(playerstate)
+            if roster_roles_available:
                 if playerstate in hunters:
                     role = "hunter"
                 elif playerstate in live_survivors:
                     role = "survivor"
-                else:
+                elif roster_authoritative:
                     # During an active phase these replicated arrays define the
                     # Hunter role set and the explicitly live Survivor set.
                     stats["dead_filtered"] += 1
                     return False
+
+            if role in ("hunter", "survivor"):
+                role_cache[playerstate] = role
 
             self._last_actor_roles[pawn] = role
             if local_role == "hunter" and role == "hunter":
@@ -3541,6 +3575,15 @@ class Overlay(QWidget):
         self.stop_worker()
         super().closeEvent(event)
 
+    @staticmethod
+    def _player_color(config, player):
+        """Choose a role color without depending on transient local-role state."""
+        if player.is_local:
+            return config.local_color
+        if player.role == "hunter":
+            return config.hunter_color
+        return config.enemy_color
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -3597,12 +3640,7 @@ class Overlay(QWidget):
         skeleton_poses = 0
         skeleton_lines = 0
         for player in frame.players:
-            if player.is_local:
-                color = self.config.local_color
-            elif (frame.local_role == "survivor" and player.role == "hunter"):
-                color = self.config.hunter_color
-            else:
-                color = self.config.enemy_color
+            color = Overlay._player_color(self.config, player)
             rect, box_source = self._project_box(
                 player, cam, w, h, projector)
             center_screen = projector.project(player.position)
