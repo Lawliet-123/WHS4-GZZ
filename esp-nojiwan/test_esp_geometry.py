@@ -1807,7 +1807,7 @@ class PlayerFilterTests(unittest.TestCase):
         reader.pm = memory
         reader.offsets = {}
         reader._layout_warnings = []
-        reader._reflected_offset_miss_cache = set()
+        reader._reflected_offset_miss_cache = {}
         actor, pawn_class, field = 0x70000, 0x80000, 0x90000
         runtime_dead_offset = 0x5B2
 
@@ -1839,11 +1839,28 @@ class PlayerFilterTests(unittest.TestCase):
             def find_class(name):
                 return 0
 
-        reader.resolver = esp.OffsetResolver(memory, Objects())
+        base_resolver = esp.OffsetResolver(memory, Objects())
+
+        class FlakyResolver:
+            def __init__(self):
+                self.calls = 0
+
+            def resolve_from_class(self, cls, property_name):
+                self.calls += 1
+                if self.calls == 1:
+                    return None
+                return base_resolver.resolve_from_class(cls, property_name)
+
+        reader.resolver = FlakyResolver()
         reader._object_class = lambda obj: pawn_class
         reader._object_is_a = lambda obj, class_name: True
 
-        self.assertFalse(reader.character_dead_state(actor))
+        with mock.patch.object(
+                esp.time, "monotonic", side_effect=(10.0, 10.5, 11.1)):
+            self.assertIsNone(reader.character_dead_state(actor))
+            self.assertIsNone(reader.character_dead_state(actor))
+            self.assertFalse(reader.character_dead_state(actor))
+        self.assertEqual(reader.resolver.calls, 2)
         self.assertEqual(
             reader.offsets["BP_FirstPersonCharacter_Main_C::Dead"],
             runtime_dead_offset)

@@ -751,6 +751,7 @@ class MecchaESP:
     SKELETON_PROFILE_MISS_RETRY_SECONDS = 2.0
     CLEON_ROSTER_REFRESH_SECONDS = 0.10
     CONTEXT_POINTER_REFRESH_SECONDS = 0.50
+    REFLECTED_OFFSET_RETRY_SECONDS = 1.0
     # (SizeOfImage, TimeDateStamp, CheckSum).  The second entry is the current
     # Steam executable; the relevant UE 5.6 component layouts were rechecked in
     # that binary before enabling native (non-reflected) skeleton offsets.
@@ -833,7 +834,7 @@ class MecchaESP:
         self._configure_build_offsets()
         self._isa_cache = {}
         self._object_class_cache = {}
-        self._reflected_offset_miss_cache = set()
+        self._reflected_offset_miss_cache = {}
         self._character_component_cache = {}
         self._actor_root_cache = {}
         self._skeleton_binding_cache = {}
@@ -1127,17 +1128,24 @@ class MecchaESP:
             cls = self._object_class(obj)
             miss_cache = getattr(self, "_reflected_offset_miss_cache", None)
             if miss_cache is None:
-                miss_cache = set()
+                miss_cache = {}
                 self._reflected_offset_miss_cache = miss_cache
             miss_key = (cls, key)
-            if cls and miss_key not in miss_cache:
+            now = time.monotonic()
+            if cls and now >= miss_cache.get(miss_key, 0.0):
                 try:
                     resolved = self.resolver.resolve_from_class(
                         cls, mapping[1])
                 except Exception:
                     resolved = None
                 if resolved is None:
-                    miss_cache.add(miss_key)
+                    # A process read can fail transiently while UE updates or
+                    # streams metadata.  Throttle retries, but never turn one
+                    # miss into a whole-match Players: 0 failure.
+                    miss_cache[miss_key] = (
+                        now + self.REFLECTED_OFFSET_RETRY_SECONDS)
+                else:
+                    miss_cache.pop(miss_key, None)
         else:
             try:
                 resolved = self.resolver.resolve(*mapping)
