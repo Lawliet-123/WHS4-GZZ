@@ -147,6 +147,46 @@ class TransformTests(unittest.TestCase):
         memory.put(component + 0x1A0, b"\x00")
         self.assertIsNone(reader._component_world_transform_snapshot(component))
 
+    def test_reflected_attachment_chain_reconstructs_world_transform(self):
+        memory = DenseMemory()
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader.pm = memory
+        reader.offsets = {
+            "USceneComponent::AttachParent": 0xC8,
+            "USceneComponent::AttachSocketName": 0xD0,
+            "USceneComponent::RelativeLocation": 0x140,
+            "USceneComponent::RelativeRotation": 0x158,
+            "USceneComponent::RelativeScale3D": 0x170,
+            "USceneComponent::TransformFlags": 0x1A0,
+        }
+        reader._object_is_a = lambda obj, class_name: True
+        child, parent = 0x10000, 0x20000
+        memory.put(child + 0xC8, struct.pack("<Q", parent))
+        memory.put(child + 0x140, struct.pack("<3d", 10.0, 0.0, 0.0))
+        memory.put(child + 0x158, struct.pack("<3d", 0.0, 0.0, 0.0))
+        memory.put(child + 0x170, struct.pack("<3d", 1.0, 1.0, 1.0))
+        memory.put(parent + 0xC8, struct.pack("<Q", 0))
+        memory.put(parent + 0x140, struct.pack("<3d", 100.0, 200.0, 300.0))
+        memory.put(parent + 0x158, struct.pack("<3d", 0.0, 90.0, 0.0))
+        memory.put(parent + 0x170, struct.pack("<3d", 1.0, 1.0, 1.0))
+
+        snapshot = reader._component_world_transform_snapshot(child)
+        self.assertIsNotNone(snapshot)
+        for actual, expected in zip(
+                snapshot[1][2], (100.0, 210.0, 300.0)):
+            self.assertAlmostEqual(actual, expected)
+
+        # An attached component using any partial absolute transform must fail
+        # closed instead of being composed with the wrong UE semantics.
+        memory.put(child + 0x1A0, b"\x04")
+        self.assertIsNone(reader._component_world_transform_snapshot(child))
+        memory.put(child + 0x1A0, b"\x00")
+        memory.put(child + 0xD0, struct.pack("<II", 42, 0))
+        self.assertIsNone(reader._component_world_transform_snapshot(child))
+        memory.put(child + 0xD0, bytes(8))
+        memory.put(child + 0x170, struct.pack("<3d", 1.0, 2.0, 1.0))
+        self.assertIsNone(reader._component_world_transform_snapshot(child))
+
 
 class LayoutTests(unittest.TestCase):
     def test_pe_fingerprint_parser(self):
@@ -169,6 +209,34 @@ class LayoutTests(unittest.TestCase):
         self.assertIn(
             (0x0A3FB000, 0x018D3C6F, 0x0A046E92),
             esp.MecchaESP.SUPPORTED_BUILD_FINGERPRINTS)
+
+    def test_unknown_build_uses_reflection_without_native_fallbacks(self):
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader._advanced_build_ok = False
+        reader._build_fingerprint = (0x0A3FB000, 0x4F2390A3, 0x0A03AB06)
+        reader.offsets = {}
+        reader._layout_warnings = []
+
+        class Resolver:
+            @staticmethod
+            def resolve(class_name, property_name):
+                if (class_name, property_name) == (
+                        "SkinnedMeshComponent", "SkinnedAsset"):
+                    return 0x5A0
+                return None
+
+        reader.resolver = Resolver()
+        reader._configure_build_offsets()
+
+        self.assertEqual(
+            reader.offsets["USkinnedMeshComponent::SkinnedAsset"], 0x5A0)
+        self.assertNotIn(
+            "BP_FirstPersonCharacter_Main_C::Dead", reader.offsets)
+        for key in esp.NATIVE_BUILD_OFFSET_KEYS:
+            self.assertNotIn(key, reader.offsets)
+        self.assertTrue(any(
+            "unsupported PE fingerprint" in warning
+            for warning in reader._layout_warnings))
 
     def test_tarray_max_is_at_offset_c(self):
         memory = Memory()
@@ -348,6 +416,28 @@ class SkeletonSnapshotTests(unittest.TestCase):
             0x50000, (100.0, 200.0, 300.0))
         self.assertIsNotNone(pose)
         self.assertEqual(memory.read_calls, 5)
+        self.assertEqual(reader._skeleton_source_counts, {"sdk-cache": 1})
+
+    def test_reflected_sdk_pose_path_is_not_blocked_by_build_flag(self):
+        reader, memory, mesh, _, _ = self._bulk_pose_reader()
+        reader._advanced_build_ok = False
+        reader.offsets.pop("USceneComponent::ComponentToWorld")
+        reader.offsets.update({
+            "USceneComponent::AttachParent": 0xC8,
+            "USceneComponent::AttachSocketName": 0xD0,
+            "USceneComponent::RelativeLocation": 0x140,
+            "USceneComponent::RelativeRotation": 0x158,
+            "USceneComponent::RelativeScale3D": 0x170,
+        })
+        reader._object_is_a = lambda obj, class_name: True
+        memory.put(mesh + 0xC8, struct.pack("<Q", 0))
+        memory.put(mesh + 0x140, struct.pack(
+            "<3d", 100.0, 200.0, 300.0))
+        memory.put(mesh + 0x158, struct.pack("<3d", 0.0, 0.0, 0.0))
+        memory.put(mesh + 0x170, struct.pack("<3d", 1.0, 1.0, 1.0))
+        pose = reader.read_skeleton_pose(
+            0x50000, (100.0, 200.0, 300.0))
+        self.assertIsNotNone(pose)
         self.assertEqual(reader._skeleton_source_counts, {"sdk-cache": 1})
 
     def test_sdk_cache_rejects_payload_changed_during_read(self):
@@ -1710,6 +1800,53 @@ class PlayerFilterTests(unittest.TestCase):
         self.assertTrue(reader.character_dead_state(actor))
         memory.put(actor + 0x5AA, b"\x02")
         self.assertIsNone(reader.character_dead_state(actor))
+
+    def test_dead_flag_resolves_lazily_from_loaded_pawn_class(self):
+        memory = Memory()
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader.pm = memory
+        reader.offsets = {}
+        reader._layout_warnings = []
+        reader._reflected_offset_miss_cache = set()
+        actor, pawn_class, field = 0x70000, 0x80000, 0x90000
+        runtime_dead_offset = 0x5B2
+
+        memory.put(
+            pawn_class + esp.OFFSETS["UStruct::ChildProperties"],
+            struct.pack("<Q", field))
+        memory.put(
+            pawn_class + esp.OFFSETS["UStruct::SuperStruct"],
+            struct.pack("<Q", 0))
+        memory.put(
+            field + esp.OFFSETS["FField::NamePrivate"],
+            struct.pack("<I", 7))
+        memory.put(
+            field + esp.OFFSETS["FField::Next"], struct.pack("<Q", 0))
+        memory.put(
+            field + esp.OFFSETS["FProperty::Offset_Internal"],
+            struct.pack("<I", runtime_dead_offset))
+        memory.put(actor + runtime_dead_offset, b"\x00")
+
+        class Names:
+            @staticmethod
+            def resolve(value):
+                return "Dead" if value == 7 else None
+
+        class Objects:
+            fnames = Names()
+
+            @staticmethod
+            def find_class(name):
+                return 0
+
+        reader.resolver = esp.OffsetResolver(memory, Objects())
+        reader._object_class = lambda obj: pawn_class
+        reader._object_is_a = lambda obj, class_name: True
+
+        self.assertFalse(reader.character_dead_state(actor))
+        self.assertEqual(
+            reader.offsets["BP_FirstPersonCharacter_Main_C::Dead"],
+            runtime_dead_offset)
 
     def test_role_classifier_uses_cooked_class_family_names(self):
         memory = Memory()

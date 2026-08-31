@@ -279,6 +279,19 @@ class OffsetResolver:
             depth += 1
         return None
 
+    def resolve_from_class(self, cls, prop_name):
+        """Resolve a reflected field from an already loaded class hierarchy."""
+        seen = set()
+        current = cls
+        while current and current not in seen:
+            seen.add(current)
+            offset = self._resolve_on_class(current, prop_name)
+            if offset is not None:
+                return offset
+            current = rp(
+                self.pm, current + self.cache["UStruct::SuperStruct"])
+        return None
+
     def resolve(self, class_name, prop_name):
         key = f"{class_name}::{prop_name}"
         if key in self.cache:
@@ -286,15 +299,7 @@ class OffsetResolver:
         cls = self.objects.find_class(class_name)
         if not cls:
             return None
-        offset = self._resolve_on_class(cls, prop_name)
-        seen = {cls}
-        while offset is None:
-            super_cls = rp(self.pm, cls + self.cache["UStruct::SuperStruct"])
-            if not super_cls or super_cls in seen:
-                break
-            seen.add(super_cls)
-            cls = super_cls
-            offset = self._resolve_on_class(super_cls, prop_name)
+        offset = self.resolve_from_class(cls, prop_name)
         if offset is not None:
             self.cache[key] = offset
         return offset
@@ -796,6 +801,8 @@ class MecchaESP:
         "APlayerCameraManager::CameraCachePrivate": ("PlayerCameraManager", "CameraCachePrivate"),
         "AActor::RootComponent": ("Actor", "RootComponent"),
         "USceneComponent::AttachParent": ("SceneComponent", "AttachParent"),
+        "USceneComponent::AttachSocketName":
+            ("SceneComponent", "AttachSocketName"),
         "USceneComponent::RelativeLocation": ("SceneComponent", "RelativeLocation"),
         "USceneComponent::RelativeRotation": ("SceneComponent", "RelativeRotation"),
         "USceneComponent::RelativeScale3D": ("SceneComponent", "RelativeScale3D"),
@@ -823,29 +830,10 @@ class MecchaESP:
         self.resolver = OffsetResolver(self.pm, self.objects)
         self.offsets = self.resolver.resolve_map(self.OFFSET_MAP)
         self._layout_warnings = []
-        if not self._advanced_build_ok:
-            self._layout_warnings.append(
-                f"unsupported PE fingerprint: {self._build_fingerprint!r}")
-        else:
-            for key, (class_name, property_name) in VERIFIED_PROPERTY_MAP.items():
-                expected = BUILD_OFFSETS[key]
-                resolved = self.resolver.resolve(class_name, property_name)
-                if resolved is not None and resolved != expected:
-                    self._layout_warnings.append(
-                        f"{key}: runtime {resolved:#x} != SDK {expected:#x}")
-                    continue
-                if resolved is None:
-                    self._layout_warnings.append(
-                        f"{key}: runtime unresolved; using exact SDK {expected:#x}")
-                # A property may be unavailable before its Blueprint class loads;
-                # the exact-build fallback is still guarded by UObject types.
-                self.offsets[key] = expected
-            # These fields are native/non-reflected and were verified directly
-            # in the fingerprinted shipping executable.
-            for key in NATIVE_BUILD_OFFSET_KEYS:
-                self.offsets[key] = BUILD_OFFSETS[key]
+        self._configure_build_offsets()
         self._isa_cache = {}
         self._object_class_cache = {}
+        self._reflected_offset_miss_cache = set()
         self._character_component_cache = {}
         self._actor_root_cache = {}
         self._skeleton_binding_cache = {}
@@ -869,6 +857,49 @@ class MecchaESP:
         self.gengine = self.objects.find_first_instance("GameEngine")
         if not self.gengine:
             raise RuntimeError("Could not find GEngine instance")
+
+    def _add_layout_warning(self, message):
+        warnings = getattr(self, "_layout_warnings", None)
+        if warnings is None:
+            warnings = []
+            self._layout_warnings = warnings
+        if message not in warnings:
+            warnings.append(message)
+
+    def _configure_build_offsets(self):
+        """Install reflected layouts independently from native build layouts."""
+        if not self._advanced_build_ok:
+            self._add_layout_warning(
+                f"unsupported PE fingerprint: {self._build_fingerprint!r}")
+
+        # FProperty::Offset_Internal is runtime metadata.  These named fields
+        # remain safe to use on a new executable build when reflection resolves
+        # them; only unresolved fields on an exact known build use SDK constants.
+        for key, (class_name, property_name) in VERIFIED_PROPERTY_MAP.items():
+            expected = BUILD_OFFSETS[key]
+            try:
+                resolved = self.resolver.resolve(class_name, property_name)
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                self.offsets[key] = resolved
+                if resolved != expected:
+                    self._add_layout_warning(
+                        f"{key}: runtime {resolved:#x} != SDK {expected:#x}")
+                continue
+            if self._advanced_build_ok:
+                self.offsets[key] = expected
+                self._add_layout_warning(
+                    f"{key}: runtime unresolved; using exact SDK {expected:#x}")
+            else:
+                self._add_layout_warning(
+                    f"{key}: runtime unresolved; waiting for loaded class")
+
+        # Padding/native fields have no FProperty metadata.  Keep them behind
+        # fingerprints that were checked against the shipping executable.
+        if self._advanced_build_ok:
+            for key in NATIVE_BUILD_OFFSET_KEYS:
+                self.offsets[key] = BUILD_OFFSETS[key]
 
     def _scan_guobject_array(self):
         scanner = PatternScanner(self.pm, self.MODULE_NAME)
@@ -935,7 +966,8 @@ class MecchaESP:
         for cache_name in (
                 "_character_component_cache", "_actor_root_cache",
                 "_skeleton_binding_cache", "_skeleton_profile_miss_cache",
-                "_capsule_dimensions_cache", "_object_class_cache"):
+                "_capsule_dimensions_cache", "_object_class_cache",
+                "_reflected_offset_miss_cache"):
             cache = getattr(self, cache_name, None)
             if cache is not None:
                 cache.clear()
@@ -1081,6 +1113,50 @@ class MecchaESP:
         """Check an object's UClass chain instead of trusting name substrings."""
         return self._class_is_a(self._object_class(obj), target_class_name)
 
+    def _resolve_reflected_offset(self, key, obj=0):
+        """Resolve a named field lazily once its Blueprint class is loaded."""
+        existing = self.offsets.get(key)
+        if existing is not None:
+            return existing
+        mapping = VERIFIED_PROPERTY_MAP.get(key)
+        if mapping is None:
+            return None
+
+        resolved = None
+        if obj:
+            cls = self._object_class(obj)
+            miss_cache = getattr(self, "_reflected_offset_miss_cache", None)
+            if miss_cache is None:
+                miss_cache = set()
+                self._reflected_offset_miss_cache = miss_cache
+            miss_key = (cls, key)
+            if cls and miss_key not in miss_cache:
+                try:
+                    resolved = self.resolver.resolve_from_class(
+                        cls, mapping[1])
+                except Exception:
+                    resolved = None
+                if resolved is None:
+                    miss_cache.add(miss_key)
+        else:
+            try:
+                resolved = self.resolver.resolve(*mapping)
+            except Exception:
+                resolved = None
+
+        # FProperty offsets are unsigned 32-bit values, but rejecting implausibly
+        # large class offsets keeps a damaged metadata walk from being cached.
+        if (resolved is None or isinstance(resolved, bool)
+                or not isinstance(resolved, int)
+                or not 0 < resolved < 0x10000):
+            return None
+        self.offsets[key] = resolved
+        expected = BUILD_OFFSETS.get(key)
+        if expected is not None and resolved != expected:
+            self._add_layout_warning(
+                f"{key}: lazy runtime {resolved:#x} != SDK {expected:#x}")
+        return resolved
+
     def character_role(self, actor):
         """Return the cooked cLeon role family for a character, if present."""
         cls = self._object_class(actor)
@@ -1097,7 +1173,8 @@ class MecchaESP:
         if (not assume_character
                 and not self._object_is_a(actor, "BP_FirstPersonCharacter_Main_C")):
             return None
-        offset = self.offsets.get("BP_FirstPersonCharacter_Main_C::Dead")
+        offset = self._resolve_reflected_offset(
+            "BP_FirstPersonCharacter_Main_C::Dead", actor)
         if offset is None:
             return None
         try:
@@ -1217,7 +1294,9 @@ class MecchaESP:
             self, actor, offset_key, component_class, refresh=False):
         if not actor:
             return 0
-        offset = self.offsets.get(offset_key)
+        if not self._object_is_a(actor, "BP_FirstPersonCharacter_Main_C"):
+            return 0
+        offset = self._resolve_reflected_offset(offset_key, actor)
         if offset is None:
             return 0
         cache_key = (actor, offset_key)
@@ -1229,9 +1308,6 @@ class MecchaESP:
         if cached_component and not refresh:
             return cached_component
         component = rp(self.pm, actor + offset)
-        if not self._object_is_a(actor, "BP_FirstPersonCharacter_Main_C"):
-            component_cache.pop(cache_key, None)
-            return 0
         if not component or not self._object_is_a(component, component_class):
             component_cache.pop(cache_key, None)
             return 0
@@ -1257,21 +1333,122 @@ class MecchaESP:
         if not component or not self._object_is_a(component, "SceneComponent"):
             return None
         try:
-            attach_parent = rp(
-                self.pm, component + self.offsets["USceneComponent::AttachParent"])
-            location = rvec3(
-                self.pm, component + self.offsets["USceneComponent::RelativeLocation"])
-            rotation = rvec3(
-                self.pm, component + self.offsets["USceneComponent::RelativeRotation"])
-            scale = rvec3(
-                self.pm, component + self.offsets["USceneComponent::RelativeScale3D"])
-        except (KeyError, TypeError):
+            attach_offset = self.offsets["USceneComponent::AttachParent"]
+            socket_offset = self.offsets["USceneComponent::AttachSocketName"]
+            location_offset = self.offsets["USceneComponent::RelativeLocation"]
+            rotation_offset = self.offsets["USceneComponent::RelativeRotation"]
+            scale_offset = self.offsets["USceneComponent::RelativeScale3D"]
+            flags_offset = self.offsets["USceneComponent::TransformFlags"]
+            start = min(attach_offset, socket_offset, location_offset, rotation_offset,
+                        scale_offset, flags_offset)
+            end = max(attach_offset + 8, socket_offset + 8, location_offset + 24,
+                      rotation_offset + 24, scale_offset + 24,
+                      flags_offset + 1)
+            block = self.pm.read_bytes(component + start, end - start)
+            attach_parent = struct.unpack_from(
+                "<Q", block, attach_offset - start)[0]
+            attach_socket = block[socket_offset - start:socket_offset - start + 8]
+            location = struct.unpack_from(
+                "<3d", block, location_offset - start)
+            rotation = struct.unpack_from(
+                "<3d", block, rotation_offset - start)
+            scale = struct.unpack_from(
+                "<3d", block, scale_offset - start)
+            flags = block[flags_offset - start]
+        except Exception:
             return None
         if (not finite_vector(location) or not finite_vector(rotation, 1.0e6)
                 or not finite_vector(scale, 1.0e4)
                 or any(abs(value) < 1.0e-6 for value in scale)):
             return None
+        # The three absolute-transform flags are bits 2..4 in the reflected
+        # bAbsoluteLocation byte.  Their partial-parent semantics need the
+        # engine's native transform path; reject them instead of approximating.
+        if attach_parent:
+            # A socket attachment also needs the parent's socket/bone transform;
+            # composing only SceneComponent relatives would be incorrect.
+            if attach_socket != bytes(8) or flags & 0x1C:
+                return None
         return attach_parent, location, rotation, scale
+
+    @staticmethod
+    def _relative_transform_matrix(location, rotation, scale):
+        forward, right, up = rotation_to_axes(rotation)
+        matrix = (
+            tuple(value * scale[0] for value in forward) + (0.0,),
+            tuple(value * scale[1] for value in right) + (0.0,),
+            tuple(value * scale[2] for value in up) + (0.0,),
+            tuple(location) + (1.0,),
+        )
+        if not finite_vector(
+                (value for row in matrix for value in row), 1.0e8):
+            return None
+        return matrix
+
+    def _component_world_transform_from_chain(self, component):
+        """Compose reflected relative transforms when native padding moved."""
+        if not component:
+            return None
+
+        def _read_chain():
+            current = component
+            seen = set()
+            chain = []
+            for _ in range(16):
+                if not current or current in seen:
+                    return None
+                seen.add(current)
+                relative = self._component_relative_transform(current)
+                if relative is None:
+                    return None
+                parent, location, rotation, scale = relative
+                # Matrix composition is equivalent to UE FTransform composition
+                # for positive uniform scales.  Reject non-uniform/mirrored
+                # components, which could otherwise introduce unsupported shear.
+                tolerance = 1.0e-6 * max(1.0, *(abs(value) for value in scale))
+                if (any(value <= 0.0 for value in scale)
+                        or max(scale) - min(scale) > tolerance):
+                    return None
+                chain.append((current, parent, location, rotation, scale))
+                if not parent:
+                    return tuple(chain)
+                current = parent
+            return None
+
+        # Require one complete, adjacent repeat so a game-thread attachment or
+        # transform update cannot mix child and parent generations.
+        chain = None
+        for _ in range(2):
+            before = _read_chain()
+            after = _read_chain()
+            if before is not None and before == after:
+                chain = before
+                break
+        if chain is None:
+            return None
+
+        local_to_world = None
+        for _current, _parent, location, rotation, scale in chain:
+            local_matrix = self._relative_transform_matrix(
+                location, rotation, scale)
+            if local_matrix is None:
+                return None
+            local_to_world = (
+                local_matrix if local_to_world is None
+                else multiply_matrix4(local_to_world, local_matrix))
+
+        inverse = invert_matrix4(local_to_world)
+        if inverse is None:
+            return None
+        translation = tuple(local_to_world[3][:3])
+        world_scale = tuple(math.sqrt(sum(
+            local_to_world[row][column] ** 2 for column in range(3)))
+            for row in range(3))
+        if (not finite_vector(translation)
+                or not finite_vector(world_scale, 1.0e4)
+                or any(value < 1.0e-6 for value in world_scale)):
+            return None
+        return tuple(chain), (local_to_world, inverse, translation, world_scale)
 
     def _root_world_transform(self, actor):
         if not actor:
@@ -1343,31 +1520,36 @@ class MecchaESP:
         """Read one validated, engine-updated ComponentToWorld FTransform."""
         transform_offset = self.offsets.get("USceneComponent::ComponentToWorld")
         flags_offset = self.offsets.get("USceneComponent::TransformFlags")
-        if transform_offset is None or flags_offset is None:
-            return None
-        for _ in range(2):
-            try:
-                start = min(flags_offset, transform_offset)
-                end = max(flags_offset + 1, transform_offset + 0x60)
-                # Both fields are close in this build.  One bulk RPM call avoids
-                # four cross-process calls per component.  The small-read fallback
-                # keeps synthetic memories and future layouts supported.
+        if transform_offset is not None and flags_offset is not None:
+            for _ in range(2):
                 try:
-                    block = self.pm.read_bytes(component + start, end - start)
-                    flags = block[flags_offset - start:flags_offset - start + 1]
-                    raw = block[transform_offset - start:transform_offset - start + 0x60]
+                    start = min(flags_offset, transform_offset)
+                    end = max(flags_offset + 1, transform_offset + 0x60)
+                    # Both fields are close in known builds.  One bulk RPM call
+                    # avoids four cross-process calls per component.
+                    try:
+                        block = self.pm.read_bytes(component + start, end - start)
+                        flags = block[
+                            flags_offset - start:flags_offset - start + 1]
+                        raw = block[
+                            transform_offset - start:transform_offset - start + 0x60]
+                    except Exception:
+                        flags = self.pm.read_bytes(component + flags_offset, 1)
+                        raw = self.pm.read_bytes(
+                            component + transform_offset, 0x60)
                 except Exception:
-                    flags = self.pm.read_bytes(component + flags_offset, 1)
-                    raw = self.pm.read_bytes(component + transform_offset, 0x60)
-            except Exception:
-                return None
-            # bComponentToWorldUpdated is bit 0 in this exact native layout.
-            if len(flags) != 1 or not flags[0] & 0x01 or len(raw) != 0x60:
-                continue
-            decoded = decode_ftransform(raw)
-            if decoded is not None:
-                return raw, decoded
-        return None
+                    break
+                # bComponentToWorldUpdated is bit 0 in this exact native layout.
+                if len(flags) != 1 or not flags[0] & 0x01 or len(raw) != 0x60:
+                    continue
+                decoded = decode_ftransform(raw)
+                if decoded is not None:
+                    return raw, decoded
+
+        # ComponentToWorld lives in native padding and is deliberately absent
+        # on an unverified executable.  All inputs below are reflected named
+        # fields, so composing the attachment chain remains build-independent.
+        return self._component_world_transform_from_chain(component)
 
     def _skeleton_profile(self, mesh):
         mesh_asset_offset = self.offsets.get("USkinnedMeshComponent::SkinnedAsset")
@@ -1452,8 +1634,6 @@ class MecchaESP:
         primary source.  The fingerprint-gated native double buffer remains a
         fallback, and only the selector's current buffer is ever accepted.
         """
-        if not getattr(self, "_advanced_build_ok", True):
-            return self._skeleton_fail("build")
         mesh = self._character_mesh(actor)
         if not mesh:
             return self._skeleton_fail("no_mesh")
