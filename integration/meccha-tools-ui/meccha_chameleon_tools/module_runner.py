@@ -4,12 +4,17 @@ from meccha_chameleon_tools.module_adapters import (
     get_module_display_status,
 )
 
+from meccha_chameleon_tools.module_registry import (
+    MODULES,
+)
+
 
 # ============================================================
 # Simulated module effects
 # ============================================================
 
 TEST_EFFECTS = {
+
     "whistle-spoofing": {
         "effect": "whistle_spoofing",
         "description": (
@@ -27,7 +32,14 @@ TEST_EFFECTS = {
     "auto-paint": {
         "effect": "auto_paint",
         "description": (
-            "Simulated auto paint enabled."
+            "Simulated Auto Paint V1 enabled."
+        ),
+    },
+
+    "auto-paint-ver2": {
+        "effect": "auto_paint_v2",
+        "description": (
+            "Simulated Auto Paint V2 enabled."
         ),
     },
 
@@ -48,7 +60,7 @@ TEST_EFFECTS = {
     "hide-anywhere": {
         "effect": "hide_anywhere",
         "description": (
-            "Simulated hide-anywhere state enabled."
+            "Simulated Hide Anywhere state enabled."
         ),
     },
 
@@ -84,23 +96,33 @@ class ModuleRunner:
     실제 MECCHA CHAMELEON 프로세스에는
     주입, 후킹, 메모리 변경 등을 수행하지 않음.
 
-    선택된 모듈의 동작 상태만 시뮬레이션함.
+    선택된 모듈의 상태만 시뮬레이션함.
     """
 
     def __init__(self):
 
         self.states = {}
 
-        for module_id in TEST_EFFECTS:
+        for module in MODULES:
+
+            module_id = (
+                module["id"]
+            )
+
+            effect_info = (
+                TEST_EFFECTS.get(
+                    module_id
+                )
+            )
 
             self.states[
                 module_id
             ] = {
                 "active": False,
                 "effect": (
-                    TEST_EFFECTS[
-                        module_id
-                    ]["effect"]
+                    effect_info["effect"]
+                    if effect_info
+                    else None
                 ),
             }
 
@@ -119,7 +141,10 @@ class ModuleRunner:
             )
         )
 
-        if display_status != "READY":
+        if (
+            display_status
+            != "READY"
+        ):
 
             return RunnerResult(
                 module_id=module_id,
@@ -207,7 +232,10 @@ class ModuleRunner:
         module_id
     ):
 
-        if module_id not in self.states:
+        if (
+            module_id
+            not in self.states
+        ):
 
             return RunnerResult(
                 module_id=module_id,
@@ -272,19 +300,27 @@ class ModuleRunner:
             return False
 
         return bool(
-            state["active"]
+            state[
+                "active"
+            ]
         )
 
-    def get_active_modules(self):
+    def get_active_modules(
+        self
+    ):
 
         return [
             module_id
             for module_id, state
             in self.states.items()
-            if state["active"]
+            if state[
+                "active"
+            ]
         ]
 
-    def get_snapshot(self):
+    def get_snapshot(
+        self
+    ):
 
         return {
             module_id: dict(
@@ -315,12 +351,9 @@ def build_runner_summary(
     unavailable = [
         result.module_id
         for result in results
-        if (
-            result.status
-            in (
-                "UNAVAILABLE",
-                "UNSUPPORTED",
-            )
+        if result.status in (
+            "UNAVAILABLE",
+            "UNSUPPORTED",
         )
     ]
 
@@ -361,12 +394,14 @@ def build_runner_summary(
 
 def main():
 
-    runner = ModuleRunner()
+    runner = (
+        ModuleRunner()
+    )
 
+    # Registry에 등록된 모든 모듈을 테스트함.
     test_modules = [
-        "esp",
-        "godmode",
-        "noclip",
+        module["id"]
+        for module in MODULES
     ]
 
     results = (
@@ -376,9 +411,11 @@ def main():
     )
 
     print()
+
     print(
         "MECCHA MODULE TEST BACKEND"
     )
+
     print(
         "=" * 60
     )

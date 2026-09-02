@@ -6,6 +6,7 @@ MODULES = [
         "path": "modules/whistle-spoofing",
         "status": "ready",
     },
+
     {
         "id": "aimbot",
         "name": "aimbot",
@@ -13,6 +14,7 @@ MODULES = [
         "path": "modules/aimbot",
         "status": "ready",
     },
+
     {
         "id": "auto-paint",
         "name": "auto-paint",
@@ -20,6 +22,15 @@ MODULES = [
         "path": "modules/auto-paint",
         "status": "ready",
     },
+
+    {
+        "id": "auto-paint-ver2",
+        "name": "auto-paint ver2",
+        "description": "Auto Paint V2 module",
+        "path": "modules/auto-paint-ver2",
+        "status": "ready",
+    },
+
     {
         "id": "esp",
         "name": "ESP",
@@ -27,6 +38,7 @@ MODULES = [
         "path": "modules/esp",
         "status": "ready",
     },
+
     {
         "id": "godmode",
         "name": "godmode",
@@ -34,13 +46,15 @@ MODULES = [
         "path": "modules/godmode",
         "status": "ready",
     },
+
     {
         "id": "hide-anywhere",
         "name": "hide-Anywhere",
         "description": "Hide Anywhere module",
-        "path": "modules/hide-anywhere",
+        "path": ".",
         "status": "ready",
     },
+
     {
         "id": "noclip",
         "name": "noclip",

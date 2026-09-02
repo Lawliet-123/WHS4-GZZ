@@ -12,6 +12,7 @@ from meccha_chameleon_tools.module_adapters import (
 # ============================================================
 
 MODULE_SETTINGS = {
+
     "whistle-spoofing": {
         "enabled": True,
         "profile": "default",
@@ -30,6 +31,12 @@ MODULE_SETTINGS = {
         "notes": "",
     },
 
+    "auto-paint-ver2": {
+        "enabled": True,
+        "profile": "default",
+        "notes": "",
+    },
+
     "esp": {
         "enabled": True,
         "profile": "default",
@@ -43,7 +50,7 @@ MODULE_SETTINGS = {
     },
 
     "hide-anywhere": {
-        "enabled": False,
+        "enabled": True,
         "profile": "default",
         "notes": "",
     },
@@ -64,15 +71,17 @@ class ModuleWorkspace:
     """
     UI에서 모듈별 설정과 로그를 관리함.
 
-    실제 게임 프로세스 실행, DLL 주입,
-    후킹, 메모리 변경은 수행하지 않음.
+    실제 게임 프로세스 실행,
+    DLL 주입, 후킹, 메모리 변경은 수행하지 않음.
     """
 
     def __init__(self):
+
         self.settings = {}
         self.logs = {}
 
         for module in MODULES:
+
             module_id = module["id"]
 
             self.settings[module_id] = deepcopy(
@@ -92,19 +101,35 @@ class ModuleWorkspace:
     # Module validation
     # ========================================================
 
-    def has_module(self, module_id):
-        return module_id in self.settings
+    def has_module(
+        self,
+        module_id
+    ):
+
+        return (
+            module_id
+            in self.settings
+        )
 
     # ========================================================
     # Settings
     # ========================================================
 
-    def get_settings(self, module_id):
-        if not self.has_module(module_id):
+    def get_settings(
+        self,
+        module_id
+    ):
+
+        if not self.has_module(
+            module_id
+        ):
+
             return None
 
         return deepcopy(
-            self.settings[module_id]
+            self.settings[
+                module_id
+            ]
         )
 
     def set_setting(
@@ -113,23 +138,41 @@ class ModuleWorkspace:
         key,
         value
     ):
-        if not self.has_module(module_id):
+
+        if not self.has_module(
+            module_id
+        ):
+
             return False
 
-        self.settings[module_id][key] = value
+        self.settings[
+            module_id
+        ][key] = value
 
         self.add_log(
             module_id,
-            f"Setting changed: {key} = {value}"
+            (
+                f"Setting changed: "
+                f"{key} = {value}"
+            )
         )
 
         return True
 
-    def reset_settings(self, module_id):
-        if not self.has_module(module_id):
+    def reset_settings(
+        self,
+        module_id
+    ):
+
+        if not self.has_module(
+            module_id
+        ):
+
             return False
 
-        self.settings[module_id] = deepcopy(
+        self.settings[
+            module_id
+        ] = deepcopy(
             MODULE_SETTINGS.get(
                 module_id,
                 {
@@ -157,26 +200,39 @@ class ModuleWorkspace:
         message,
         level="INFO"
     ):
+
         if module_id not in self.logs:
+
             return False
 
-        timestamp = datetime.now().strftime(
-            "%H:%M:%S"
+        timestamp = (
+            datetime.now()
+            .strftime(
+                "%H:%M:%S"
+            )
         )
 
         entry = {
             "time": timestamp,
             "level": level,
-            "message": str(message),
+            "message": str(
+                message
+            ),
         }
 
-        self.logs[module_id].append(
+        self.logs[
+            module_id
+        ].append(
             entry
         )
 
         return True
 
-    def get_logs(self, module_id):
+    def get_logs(
+        self,
+        module_id
+    ):
+
         return list(
             self.logs.get(
                 module_id,
@@ -184,17 +240,25 @@ class ModuleWorkspace:
             )
         )
 
-    def get_log_text(self, module_id):
-        entries = self.get_logs(
-            module_id
+    def get_log_text(
+        self,
+        module_id
+    ):
+
+        entries = (
+            self.get_logs(
+                module_id
+            )
         )
 
         if not entries:
+
             return "No logs yet."
 
         lines = []
 
         for entry in entries:
+
             lines.append(
                 f"[{entry['time']}] "
                 f"[{entry['level']}] "
@@ -205,11 +269,18 @@ class ModuleWorkspace:
             lines
         )
 
-    def clear_logs(self, module_id):
+    def clear_logs(
+        self,
+        module_id
+    ):
+
         if module_id not in self.logs:
+
             return False
 
-        self.logs[module_id] = []
+        self.logs[
+            module_id
+        ] = []
 
         return True
 
@@ -221,40 +292,50 @@ class ModuleWorkspace:
         self,
         module_id
     ):
-        """
-        상세 UI에서 한 번에 사용할 데이터.
-        """
 
-        info = get_module_adapter_info(
-            module_id
+        info = (
+            get_module_adapter_info(
+                module_id
+            )
         )
 
         return {
             "id": module_id,
+
             "name": info.get(
                 "name",
                 module_id
             ),
+
             "type": info.get(
                 "type",
                 "unknown"
             ),
+
             "language": info.get(
                 "language",
                 "Unknown"
             ),
+
             "path": info.get(
                 "root"
             ),
+
             "implemented": info.get(
                 "implemented",
                 False
             ),
-            "settings": self.get_settings(
-                module_id
+
+            "settings": (
+                self.get_settings(
+                    module_id
+                )
             ),
-            "logs": self.get_logs(
-                module_id
+
+            "logs": (
+                self.get_logs(
+                    module_id
+                )
             ),
         }
 
@@ -264,18 +345,26 @@ class ModuleWorkspace:
 # ============================================================
 
 def print_workspace_test():
-    workspace = ModuleWorkspace()
+
+    workspace = (
+        ModuleWorkspace()
+    )
 
     print()
+
     print(
         "MECCHA CHAMELEON MODULE WORKSPACE"
     )
+
     print(
         "=" * 60
     )
 
     for module in MODULES:
-        module_id = module["id"]
+
+        module_id = (
+            module["id"]
+        )
 
         workspace.add_log(
             module_id,
@@ -283,15 +372,18 @@ def print_workspace_test():
         )
 
         snapshot = (
-            workspace.get_module_snapshot(
+            workspace
+            .get_module_snapshot(
                 module_id
             )
         )
 
         print()
+
         print(
             snapshot["name"]
         )
+
         print(
             "-" * 40
         )
@@ -328,4 +420,5 @@ def print_workspace_test():
 
 
 if __name__ == "__main__":
+
     print_workspace_test()

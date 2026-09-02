@@ -26,9 +26,15 @@ def get_repo_root():
 # ============================================================
 
 MODULE_ADAPTERS = {
+
+    # --------------------------------------------------------
+    # Whistle Spoofing
+    # --------------------------------------------------------
+
     "whistle-spoofing": {
         "type": "native",
         "language": "C++ / Python",
+
         "expected_files": [
             "README.md",
             "CMakeLists.txt",
@@ -37,14 +43,20 @@ MODULE_ADAPTERS = {
             "tools/sdk_query.py",
             "tools/ue_sdk_dumper.py",
         ],
+
         "primary_files": [
             "src/main.cpp",
         ],
     },
 
+    # --------------------------------------------------------
+    # Aimbot
+    # --------------------------------------------------------
+
     "aimbot": {
         "type": "python",
         "language": "Python",
+
         "expected_files": [
             "README.md",
             "engine.py",
@@ -54,14 +66,20 @@ MODULE_ADAPTERS = {
             "step8_fov_target.py",
             "step9_aim_trace.py",
         ],
+
         "primary_files": [
             "engine.py",
         ],
     },
 
+    # --------------------------------------------------------
+    # Auto Paint V1
+    # --------------------------------------------------------
+
     "auto-paint": {
         "type": "hybrid",
         "language": "Python / C++",
+
         "expected_files": [
             "README.md",
             "requirements.txt",
@@ -70,27 +88,68 @@ MODULE_ADAPTERS = {
             "src/bridge/bridge.cpp",
             "src/injector/injector.cpp",
         ],
+
         "primary_files": [
             "Scripts/auto_paint.py",
         ],
     },
 
+    # --------------------------------------------------------
+    # Auto Paint V2
+    # --------------------------------------------------------
+
+    "auto-paint-ver2": {
+        "type": "hybrid",
+        "language": "Python / C++",
+
+        "expected_files": [
+            "LiteV2.spec",
+            "requirements-build.txt",
+
+            "app/app.py",
+            "app/camouflage.py",
+
+            "runtime/include/sdk.hpp",
+            "runtime/src/bridge.cpp",
+            "runtime/src/injector.cpp",
+            "runtime/scripts/build.ps1",
+
+            "dist/Meccha-Chameleon-LiteV2.exe",
+        ],
+
+        "primary_files": [
+            "app/app.py",
+            "app/camouflage.py",
+        ],
+    },
+
+    # --------------------------------------------------------
+    # ESP
+    # --------------------------------------------------------
+
     "esp": {
         "type": "python",
         "language": "Python",
+
         "expected_files": [
             "README.md",
             "esp.py",
             "requirements.txt",
         ],
+
         "primary_files": [
             "esp.py",
         ],
     },
 
+    # --------------------------------------------------------
+    # God Mode
+    # --------------------------------------------------------
+
     "godmode": {
         "type": "hybrid",
         "language": "Lua / C++",
+
         "expected_files": [
             "README.md",
             "Mods/GodMode/Scripts/main.lua",
@@ -98,28 +157,45 @@ MODULE_ADAPTERS = {
             "native/godmode_host_402.cpp",
             "native/README_GodModeHost402_KO.md",
         ],
+
         "primary_files": [
             "Mods/GodMode/Scripts/main.lua",
             "native/godmode_host_402.cpp",
         ],
     },
 
+    # --------------------------------------------------------
+    # Hide Anywhere
+    # --------------------------------------------------------
+
     "hide-anywhere": {
-        "type": "unknown",
-        "language": "Unknown",
+        "type": "native",
+        "language": "C++",
+
         "expected_files": [
-            "README.md",
+            "hide_anywhere.cpp",
+            "hide_anywhere.h",
         ],
-        "primary_files": [],
+
+        "primary_files": [
+            "hide_anywhere.cpp",
+            "hide_anywhere.h",
+        ],
     },
+
+    # --------------------------------------------------------
+    # Noclip
+    # --------------------------------------------------------
 
     "noclip": {
         "type": "lua",
         "language": "Lua",
+
         "expected_files": [
             "README.md",
             "Scripts/main.lua",
         ],
+
         "primary_files": [
             "Scripts/main.lua",
         ],
@@ -166,7 +242,7 @@ def get_adapter_definition(module_id):
 
 def get_module_root(module_id):
     """
-    실제 modules/<module> 경로 반환
+    Registry에 정의된 모듈 경로 반환
     """
 
     module = get_registry_module(
@@ -209,7 +285,8 @@ def resolve_module_file(
 
 def inspect_expected_files(module_id):
     """
-    adapter에서 정의한 파일들이 실제로 존재하는지 검사
+    Adapter에서 정의한 파일들이
+    실제로 존재하는지 검사
     """
 
     definition = get_adapter_definition(
@@ -235,11 +312,13 @@ def inspect_expected_files(module_id):
         results.append(
             {
                 "relative_path": relative_path,
+
                 "path": (
                     str(path)
                     if path is not None
                     else None
                 ),
+
                 "exists": exists,
             }
         )
@@ -251,7 +330,7 @@ def inspect_primary_files(module_id):
     """
     모듈의 핵심 구현 파일 존재 여부 검사
 
-    여기서는 파일 존재 여부만 확인하며
+    파일 존재 여부만 확인하며
     실행하지 않음.
     """
 
@@ -278,11 +357,13 @@ def inspect_primary_files(module_id):
         results.append(
             {
                 "relative_path": relative_path,
+
                 "path": (
                     str(path)
                     if path is not None
                     else None
                 ),
+
                 "exists": exists,
             }
         )
@@ -311,6 +392,7 @@ def get_module_adapter_info(module_id):
         return {
             "id": module_id,
             "name": module_id,
+            "description": "",
             "found": False,
             "implemented": False,
             "type": "unknown",
@@ -348,8 +430,10 @@ def get_module_adapter_info(module_id):
         )
     )
 
-    # 핵심 파일이 하나 이상 정의되어 있고
-    # 그 파일들이 실제로 존재하면 구현체가 있다고 판단
+    # --------------------------------------------------------
+    # Implementation detection
+    # --------------------------------------------------------
+
     if primary_files:
 
         implemented = any(
@@ -363,22 +447,31 @@ def get_module_adapter_info(module_id):
 
     return {
         "id": registry_module["id"],
+
         "name": registry_module["name"],
+
         "description": registry_module[
             "description"
         ],
+
         "found": root_exists,
+
         "implemented": implemented,
+
         "type": definition["type"],
+
         "language": definition[
             "language"
         ],
+
         "root": (
             str(root)
             if root is not None
             else None
         ),
+
         "primary_files": primary_files,
+
         "expected_files": expected_files,
     }
 
@@ -389,7 +482,8 @@ def get_module_adapter_info(module_id):
 
 def get_all_module_adapter_info():
     """
-    등록된 모든 모듈의 adapter 정보 반환
+    등록된 모든 모듈의
+    Adapter 정보 반환
     """
 
     results = []
@@ -411,7 +505,7 @@ def get_all_module_adapter_info():
 
 def get_module_display_status(module_id):
     """
-    UI에서 표시할 간단한 상태 문자열
+    UI에서 표시할 상태 문자열
     """
 
     info = get_module_adapter_info(
@@ -419,9 +513,11 @@ def get_module_display_status(module_id):
     )
 
     if not info["found"]:
+
         return "MISSING"
 
     if not info["implemented"]:
+
         return "NO IMPLEMENTATION"
 
     return "READY"
@@ -429,7 +525,8 @@ def get_module_display_status(module_id):
 
 def get_module_summary(module_id):
     """
-    UI 상세 화면에서 사용할 요약 정보
+    UI 상세 화면에서 사용할
+    요약 정보
     """
 
     info = get_module_adapter_info(
@@ -438,11 +535,17 @@ def get_module_summary(module_id):
 
     return {
         "name": info["name"],
-        "status": get_module_display_status(
-            module_id
+
+        "status": (
+            get_module_display_status(
+                module_id
+            )
         ),
+
         "type": info["type"],
+
         "language": info["language"],
+
         "path": info["root"],
     }
 
@@ -453,10 +556,11 @@ def get_module_summary(module_id):
 
 def print_adapter_status():
     """
-    터미널에서 adapter 연결 상태 확인
+    터미널에서 Adapter 연결 상태 확인
     """
 
     print()
+
     print(
         "MECCHA CHAMELEON MODULE ADAPTERS"
     )
