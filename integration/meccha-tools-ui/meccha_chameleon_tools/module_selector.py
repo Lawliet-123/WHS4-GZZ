@@ -10,6 +10,9 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QFrame,
+    QTabWidget,
+    QLineEdit,
+    QTextEdit,
 )
 
 from meccha_chameleon_tools.module_registry import MODULES
@@ -25,6 +28,10 @@ from meccha_chameleon_tools.module_details import (
 from meccha_chameleon_tools.module_runtime import (
     ModuleRuntimeManager,
     build_runtime_summary,
+)
+
+from meccha_chameleon_tools.module_workspace import (
+    ModuleWorkspace,
 )
 
 
@@ -74,18 +81,18 @@ class ModuleRow(QFrame):
             False
         )
 
-        self.setFixedHeight(62)
+        self.setFixedHeight(58)
 
         layout = QHBoxLayout(self)
 
         layout.setContentsMargins(
-            14,
-            8,
-            12,
-            8
+            13,
+            7,
+            11,
+            7
         )
 
-        layout.setSpacing(10)
+        layout.setSpacing(9)
 
         # ----------------------------------------------------
         # Checkbox
@@ -95,10 +102,6 @@ class ModuleRow(QFrame):
 
         self.checkbox.setObjectName(
             "moduleCheck"
-        )
-
-        self.checkbox.setCursor(
-            Qt.PointingHandCursor
         )
 
         if not self.ready:
@@ -111,7 +114,7 @@ class ModuleRow(QFrame):
         )
 
         # ----------------------------------------------------
-        # Name / description
+        # Name / Description
         # ----------------------------------------------------
 
         text_layout = QVBoxLayout()
@@ -166,7 +169,7 @@ class ModuleRow(QFrame):
         )
 
     # ========================================================
-    # Status badge
+    # Status
     # ========================================================
 
     def update_status(
@@ -289,27 +292,36 @@ class ModuleRow(QFrame):
 
 class ModuleDetailPanel(QFrame):
 
-    def __init__(self):
+    def __init__(
+        self,
+        workspace
+    ):
         super().__init__()
+
+        self.workspace = workspace
+
+        self.current_module_id = None
+
+        self.loading_settings = False
 
         self.setObjectName(
             "detailPanel"
         )
 
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
 
-        layout.setContentsMargins(
-            24,
-            22,
-            24,
-            22
+        main_layout.setContentsMargins(
+            20,
+            18,
+            20,
+            18
         )
 
-        layout.setSpacing(10)
+        main_layout.setSpacing(9)
 
-        # ----------------------------------------------------
+        # ====================================================
         # Header
-        # ----------------------------------------------------
+        # ====================================================
 
         header = QHBoxLayout()
 
@@ -321,12 +333,12 @@ class ModuleDetailPanel(QFrame):
             "detailTitle"
         )
 
-        self.status = QLabel(
+        self.runtime_status = QLabel(
             "-"
         )
 
-        self.status.setObjectName(
-            "detailStatus"
+        self.runtime_status.setObjectName(
+            "detailStatusReady"
         )
 
         header.addWidget(
@@ -336,15 +348,15 @@ class ModuleDetailPanel(QFrame):
         header.addStretch()
 
         header.addWidget(
-            self.status
+            self.runtime_status
         )
 
-        layout.addLayout(
+        main_layout.addLayout(
             header
         )
 
         self.description = QLabel(
-            "Click a module on the left to view details."
+            "Click a module on the left."
         )
 
         self.description.setObjectName(
@@ -355,42 +367,77 @@ class ModuleDetailPanel(QFrame):
             True
         )
 
-        layout.addWidget(
+        main_layout.addWidget(
             self.description
         )
 
-        # ----------------------------------------------------
-        # Separator
-        # ----------------------------------------------------
+        # ====================================================
+        # Tabs
+        # ====================================================
 
-        separator = QFrame()
+        self.tabs = QTabWidget()
 
-        separator.setObjectName(
-            "separator"
+        self.tabs.setObjectName(
+            "detailTabs"
         )
 
-        separator.setFrameShape(
-            QFrame.HLine
+        self.overview_tab = QWidget()
+        self.settings_tab = QWidget()
+        self.logs_tab = QWidget()
+
+        self.tabs.addTab(
+            self.overview_tab,
+            "Overview"
         )
 
-        layout.addWidget(
-            separator
+        self.tabs.addTab(
+            self.settings_tab,
+            "Settings"
         )
 
-        # ----------------------------------------------------
-        # General information
-        # ----------------------------------------------------
+        self.tabs.addTab(
+            self.logs_tab,
+            "Logs"
+        )
 
-        section = QLabel(
+        main_layout.addWidget(
+            self.tabs,
+            1
+        )
+
+        self._build_overview_tab()
+        self._build_settings_tab()
+        self._build_logs_tab()
+
+    # ========================================================
+    # Overview tab
+    # ========================================================
+
+    def _build_overview_tab(self):
+
+        layout = QVBoxLayout(
+            self.overview_tab
+        )
+
+        layout.setContentsMargins(
+            12,
+            15,
+            12,
+            12
+        )
+
+        layout.setSpacing(9)
+
+        info_title = QLabel(
             "MODULE INFORMATION"
         )
 
-        section.setObjectName(
+        info_title.setObjectName(
             "detailSection"
         )
 
         layout.addWidget(
-            section
+            info_title
         )
 
         self.type_label = QLabel(
@@ -423,10 +470,6 @@ class ModuleDetailPanel(QFrame):
                 label
             )
 
-        # ----------------------------------------------------
-        # Implementation
-        # ----------------------------------------------------
-
         implementation_title = QLabel(
             "IMPLEMENTATION"
         )
@@ -455,10 +498,6 @@ class ModuleDetailPanel(QFrame):
             self.implementation_label
         )
 
-        # ----------------------------------------------------
-        # File summary
-        # ----------------------------------------------------
-
         files_title = QLabel(
             "FILE CHECK"
         )
@@ -486,13 +525,241 @@ class ModuleDetailPanel(QFrame):
         layout.addStretch()
 
     # ========================================================
-    # Set module
+    # Settings tab
+    # ========================================================
+
+    def _build_settings_tab(self):
+
+        layout = QVBoxLayout(
+            self.settings_tab
+        )
+
+        layout.setContentsMargins(
+            12,
+            15,
+            12,
+            12
+        )
+
+        layout.setSpacing(10)
+
+        section = QLabel(
+            "MODULE SETTINGS"
+        )
+
+        section.setObjectName(
+            "detailSection"
+        )
+
+        layout.addWidget(
+            section
+        )
+
+        # ----------------------------------------------------
+        # Enabled
+        # ----------------------------------------------------
+
+        self.setting_enabled = QCheckBox(
+            "Enabled"
+        )
+
+        self.setting_enabled.setObjectName(
+            "settingsCheck"
+        )
+
+        layout.addWidget(
+            self.setting_enabled
+        )
+
+        # ----------------------------------------------------
+        # Profile
+        # ----------------------------------------------------
+
+        profile_label = QLabel(
+            "Profile"
+        )
+
+        profile_label.setObjectName(
+            "settingsLabel"
+        )
+
+        self.setting_profile = QLineEdit()
+
+        self.setting_profile.setPlaceholderText(
+            "default"
+        )
+
+        layout.addWidget(
+            profile_label
+        )
+
+        layout.addWidget(
+            self.setting_profile
+        )
+
+        # ----------------------------------------------------
+        # Notes
+        # ----------------------------------------------------
+
+        notes_label = QLabel(
+            "Notes"
+        )
+
+        notes_label.setObjectName(
+            "settingsLabel"
+        )
+
+        self.setting_notes = QTextEdit()
+
+        self.setting_notes.setPlaceholderText(
+            "Module notes..."
+        )
+
+        self.setting_notes.setFixedHeight(
+            110
+        )
+
+        layout.addWidget(
+            notes_label
+        )
+
+        layout.addWidget(
+            self.setting_notes
+        )
+
+        # ----------------------------------------------------
+        # Buttons
+        # ----------------------------------------------------
+
+        buttons = QHBoxLayout()
+
+        reset_button = QPushButton(
+            "Reset Settings"
+        )
+
+        reset_button.clicked.connect(
+            self.reset_settings
+        )
+
+        save_button = QPushButton(
+            "Save Settings"
+        )
+
+        save_button.setObjectName(
+            "primaryButton"
+        )
+
+        save_button.clicked.connect(
+            self.save_settings
+        )
+
+        buttons.addStretch()
+
+        buttons.addWidget(
+            reset_button
+        )
+
+        buttons.addWidget(
+            save_button
+        )
+
+        layout.addLayout(
+            buttons
+        )
+
+        self.settings_message = QLabel(
+            ""
+        )
+
+        self.settings_message.setObjectName(
+            "settingsMessage"
+        )
+
+        layout.addWidget(
+            self.settings_message
+        )
+
+        layout.addStretch()
+
+    # ========================================================
+    # Logs tab
+    # ========================================================
+
+    def _build_logs_tab(self):
+
+        layout = QVBoxLayout(
+            self.logs_tab
+        )
+
+        layout.setContentsMargins(
+            12,
+            15,
+            12,
+            12
+        )
+
+        layout.setSpacing(9)
+
+        header = QHBoxLayout()
+
+        title = QLabel(
+            "MODULE LOGS"
+        )
+
+        title.setObjectName(
+            "detailSection"
+        )
+
+        clear_button = QPushButton(
+            "Clear Logs"
+        )
+
+        clear_button.clicked.connect(
+            self.clear_logs
+        )
+
+        header.addWidget(
+            title
+        )
+
+        header.addStretch()
+
+        header.addWidget(
+            clear_button
+        )
+
+        layout.addLayout(
+            header
+        )
+
+        self.log_view = QTextEdit()
+
+        self.log_view.setReadOnly(
+            True
+        )
+
+        self.log_view.setObjectName(
+            "logView"
+        )
+
+        layout.addWidget(
+            self.log_view,
+            1
+        )
+
+    # ========================================================
+    # Show module
     # ========================================================
 
     def show_module(
         self,
-        module_id
+        module_id,
+        runtime_status=None
     ):
+
+        self.current_module_id = (
+            module_id
+        )
 
         details = get_module_details(
             module_id
@@ -502,14 +769,24 @@ class ModuleDetailPanel(QFrame):
             details["name"]
         )
 
-        self.status.setText(
-            details["status"]
-        )
-
         self.description.setText(
             details["description"]
             or "No description."
         )
+
+        if runtime_status is None:
+
+            runtime_status = (
+                details["status"]
+            )
+
+        self.set_runtime_status(
+            runtime_status
+        )
+
+        # ----------------------------------------------------
+        # Overview
+        # ----------------------------------------------------
 
         self.type_label.setText(
             f"Type        {details['type']}"
@@ -519,14 +796,12 @@ class ModuleDetailPanel(QFrame):
             f"Language    {details['language']}"
         )
 
-        path_text = (
-            details["path"]
-            if details["path"]
-            else "-"
-        )
-
         self.path_label.setText(
-            f"Path        {path_text}"
+            "Path        "
+            + str(
+                details["path"]
+                or "-"
+            )
         )
 
         primary_files = (
@@ -546,7 +821,8 @@ class ModuleDetailPanel(QFrame):
                 )
 
                 lines.append(
-                    f"{marker} {item['name']}"
+                    f"{marker} "
+                    f"{item['name']}"
                 )
 
             self.implementation_label.setText(
@@ -560,13 +836,223 @@ class ModuleDetailPanel(QFrame):
             )
 
         self.files_label.setText(
-            f"Found: {details['existing_file_count']}    "
-            f"Missing: {details['missing_file_count']}"
+            f"Found: "
+            f"{details['existing_file_count']}    "
+            f"Missing: "
+            f"{details['missing_file_count']}"
         )
+
+        # ----------------------------------------------------
+        # Settings
+        # ----------------------------------------------------
+
+        self.load_settings()
+
+        # ----------------------------------------------------
+        # Logs
+        # ----------------------------------------------------
+
+        self.refresh_logs()
+
+    # ========================================================
+    # Runtime status
+    # ========================================================
+
+    def set_runtime_status(
+        self,
+        status
+    ):
+
+        self.runtime_status.setText(
+            status
+        )
+
+        if status in (
+            "READY",
+            "PREPARED",
+        ):
+
+            self.runtime_status.setObjectName(
+                "detailStatusReady"
+            )
+
+        elif status == "IDLE":
+
+            self.runtime_status.setObjectName(
+                "detailStatusIdle"
+            )
+
+        else:
+
+            self.runtime_status.setObjectName(
+                "detailStatusPending"
+            )
+
+        self.runtime_status.style().unpolish(
+            self.runtime_status
+        )
+
+        self.runtime_status.style().polish(
+            self.runtime_status
+        )
+
+        self.runtime_status.update()
+
+    # ========================================================
+    # Settings
+    # ========================================================
+
+    def load_settings(self):
+
+        if self.current_module_id is None:
+            return
+
+        settings = (
+            self.workspace.get_settings(
+                self.current_module_id
+            )
+        )
+
+        if settings is None:
+            return
+
+        self.loading_settings = True
+
+        self.setting_enabled.setChecked(
+            bool(
+                settings.get(
+                    "enabled",
+                    False
+                )
+            )
+        )
+
+        self.setting_profile.setText(
+            str(
+                settings.get(
+                    "profile",
+                    "default"
+                )
+            )
+        )
+
+        self.setting_notes.setPlainText(
+            str(
+                settings.get(
+                    "notes",
+                    ""
+                )
+            )
+        )
+
+        self.loading_settings = False
+
+        self.settings_message.setText(
+            ""
+        )
+
+    def save_settings(self):
+
+        if self.current_module_id is None:
+            return
+
+        module_id = (
+            self.current_module_id
+        )
+
+        self.workspace.set_setting(
+            module_id,
+            "enabled",
+            self.setting_enabled.isChecked()
+        )
+
+        self.workspace.set_setting(
+            module_id,
+            "profile",
+            self.setting_profile.text().strip()
+            or "default"
+        )
+
+        self.workspace.set_setting(
+            module_id,
+            "notes",
+            self.setting_notes.toPlainText()
+        )
+
+        self.workspace.add_log(
+            module_id,
+            "Settings saved."
+        )
+
+        self.settings_message.setText(
+            "Settings saved."
+        )
+
+        self.refresh_logs()
+
+    def reset_settings(self):
+
+        if self.current_module_id is None:
+            return
+
+        self.workspace.reset_settings(
+            self.current_module_id
+        )
+
+        self.load_settings()
+
+        self.settings_message.setText(
+            "Settings reset."
+        )
+
+        self.refresh_logs()
+
+    # ========================================================
+    # Logs
+    # ========================================================
+
+    def refresh_logs(self):
+
+        if self.current_module_id is None:
+
+            self.log_view.setPlainText(
+                "No module selected."
+            )
+
+            return
+
+        log_text = (
+            self.workspace.get_log_text(
+                self.current_module_id
+            )
+        )
+
+        self.log_view.setPlainText(
+            log_text
+        )
+
+        scrollbar = (
+            self.log_view.verticalScrollBar()
+        )
+
+        scrollbar.setValue(
+            scrollbar.maximum()
+        )
+
+    def clear_logs(self):
+
+        if self.current_module_id is None:
+            return
+
+        self.workspace.clear_logs(
+            self.current_module_id
+        )
+
+        self.refresh_logs()
 
 
 # ============================================================
-# Main selector
+# Main window
 # ============================================================
 
 class ModuleSelector(QWidget):
@@ -629,15 +1115,6 @@ class ModuleSelector(QWidget):
 
         QFrame#moduleRow[selected="true"] {
             background-color: #202638;
-        }
-
-        QFrame#moduleRow[
-            active="true"
-        ][
-            selected="true"
-        ] {
-            background-color: #242d43;
-            border-color: #6e94ff;
         }
 
         QLabel#moduleName {
@@ -712,19 +1189,9 @@ class ModuleSelector(QWidget):
 
         QLabel#detailTitle {
             color: #e4e7ef;
-            font-size: 21px;
+            font-size: 20px;
             font-weight: bold;
             background: transparent;
-        }
-
-        QLabel#detailStatus {
-            color: #63d9a4;
-            background-color: #173328;
-            border: 1px solid #285943;
-            border-radius: 5px;
-            padding: 4px 9px;
-            font-size: 9px;
-            font-weight: bold;
         }
 
         QLabel#detailDescription {
@@ -733,12 +1200,41 @@ class ModuleSelector(QWidget):
             background: transparent;
         }
 
+        QLabel#detailStatusReady {
+            color: #63d9a4;
+            background-color: #173328;
+            border: 1px solid #285943;
+            border-radius: 5px;
+            padding: 4px 9px;
+            font-size: 8px;
+            font-weight: bold;
+        }
+
+        QLabel#detailStatusPending {
+            color: #ffbd62;
+            background-color: #372b18;
+            border: 1px solid #66502b;
+            border-radius: 5px;
+            padding: 4px 9px;
+            font-size: 8px;
+            font-weight: bold;
+        }
+
+        QLabel#detailStatusIdle {
+            color: #8b93a7;
+            background-color: #20242e;
+            border: 1px solid #343a49;
+            border-radius: 5px;
+            padding: 4px 9px;
+            font-size: 8px;
+            font-weight: bold;
+        }
+
         QLabel#detailSection {
             color: #aeb9ff;
             font-size: 10px;
             font-weight: bold;
             background: transparent;
-            margin-top: 5px;
         }
 
         QLabel#detailValue {
@@ -753,10 +1249,68 @@ class ModuleSelector(QWidget):
             background: transparent;
         }
 
-        QFrame#separator {
-            background-color: #2b3140;
-            max-height: 1px;
-            border: none;
+        QTabWidget::pane {
+            border: 1px solid #2b3140;
+            border-radius: 7px;
+            background-color: #13161e;
+            top: -1px;
+        }
+
+        QTabBar::tab {
+            background-color: #1b1f29;
+            color: #8b93a7;
+            border: 1px solid #2b3140;
+            padding: 8px 18px;
+            min-width: 75px;
+        }
+
+        QTabBar::tab:selected {
+            background-color: #252b3b;
+            color: #dce2ff;
+            border-bottom: 2px solid #5b8cff;
+        }
+
+        QTabBar::tab:hover {
+            color: #d7dbe6;
+        }
+
+        QLabel#settingsLabel {
+            color: #9ba3b8;
+            font-size: 10px;
+            background: transparent;
+        }
+
+        QCheckBox#settingsCheck {
+            color: #c9cedb;
+            font-size: 10px;
+            background: transparent;
+        }
+
+        QLineEdit,
+        QTextEdit {
+            background-color: #0f1219;
+            color: #d7dbe6;
+            border: 1px solid #303747;
+            border-radius: 6px;
+            padding: 7px;
+            selection-background-color: #5b8cff;
+        }
+
+        QLineEdit:focus,
+        QTextEdit:focus {
+            border-color: #5b8cff;
+        }
+
+        QTextEdit#logView {
+            font-family: Consolas;
+            font-size: 9px;
+            background-color: #0c0f15;
+        }
+
+        QLabel#settingsMessage {
+            color: #63d9a4;
+            font-size: 9px;
+            background: transparent;
         }
 
         QPushButton {
@@ -773,15 +1327,15 @@ class ModuleSelector(QWidget):
             border-color: #4a5470;
         }
 
+        QPushButton#primaryButton,
         QPushButton#prepareButton {
             background-color: #3f6fe0;
             color: white;
             border: 1px solid #6d9bff;
             font-weight: bold;
-            padding-left: 17px;
-            padding-right: 17px;
         }
 
+        QPushButton#primaryButton:hover,
         QPushButton#prepareButton:hover {
             background-color: #5b8cff;
         }
@@ -811,18 +1365,22 @@ class ModuleSelector(QWidget):
             ModuleRuntimeManager()
         )
 
+        self.workspace = (
+            ModuleWorkspace()
+        )
+
         self.setWindowTitle(
             "Meccha Chameleon Tools"
         )
 
         self.resize(
-            1050,
-            700
+            1100,
+            720
         )
 
         self.setMinimumSize(
-            950,
-            660
+            980,
+            670
         )
 
         self.setStyleSheet(
@@ -940,7 +1498,7 @@ class ModuleSelector(QWidget):
         )
 
         # ----------------------------------------------------
-        # Left module list
+        # Left
         # ----------------------------------------------------
 
         left = QVBoxLayout()
@@ -989,15 +1547,17 @@ class ModuleSelector(QWidget):
         )
 
         left_container.setFixedWidth(
-            390
+            385
         )
 
         # ----------------------------------------------------
-        # Detail panel
+        # Right
         # ----------------------------------------------------
 
         self.detail_panel = (
-            ModuleDetailPanel()
+            ModuleDetailPanel(
+                self.workspace
+            )
         )
 
         content.addWidget(
@@ -1106,7 +1666,18 @@ class ModuleSelector(QWidget):
 
         self.update_selection_status()
 
-        # 첫 모듈 자동 표시
+        # ====================================================
+        # Initialize workspace logs
+        # ====================================================
+
+        for module in MODULES:
+
+            self.workspace.add_log(
+                module["id"],
+                "Module workspace initialized."
+            )
+
+        # 첫 번째 모듈 자동 선택
         if MODULES:
 
             self.show_module_details(
@@ -1144,16 +1715,28 @@ class ModuleSelector(QWidget):
         ):
 
             row.set_active(
-                current_id
-                == module_id
+                current_id == module_id
             )
 
-        self.detail_panel.show_module(
+        row = self.rows.get(
             module_id
         )
 
+        runtime_status = None
+
+        if row is not None:
+
+            runtime_status = (
+                row.status_label.text()
+            )
+
+        self.detail_panel.show_module(
+            module_id,
+            runtime_status
+        )
+
     # ========================================================
-    # Status
+    # Selection status
     # ========================================================
 
     def update_selection_status(self):
@@ -1253,11 +1836,35 @@ class ModuleSelector(QWidget):
                     result.status
                 )
 
+            self.workspace.add_log(
+                result.module_id,
+                (
+                    f"Prepare result: "
+                    f"{result.status} - "
+                    f"{result.message}"
+                )
+            )
+
         self.status_label.setText(
             build_runtime_summary(
                 results
             )
         )
+
+        if (
+            self.active_module_id
+            in selected_ids
+        ):
+
+            row = self.rows.get(
+                self.active_module_id
+            )
+
+            self.detail_panel.set_runtime_status(
+                row.status_label.text()
+            )
+
+            self.detail_panel.refresh_logs()
 
     # ========================================================
     # Reset
@@ -1296,9 +1903,25 @@ class ModuleSelector(QWidget):
                     "IDLE"
                 )
 
+            self.workspace.add_log(
+                result.module_id,
+                "Runtime reset."
+            )
+
         self.status_label.setText(
             "Selected modules reset."
         )
+
+        if (
+            self.active_module_id
+            in selected_ids
+        ):
+
+            self.detail_panel.set_runtime_status(
+                "IDLE"
+            )
+
+            self.detail_panel.refresh_logs()
 
 
 # ============================================================
