@@ -1,6 +1,6 @@
 import sys
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -9,14 +9,19 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
     QFrame,
 )
 
 from meccha_chameleon_tools.module_registry import MODULES
+
 from meccha_chameleon_tools.module_adapters import (
     get_module_display_status,
 )
+
+from meccha_chameleon_tools.module_details import (
+    get_module_details,
+)
+
 from meccha_chameleon_tools.module_runtime import (
     ModuleRuntimeManager,
     build_runtime_summary,
@@ -24,34 +29,44 @@ from meccha_chameleon_tools.module_runtime import (
 
 
 # ============================================================
-# Module card
+# Module row
 # ============================================================
 
-class ModuleCard(QFrame):
+class ModuleRow(QFrame):
+
+    clicked = pyqtSignal(str)
 
     def __init__(
         self,
         module,
-        on_changed=None
+        on_selection_changed=None
     ):
         super().__init__()
 
         self.module = module
         self.module_id = module["id"]
-        self.on_changed = on_changed
 
-        self.runtime_status = (
+        self.on_selection_changed = (
+            on_selection_changed
+        )
+
+        self.base_status = (
             get_module_display_status(
                 self.module_id
             )
         )
 
         self.ready = (
-            self.runtime_status == "READY"
+            self.base_status == "READY"
         )
 
         self.setObjectName(
-            "moduleCard"
+            "moduleRow"
+        )
+
+        self.setProperty(
+            "active",
+            False
         )
 
         self.setProperty(
@@ -59,129 +74,102 @@ class ModuleCard(QFrame):
             False
         )
 
-        self.setMinimumWidth(300)
-        self.setFixedHeight(105)
+        self.setFixedHeight(62)
 
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
 
         layout.setContentsMargins(
-            15,
-            11,
-            15,
-            10,
+            14,
+            8,
+            12,
+            8
         )
 
-        layout.setSpacing(3)
+        layout.setSpacing(10)
 
         # ----------------------------------------------------
-        # Header
+        # Checkbox
         # ----------------------------------------------------
 
-        header = QHBoxLayout()
-        header.setSpacing(6)
-
-        title = QLabel(
-            module["name"]
-        )
-
-        title.setObjectName(
-            "moduleTitle"
-        )
-
-        self.status_label = QLabel()
-
-        self.update_runtime_badge(
-            self.runtime_status
-        )
-
-        header.addWidget(
-            title
-        )
-
-        header.addStretch()
-
-        header.addWidget(
-            self.status_label
-        )
-
-        # ----------------------------------------------------
-        # Description
-        # ----------------------------------------------------
-
-        description = QLabel(
-            module["description"]
-        )
-
-        description.setObjectName(
-            "moduleDescription"
-        )
-
-        # ----------------------------------------------------
-        # Bottom
-        # ----------------------------------------------------
-
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
-
-        path = QLabel(
-            module["path"]
-        )
-
-        path.setObjectName(
-            "modulePath"
-        )
-
-        self.checkbox = QCheckBox(
-            "Enable"
-        )
+        self.checkbox = QCheckBox()
 
         self.checkbox.setObjectName(
             "moduleCheck"
         )
 
-        if not self.ready:
+        self.checkbox.setCursor(
+            Qt.PointingHandCursor
+        )
 
+        if not self.ready:
             self.checkbox.setEnabled(
                 False
-            )
-
-            self.checkbox.setText(
-                "Unavailable"
             )
 
         self.checkbox.toggled.connect(
             self._selection_changed
         )
 
-        bottom.addWidget(
-            path
+        # ----------------------------------------------------
+        # Name / description
+        # ----------------------------------------------------
+
+        text_layout = QVBoxLayout()
+
+        text_layout.setSpacing(1)
+
+        name = QLabel(
+            module["name"]
         )
 
-        bottom.addStretch()
+        name.setObjectName(
+            "moduleName"
+        )
 
-        bottom.addWidget(
+        description = QLabel(
+            module["description"]
+        )
+
+        description.setObjectName(
+            "moduleSmallDescription"
+        )
+
+        text_layout.addWidget(
+            name
+        )
+
+        text_layout.addWidget(
+            description
+        )
+
+        # ----------------------------------------------------
+        # Status
+        # ----------------------------------------------------
+
+        self.status_label = QLabel()
+
+        self.update_status(
+            self.base_status
+        )
+
+        layout.addWidget(
             self.checkbox
         )
 
         layout.addLayout(
-            header
+            text_layout,
+            1
         )
 
         layout.addWidget(
-            description
-        )
-
-        layout.addStretch()
-
-        layout.addLayout(
-            bottom
+            self.status_label
         )
 
     # ========================================================
-    # Badge
+    # Status badge
     # ========================================================
 
-    def update_runtime_badge(
+    def update_status(
         self,
         status
     ):
@@ -245,34 +233,335 @@ class ModuleCard(QFrame):
 
         self.update()
 
-        if self.on_changed:
-
-            self.on_changed()
-
-    def mousePressEvent(
-        self,
-        event
-    ):
-
-        if (
-            event.button()
-            == Qt.LeftButton
-            and self.ready
-        ):
-
-            self.checkbox.setChecked(
-                not self.checkbox.isChecked()
-            )
-
-        super().mousePressEvent(
-            event
-        )
+        if self.on_selection_changed:
+            self.on_selection_changed()
 
     def is_selected(self):
 
         return (
             self.ready
             and self.checkbox.isChecked()
+        )
+
+    # ========================================================
+    # Detail selection
+    # ========================================================
+
+    def set_active(
+        self,
+        active
+    ):
+
+        self.setProperty(
+            "active",
+            active
+        )
+
+        self.style().unpolish(
+            self
+        )
+
+        self.style().polish(
+            self
+        )
+
+        self.update()
+
+    def mousePressEvent(
+        self,
+        event
+    ):
+
+        if event.button() == Qt.LeftButton:
+
+            self.clicked.emit(
+                self.module_id
+            )
+
+        super().mousePressEvent(
+            event
+        )
+
+
+# ============================================================
+# Detail panel
+# ============================================================
+
+class ModuleDetailPanel(QFrame):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setObjectName(
+            "detailPanel"
+        )
+
+        layout = QVBoxLayout(self)
+
+        layout.setContentsMargins(
+            24,
+            22,
+            24,
+            22
+        )
+
+        layout.setSpacing(10)
+
+        # ----------------------------------------------------
+        # Header
+        # ----------------------------------------------------
+
+        header = QHBoxLayout()
+
+        self.title = QLabel(
+            "Select a module"
+        )
+
+        self.title.setObjectName(
+            "detailTitle"
+        )
+
+        self.status = QLabel(
+            "-"
+        )
+
+        self.status.setObjectName(
+            "detailStatus"
+        )
+
+        header.addWidget(
+            self.title
+        )
+
+        header.addStretch()
+
+        header.addWidget(
+            self.status
+        )
+
+        layout.addLayout(
+            header
+        )
+
+        self.description = QLabel(
+            "Click a module on the left to view details."
+        )
+
+        self.description.setObjectName(
+            "detailDescription"
+        )
+
+        self.description.setWordWrap(
+            True
+        )
+
+        layout.addWidget(
+            self.description
+        )
+
+        # ----------------------------------------------------
+        # Separator
+        # ----------------------------------------------------
+
+        separator = QFrame()
+
+        separator.setObjectName(
+            "separator"
+        )
+
+        separator.setFrameShape(
+            QFrame.HLine
+        )
+
+        layout.addWidget(
+            separator
+        )
+
+        # ----------------------------------------------------
+        # General information
+        # ----------------------------------------------------
+
+        section = QLabel(
+            "MODULE INFORMATION"
+        )
+
+        section.setObjectName(
+            "detailSection"
+        )
+
+        layout.addWidget(
+            section
+        )
+
+        self.type_label = QLabel(
+            "Type        -"
+        )
+
+        self.language_label = QLabel(
+            "Language    -"
+        )
+
+        self.path_label = QLabel(
+            "Path        -"
+        )
+
+        for label in (
+            self.type_label,
+            self.language_label,
+            self.path_label,
+        ):
+
+            label.setObjectName(
+                "detailValue"
+            )
+
+            label.setWordWrap(
+                True
+            )
+
+            layout.addWidget(
+                label
+            )
+
+        # ----------------------------------------------------
+        # Implementation
+        # ----------------------------------------------------
+
+        implementation_title = QLabel(
+            "IMPLEMENTATION"
+        )
+
+        implementation_title.setObjectName(
+            "detailSection"
+        )
+
+        layout.addWidget(
+            implementation_title
+        )
+
+        self.implementation_label = QLabel(
+            "-"
+        )
+
+        self.implementation_label.setObjectName(
+            "implementationText"
+        )
+
+        self.implementation_label.setWordWrap(
+            True
+        )
+
+        layout.addWidget(
+            self.implementation_label
+        )
+
+        # ----------------------------------------------------
+        # File summary
+        # ----------------------------------------------------
+
+        files_title = QLabel(
+            "FILE CHECK"
+        )
+
+        files_title.setObjectName(
+            "detailSection"
+        )
+
+        layout.addWidget(
+            files_title
+        )
+
+        self.files_label = QLabel(
+            "-"
+        )
+
+        self.files_label.setObjectName(
+            "detailValue"
+        )
+
+        layout.addWidget(
+            self.files_label
+        )
+
+        layout.addStretch()
+
+    # ========================================================
+    # Set module
+    # ========================================================
+
+    def show_module(
+        self,
+        module_id
+    ):
+
+        details = get_module_details(
+            module_id
+        )
+
+        self.title.setText(
+            details["name"]
+        )
+
+        self.status.setText(
+            details["status"]
+        )
+
+        self.description.setText(
+            details["description"]
+            or "No description."
+        )
+
+        self.type_label.setText(
+            f"Type        {details['type']}"
+        )
+
+        self.language_label.setText(
+            f"Language    {details['language']}"
+        )
+
+        path_text = (
+            details["path"]
+            if details["path"]
+            else "-"
+        )
+
+        self.path_label.setText(
+            f"Path        {path_text}"
+        )
+
+        primary_files = (
+            details["primary_files"]
+        )
+
+        if primary_files:
+
+            lines = []
+
+            for item in primary_files:
+
+                marker = (
+                    "✓"
+                    if item["exists"]
+                    else "✕"
+                )
+
+                lines.append(
+                    f"{marker} {item['name']}"
+                )
+
+            self.implementation_label.setText(
+                "\n".join(lines)
+            )
+
+        else:
+
+            self.implementation_label.setText(
+                "No implementation files detected."
+            )
+
+        self.files_label.setText(
+            f"Found: {details['existing_file_count']}    "
+            f"Missing: {details['missing_file_count']}"
         )
 
 
@@ -317,90 +606,60 @@ class ModuleSelector(QWidget):
 
         QLabel#sectionTitle {
             color: #d7dbe6;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: bold;
             background: transparent;
         }
 
-        QFrame#moduleCard {
+        QFrame#moduleRow {
             background-color: #1d212c;
             border: 1px solid #2b3140;
-            border-radius: 9px;
+            border-radius: 8px;
         }
 
-        QFrame#moduleCard:hover {
+        QFrame#moduleRow:hover {
             background-color: #212633;
-            border: 1px solid #46516a;
+            border-color: #46516a;
         }
 
-        QFrame#moduleCard[selected="true"] {
+        QFrame#moduleRow[active="true"] {
             background-color: #20283a;
-            border: 1px solid #5b8cff;
+            border-color: #5b8cff;
         }
 
-        QLabel#moduleTitle {
+        QFrame#moduleRow[selected="true"] {
+            background-color: #202638;
+        }
+
+        QFrame#moduleRow[
+            active="true"
+        ][
+            selected="true"
+        ] {
+            background-color: #242d43;
+            border-color: #6e94ff;
+        }
+
+        QLabel#moduleName {
             color: #e1e5ef;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: bold;
             background: transparent;
         }
 
-        QLabel#moduleDescription {
-            color: #9ba3b8;
-            font-size: 9px;
-            background: transparent;
-        }
-
-        QLabel#modulePath {
-            color: #606a80;
+        QLabel#moduleSmallDescription {
+            color: #6f788e;
             font-size: 8px;
             background: transparent;
-        }
-
-        QLabel#statusReady {
-            color: #63d9a4;
-            background-color: #173328;
-            border: 1px solid #285943;
-            border-radius: 5px;
-            padding: 2px 7px;
-            font-size: 8px;
-            font-weight: bold;
-        }
-
-        QLabel#statusPending {
-            color: #ffbd62;
-            background-color: #372b18;
-            border: 1px solid #66502b;
-            border-radius: 5px;
-            padding: 2px 7px;
-            font-size: 8px;
-            font-weight: bold;
-        }
-
-        QLabel#statusIdle {
-            color: #8b93a7;
-            background-color: #20242e;
-            border: 1px solid #343a49;
-            border-radius: 5px;
-            padding: 2px 7px;
-            font-size: 8px;
-            font-weight: bold;
         }
 
         QCheckBox#moduleCheck {
-            color: #c9cedb;
-            font-size: 9px;
-            spacing: 6px;
             background: transparent;
         }
 
-        QCheckBox#moduleCheck:disabled {
-            color: #5b6275;
-        }
-
         QCheckBox::indicator {
-            width: 14px;
-            height: 14px;
+            width: 15px;
+            height: 15px;
             border-radius: 4px;
             border: 1px solid #3a4253;
             background: #14171f;
@@ -415,11 +674,96 @@ class ModuleSelector(QWidget):
             border: 1px solid #7d9bff;
         }
 
+        QLabel#statusReady {
+            color: #63d9a4;
+            background-color: #173328;
+            border: 1px solid #285943;
+            border-radius: 5px;
+            padding: 2px 6px;
+            font-size: 7px;
+            font-weight: bold;
+        }
+
+        QLabel#statusPending {
+            color: #ffbd62;
+            background-color: #372b18;
+            border: 1px solid #66502b;
+            border-radius: 5px;
+            padding: 2px 6px;
+            font-size: 7px;
+            font-weight: bold;
+        }
+
+        QLabel#statusIdle {
+            color: #8b93a7;
+            background-color: #20242e;
+            border: 1px solid #343a49;
+            border-radius: 5px;
+            padding: 2px 6px;
+            font-size: 7px;
+            font-weight: bold;
+        }
+
+        QFrame#detailPanel {
+            background-color: #151821;
+            border: 1px solid #2b3140;
+            border-radius: 10px;
+        }
+
+        QLabel#detailTitle {
+            color: #e4e7ef;
+            font-size: 21px;
+            font-weight: bold;
+            background: transparent;
+        }
+
+        QLabel#detailStatus {
+            color: #63d9a4;
+            background-color: #173328;
+            border: 1px solid #285943;
+            border-radius: 5px;
+            padding: 4px 9px;
+            font-size: 9px;
+            font-weight: bold;
+        }
+
+        QLabel#detailDescription {
+            color: #8b93a7;
+            font-size: 10px;
+            background: transparent;
+        }
+
+        QLabel#detailSection {
+            color: #aeb9ff;
+            font-size: 10px;
+            font-weight: bold;
+            background: transparent;
+            margin-top: 5px;
+        }
+
+        QLabel#detailValue {
+            color: #b9bfce;
+            font-size: 10px;
+            background: transparent;
+        }
+
+        QLabel#implementationText {
+            color: #9fdabf;
+            font-size: 10px;
+            background: transparent;
+        }
+
+        QFrame#separator {
+            background-color: #2b3140;
+            max-height: 1px;
+            border: none;
+        }
+
         QPushButton {
             background-color: #222737;
             color: #d7dbe6;
             border: 1px solid #2b3140;
-            padding: 8px 14px;
+            padding: 8px 13px;
             border-radius: 7px;
             font-size: 10px;
         }
@@ -429,34 +773,22 @@ class ModuleSelector(QWidget):
             border-color: #4a5470;
         }
 
-        QPushButton:pressed {
-            background-color: #353d57;
-        }
-
         QPushButton#prepareButton {
             background-color: #3f6fe0;
             color: white;
             border: 1px solid #6d9bff;
             font-weight: bold;
-            padding-left: 18px;
-            padding-right: 18px;
+            padding-left: 17px;
+            padding-right: 17px;
         }
 
         QPushButton#prepareButton:hover {
             background-color: #5b8cff;
         }
 
-        QPushButton#resetButton {
-            background-color: #252a37;
-        }
-
-        QPushButton#resetButton:hover {
-            background-color: #303746;
-        }
-
         QLabel#statusLabel {
-            color: #9ba3b8;
-            font-size: 10px;
+            color: #8b93a7;
+            font-size: 9px;
             background: transparent;
         }
 
@@ -471,9 +803,10 @@ class ModuleSelector(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.cards = {}
+        self.rows = {}
 
-        # 공통 Runtime Manager
+        self.active_module_id = None
+
         self.runtime_manager = (
             ModuleRuntimeManager()
         )
@@ -483,13 +816,13 @@ class ModuleSelector(QWidget):
         )
 
         self.resize(
-            900,
-            690
+            1050,
+            700
         )
 
         self.setMinimumSize(
-            820,
-            650
+            950,
+            660
         )
 
         self.setStyleSheet(
@@ -502,12 +835,8 @@ class ModuleSelector(QWidget):
             14,
             14,
             14,
-            14,
+            14
         )
-
-        # ====================================================
-        # Main frame
-        # ====================================================
 
         main_frame = QFrame()
 
@@ -524,14 +853,14 @@ class ModuleSelector(QWidget):
         )
 
         main_layout.setContentsMargins(
-            26,
+            24,
             20,
-            26,
-            18,
+            24,
+            18
         )
 
         main_layout.setSpacing(
-            9
+            10
         )
 
         # ====================================================
@@ -547,20 +876,10 @@ class ModuleSelector(QWidget):
         )
 
         subtitle = QLabel(
-            "Select the modules you want to prepare."
+            "Module manager / Target Game Version: 4.0.2"
         )
 
         subtitle.setObjectName(
-            "subtitle"
-        )
-
-        info_row = QHBoxLayout()
-
-        version = QLabel(
-            "Target Game Version: 4.0.2"
-        )
-
-        version.setObjectName(
             "subtitle"
         )
 
@@ -584,122 +903,116 @@ class ModuleSelector(QWidget):
             "moduleCount"
         )
 
-        info_row.addWidget(
-            version
-        )
+        header = QHBoxLayout()
 
-        info_row.addStretch()
+        header_text = QVBoxLayout()
 
-        info_row.addWidget(
-            module_count
-        )
-
-        main_layout.addWidget(
+        header_text.addWidget(
             title
         )
 
-        main_layout.addWidget(
+        header_text.addWidget(
             subtitle
         )
 
+        header.addLayout(
+            header_text
+        )
+
+        header.addStretch()
+
+        header.addWidget(
+            module_count
+        )
+
         main_layout.addLayout(
-            info_row
+            header
         )
 
         # ====================================================
-        # Section
+        # Main content
         # ====================================================
 
-        section_row = QHBoxLayout()
+        content = QHBoxLayout()
 
-        section_title = QLabel(
+        content.setSpacing(
+            14
+        )
+
+        # ----------------------------------------------------
+        # Left module list
+        # ----------------------------------------------------
+
+        left = QVBoxLayout()
+
+        left.setSpacing(
+            7
+        )
+
+        left_title = QLabel(
             "MODULES"
         )
 
-        section_title.setObjectName(
+        left_title.setObjectName(
             "sectionTitle"
         )
 
-        hint = QLabel(
-            "Click a card or checkbox to select"
+        left.addWidget(
+            left_title
         )
 
-        hint.setObjectName(
-            "subtitle"
-        )
+        for module in MODULES:
 
-        section_row.addWidget(
-            section_title
-        )
-
-        section_row.addStretch()
-
-        section_row.addWidget(
-            hint
-        )
-
-        main_layout.addLayout(
-            section_row
-        )
-
-        # ====================================================
-        # Grid
-        # ====================================================
-
-        grid = QGridLayout()
-
-        grid.setContentsMargins(
-            0,
-            0,
-            0,
-            0,
-        )
-
-        grid.setHorizontalSpacing(
-            12
-        )
-
-        grid.setVerticalSpacing(
-            10
-        )
-
-        grid.setColumnStretch(
-            0,
-            1
-        )
-
-        grid.setColumnStretch(
-            1,
-            1
-        )
-
-        for index, module in enumerate(
-            MODULES
-        ):
-
-            card = ModuleCard(
+            row = ModuleRow(
                 module,
-                self.update_selection_status,
+                self.update_selection_status
             )
 
-            row = index // 2
-            column = index % 2
-
-            grid.addWidget(
-                card,
-                row,
-                column,
+            row.clicked.connect(
+                self.show_module_details
             )
 
-            self.cards[
+            self.rows[
                 module["id"]
-            ] = card
+            ] = row
 
-        main_layout.addLayout(
-            grid
+            left.addWidget(
+                row
+            )
+
+        left.addStretch()
+
+        left_container = QFrame()
+
+        left_container.setLayout(
+            left
         )
 
-        main_layout.addStretch()
+        left_container.setFixedWidth(
+            390
+        )
+
+        # ----------------------------------------------------
+        # Detail panel
+        # ----------------------------------------------------
+
+        self.detail_panel = (
+            ModuleDetailPanel()
+        )
+
+        content.addWidget(
+            left_container
+        )
+
+        content.addWidget(
+            self.detail_panel,
+            1
+        )
+
+        main_layout.addLayout(
+            content,
+            1
+        )
 
         # ====================================================
         # Footer
@@ -743,10 +1056,6 @@ class ModuleSelector(QWidget):
 
         reset_button = QPushButton(
             "Reset"
-        )
-
-        reset_button.setObjectName(
-            "resetButton"
         )
 
         reset_button.clicked.connect(
@@ -797,21 +1106,54 @@ class ModuleSelector(QWidget):
 
         self.update_selection_status()
 
+        # 첫 모듈 자동 표시
+        if MODULES:
+
+            self.show_module_details(
+                MODULES[0]["id"]
+            )
+
     # ========================================================
-    # Selected IDs
+    # Selected modules
     # ========================================================
 
     def get_selected_modules(self):
 
         return [
             module_id
-            for module_id, card
-            in self.cards.items()
-            if card.is_selected()
+            for module_id, row
+            in self.rows.items()
+            if row.is_selected()
         ]
 
     # ========================================================
-    # Footer update
+    # Details
+    # ========================================================
+
+    def show_module_details(
+        self,
+        module_id
+    ):
+
+        self.active_module_id = (
+            module_id
+        )
+
+        for current_id, row in (
+            self.rows.items()
+        ):
+
+            row.set_active(
+                current_id
+                == module_id
+            )
+
+        self.detail_panel.show_module(
+            module_id
+        )
+
+    # ========================================================
+    # Status
     # ========================================================
 
     def update_selection_status(self):
@@ -822,9 +1164,8 @@ class ModuleSelector(QWidget):
 
         ready_count = sum(
             1
-            for card
-            in self.cards.values()
-            if card.ready
+            for row in self.rows.values()
+            if row.ready
         )
 
         self.selected_count.setText(
@@ -851,11 +1192,11 @@ class ModuleSelector(QWidget):
 
     def select_all(self):
 
-        for card in self.cards.values():
+        for row in self.rows.values():
 
-            if card.ready:
+            if row.ready:
 
-                card.checkbox.setChecked(
+                row.checkbox.setChecked(
                     True
                 )
 
@@ -867,9 +1208,9 @@ class ModuleSelector(QWidget):
 
     def clear_selection(self):
 
-        for card in self.cards.values():
+        for row in self.rows.values():
 
-            card.checkbox.setChecked(
+            row.checkbox.setChecked(
                 False
             )
 
@@ -902,57 +1243,21 @@ class ModuleSelector(QWidget):
 
         for result in results:
 
-            card = self.cards.get(
+            row = self.rows.get(
                 result.module_id
             )
 
-            if card is not None:
+            if row:
 
-                card.update_runtime_badge(
+                row.update_status(
                     result.status
                 )
 
-        summary = (
+        self.status_label.setText(
             build_runtime_summary(
                 results
             )
         )
-
-        self.status_label.setText(
-            summary
-        )
-
-        print()
-        print(
-            "MODULE PREPARE RESULT"
-        )
-        print(
-            "=" * 60
-        )
-
-        for result in results:
-
-            print(
-                f"[{result.status}] "
-                f"{result.name}"
-            )
-
-            print(
-                f"  Adapter  : "
-                f"{result.adapter_type}"
-            )
-
-            print(
-                f"  Language : "
-                f"{result.language}"
-            )
-
-            print(
-                f"  Message  : "
-                f"{result.message}"
-            )
-
-            print()
 
     # ========================================================
     # Reset
@@ -981,13 +1286,13 @@ class ModuleSelector(QWidget):
 
         for result in results:
 
-            card = self.cards.get(
+            row = self.rows.get(
                 result.module_id
             )
 
-            if card is not None:
+            if row:
 
-                card.update_runtime_badge(
+                row.update_status(
                     "IDLE"
                 )
 
