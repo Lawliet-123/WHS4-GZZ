@@ -1,0 +1,23 @@
+# Dumper-7 SDK - 게임 바이너리 파생물이라 커밋하지 않는다.
+# README 의 SDK 준비 절차대로 각자 넣을 것.
+CppSDK/
+
+# 빌드 산출물
+build/
+bin/
+out/
+*.dll
+*.exe
+*.obj
+*.pdb
+*.lib
+*.ilk
+*.exp
+
+# Visual Studio
+.vs/
+*.user
+
+# Python
+__pycache__/
+*.pyc
