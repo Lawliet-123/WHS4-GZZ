@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Test / tooling cache
+.pytest_cache/
+.mypy_cache/
+
+# Local environment
+.env
