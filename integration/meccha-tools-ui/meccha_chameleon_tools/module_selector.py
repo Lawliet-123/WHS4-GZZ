@@ -14,32 +14,50 @@ from PyQt5.QtWidgets import (
 )
 
 from meccha_chameleon_tools.module_registry import MODULES
-from meccha_chameleon_tools.module_actions import (
-    get_module_state,
-    prepare_selected_modules,
-    build_selection_message,
+from meccha_chameleon_tools.module_adapters import (
+    get_module_display_status,
+)
+from meccha_chameleon_tools.module_runtime import (
+    ModuleRuntimeManager,
+    build_runtime_summary,
 )
 
 
+# ============================================================
+# Module card
+# ============================================================
+
 class ModuleCard(QFrame):
 
-    def __init__(self, module, on_changed=None):
+    def __init__(
+        self,
+        module,
+        on_changed=None
+    ):
         super().__init__()
 
         self.module = module
+        self.module_id = module["id"]
         self.on_changed = on_changed
 
-        # 실제 modules 폴더 상태 확인
-        self.module_state = get_module_state(
-            module["id"]
+        self.runtime_status = (
+            get_module_display_status(
+                self.module_id
+            )
         )
 
-        self.ready = self.module_state[
-            "ready"
-        ]
+        self.ready = (
+            self.runtime_status == "READY"
+        )
 
-        self.setObjectName("moduleCard")
-        self.setProperty("selected", False)
+        self.setObjectName(
+            "moduleCard"
+        )
+
+        self.setProperty(
+            "selected",
+            False
+        )
 
         self.setMinimumWidth(300)
         self.setFixedHeight(105)
@@ -55,12 +73,11 @@ class ModuleCard(QFrame):
 
         layout.setSpacing(3)
 
-        # ====================================================
+        # ----------------------------------------------------
         # Header
-        # ====================================================
+        # ----------------------------------------------------
 
         header = QHBoxLayout()
-
         header.setSpacing(6)
 
         title = QLabel(
@@ -71,37 +88,25 @@ class ModuleCard(QFrame):
             "moduleTitle"
         )
 
-        if self.ready:
+        self.status_label = QLabel()
 
-            status_label = QLabel(
-                "READY"
-            )
+        self.update_runtime_badge(
+            self.runtime_status
+        )
 
-            status_label.setObjectName(
-                "statusReady"
-            )
-
-        else:
-
-            status_label = QLabel(
-                "UNAVAILABLE"
-            )
-
-            status_label.setObjectName(
-                "statusPending"
-            )
-
-        header.addWidget(title)
+        header.addWidget(
+            title
+        )
 
         header.addStretch()
 
         header.addWidget(
-            status_label
+            self.status_label
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # Description
-        # ====================================================
+        # ----------------------------------------------------
 
         description = QLabel(
             module["description"]
@@ -111,12 +116,11 @@ class ModuleCard(QFrame):
             "moduleDescription"
         )
 
-        # ====================================================
-        # Bottom row
-        # ====================================================
+        # ----------------------------------------------------
+        # Bottom
+        # ----------------------------------------------------
 
         bottom = QHBoxLayout()
-
         bottom.setSpacing(8)
 
         path = QLabel(
@@ -174,6 +178,50 @@ class ModuleCard(QFrame):
         )
 
     # ========================================================
+    # Badge
+    # ========================================================
+
+    def update_runtime_badge(
+        self,
+        status
+    ):
+
+        self.status_label.setText(
+            status
+        )
+
+        if status in (
+            "READY",
+            "PREPARED",
+        ):
+
+            self.status_label.setObjectName(
+                "statusReady"
+            )
+
+        elif status == "IDLE":
+
+            self.status_label.setObjectName(
+                "statusIdle"
+            )
+
+        else:
+
+            self.status_label.setObjectName(
+                "statusPending"
+            )
+
+        self.status_label.style().unpolish(
+            self.status_label
+        )
+
+        self.status_label.style().polish(
+            self.status_label
+        )
+
+        self.status_label.update()
+
+    # ========================================================
     # Selection
     # ========================================================
 
@@ -224,10 +272,13 @@ class ModuleCard(QFrame):
 
         return (
             self.ready
-            and
-            self.checkbox.isChecked()
+            and self.checkbox.isChecked()
         )
 
+
+# ============================================================
+# Main selector
+# ============================================================
 
 class ModuleSelector(QWidget):
 
@@ -326,6 +377,16 @@ class ModuleSelector(QWidget):
             font-weight: bold;
         }
 
+        QLabel#statusIdle {
+            color: #8b93a7;
+            background-color: #20242e;
+            border: 1px solid #343a49;
+            border-radius: 5px;
+            padding: 2px 7px;
+            font-size: 8px;
+            font-weight: bold;
+        }
+
         QCheckBox#moduleCheck {
             color: #c9cedb;
             font-size: 9px;
@@ -372,7 +433,7 @@ class ModuleSelector(QWidget):
             background-color: #353d57;
         }
 
-        QPushButton#applyButton {
+        QPushButton#prepareButton {
             background-color: #3f6fe0;
             color: white;
             border: 1px solid #6d9bff;
@@ -381,8 +442,16 @@ class ModuleSelector(QWidget):
             padding-right: 18px;
         }
 
-        QPushButton#applyButton:hover {
+        QPushButton#prepareButton:hover {
             background-color: #5b8cff;
+        }
+
+        QPushButton#resetButton {
+            background-color: #252a37;
+        }
+
+        QPushButton#resetButton:hover {
+            background-color: #303746;
         }
 
         QLabel#statusLabel {
@@ -404,9 +473,10 @@ class ModuleSelector(QWidget):
 
         self.cards = {}
 
-        # Apply Selection 이후
-        # 준비된 모듈 정보가 들어감
-        self.prepared_modules = []
+        # 공통 Runtime Manager
+        self.runtime_manager = (
+            ModuleRuntimeManager()
+        )
 
         self.setWindowTitle(
             "Meccha Chameleon Tools"
@@ -426,9 +496,7 @@ class ModuleSelector(QWidget):
             self.STYLE
         )
 
-        root = QVBoxLayout(
-            self
-        )
+        root = QVBoxLayout(self)
 
         root.setContentsMargins(
             14,
@@ -479,7 +547,7 @@ class ModuleSelector(QWidget):
         )
 
         subtitle = QLabel(
-            "Select the modules you want to use."
+            "Select the modules you want to prepare."
         )
 
         subtitle.setObjectName(
@@ -499,9 +567,12 @@ class ModuleSelector(QWidget):
         ready_count = sum(
             1
             for module in MODULES
-            if get_module_state(
-                module["id"]
-            )["ready"]
+            if (
+                get_module_display_status(
+                    module["id"]
+                )
+                == "READY"
+            )
         )
 
         module_count = QLabel(
@@ -536,7 +607,7 @@ class ModuleSelector(QWidget):
         )
 
         # ====================================================
-        # Module section
+        # Section
         # ====================================================
 
         section_row = QHBoxLayout()
@@ -572,7 +643,7 @@ class ModuleSelector(QWidget):
         )
 
         # ====================================================
-        # Module grid
+        # Grid
         # ====================================================
 
         grid = QGridLayout()
@@ -608,17 +679,16 @@ class ModuleSelector(QWidget):
 
             card = ModuleCard(
                 module,
-                self.update_selection_status
+                self.update_selection_status,
             )
 
             row = index // 2
-
             column = index % 2
 
             grid.addWidget(
                 card,
                 row,
-                column
+                column,
             )
 
             self.cards[
@@ -671,16 +741,28 @@ class ModuleSelector(QWidget):
             self.clear_selection
         )
 
-        apply_button = QPushButton(
-            "Apply Selection"
+        reset_button = QPushButton(
+            "Reset"
         )
 
-        apply_button.setObjectName(
-            "applyButton"
+        reset_button.setObjectName(
+            "resetButton"
         )
 
-        apply_button.clicked.connect(
-            self.apply_selection
+        reset_button.clicked.connect(
+            self.reset_selected
+        )
+
+        prepare_button = QPushButton(
+            "Prepare Selected"
+        )
+
+        prepare_button.setObjectName(
+            "prepareButton"
+        )
+
+        prepare_button.clicked.connect(
+            self.prepare_selected
         )
 
         footer.addWidget(
@@ -702,7 +784,11 @@ class ModuleSelector(QWidget):
         )
 
         footer.addWidget(
-            apply_button
+            reset_button
+        )
+
+        footer.addWidget(
+            prepare_button
         )
 
         main_layout.addLayout(
@@ -712,27 +798,20 @@ class ModuleSelector(QWidget):
         self.update_selection_status()
 
     # ========================================================
-    # Selected module IDs
+    # Selected IDs
     # ========================================================
 
     def get_selected_modules(self):
 
-        selected = []
-
-        for module_id, card in (
-            self.cards.items()
-        ):
-
-            if card.is_selected():
-
-                selected.append(
-                    module_id
-                )
-
-        return selected
+        return [
+            module_id
+            for module_id, card
+            in self.cards.items()
+            if card.is_selected()
+        ]
 
     # ========================================================
-    # Footer status
+    # Footer update
     # ========================================================
 
     def update_selection_status(self):
@@ -743,7 +822,8 @@ class ModuleSelector(QWidget):
 
         ready_count = sum(
             1
-            for card in self.cards.values()
+            for card
+            in self.cards.values()
             if card.ready
         )
 
@@ -756,7 +836,7 @@ class ModuleSelector(QWidget):
         if selected:
 
             self.status_label.setText(
-                "Ready to apply."
+                "Ready to prepare."
             )
 
         else:
@@ -793,77 +873,132 @@ class ModuleSelector(QWidget):
                 False
             )
 
-        self.prepared_modules = []
-
         self.update_selection_status()
 
     # ========================================================
-    # Apply selection
+    # Prepare
     # ========================================================
 
-    def apply_selection(self):
+    def prepare_selected(self):
 
         selected_ids = (
             self.get_selected_modules()
         )
 
-        # module_actions.py로 넘김
-        result = prepare_selected_modules(
-            selected_ids
+        if not selected_ids:
+
+            self.status_label.setText(
+                "No modules selected."
+            )
+
+            return
+
+        results = (
+            self.runtime_manager
+            .prepare_selected(
+                selected_ids
+            )
         )
 
-        # 다음 통합 단계에서 사용할 수 있도록 저장
-        self.prepared_modules = result[
-            "ready_modules"
-        ]
+        for result in results:
 
-        # UI에 결과 표시
-        message = build_selection_message(
-            result
+            card = self.cards.get(
+                result.module_id
+            )
+
+            if card is not None:
+
+                card.update_runtime_badge(
+                    result.status
+                )
+
+        summary = (
+            build_runtime_summary(
+                results
+            )
         )
 
         self.status_label.setText(
-            message
+            summary
         )
 
         print()
         print(
-            "MODULE SELECTION RESULT"
+            "MODULE PREPARE RESULT"
         )
-
         print(
-            "=" * 50
+            "=" * 60
         )
 
-        print(
-            f"Selected    : "
-            f"{result['selected_count']}"
-        )
-
-        print(
-            f"Ready       : "
-            f"{result['ready_count']}"
-        )
-
-        print(
-            f"Unavailable : "
-            f"{result['unavailable_count']}"
-        )
-
-        for module in (
-            result["ready_modules"]
-        ):
+        for result in results:
 
             print(
-                f"[READY] "
-                f"{module['name']}"
+                f"[{result.status}] "
+                f"{result.name}"
             )
 
             print(
-                f"        "
-                f"{module['path']}"
+                f"  Adapter  : "
+                f"{result.adapter_type}"
             )
 
+            print(
+                f"  Language : "
+                f"{result.language}"
+            )
+
+            print(
+                f"  Message  : "
+                f"{result.message}"
+            )
+
+            print()
+
+    # ========================================================
+    # Reset
+    # ========================================================
+
+    def reset_selected(self):
+
+        selected_ids = (
+            self.get_selected_modules()
+        )
+
+        if not selected_ids:
+
+            self.status_label.setText(
+                "No modules selected."
+            )
+
+            return
+
+        results = (
+            self.runtime_manager
+            .stop_selected(
+                selected_ids
+            )
+        )
+
+        for result in results:
+
+            card = self.cards.get(
+                result.module_id
+            )
+
+            if card is not None:
+
+                card.update_runtime_badge(
+                    "IDLE"
+                )
+
+        self.status_label.setText(
+            "Selected modules reset."
+        )
+
+
+# ============================================================
+# Application
+# ============================================================
 
 def main():
 
