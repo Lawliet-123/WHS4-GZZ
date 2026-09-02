@@ -1,0 +1,8 @@
+.build/
+*.user
+*.suo
+*.VC.db
+.vs/
+Scripts/.venv/
+Scripts/__pycache__/
+Scripts/auto-paint-data/
