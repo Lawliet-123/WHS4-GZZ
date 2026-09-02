@@ -1,0 +1,28 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "AutoPaint.Bridge", "AutoPaint.Bridge.vcxproj", "{2B8B5F21-5B87-49E9-A964-7C44A3E9F965}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "AutoPaint.Injector", "AutoPaint.Injector.vcxproj", "{30FF00DF-9B47-47D9-95D6-6A8DFD75B17E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2B8B5F21-5B87-49E9-A964-7C44A3E9F965}.Debug|x64.ActiveCfg = Debug|x64
+		{2B8B5F21-5B87-49E9-A964-7C44A3E9F965}.Debug|x64.Build.0 = Debug|x64
+		{2B8B5F21-5B87-49E9-A964-7C44A3E9F965}.Release|x64.ActiveCfg = Release|x64
+		{2B8B5F21-5B87-49E9-A964-7C44A3E9F965}.Release|x64.Build.0 = Release|x64
+		{30FF00DF-9B47-47D9-95D6-6A8DFD75B17E}.Debug|x64.ActiveCfg = Debug|x64
+		{30FF00DF-9B47-47D9-95D6-6A8DFD75B17E}.Debug|x64.Build.0 = Debug|x64
+		{30FF00DF-9B47-47D9-95D6-6A8DFD75B17E}.Release|x64.ActiveCfg = Release|x64
+		{30FF00DF-9B47-47D9-95D6-6A8DFD75B17E}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
