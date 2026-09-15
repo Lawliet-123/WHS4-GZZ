@@ -33,12 +33,12 @@ import time
 
 import pymem.exception
 
-# 이 파일을 직접 실행해도(`python detectors/whistle.py`) core/ 를 찾게 한다.
+# 이 파일을 직접 실행해도 core/ 를 찾게 한다.
 # 팀원마다 실행 방식이 달라서 둘 다 되게 해둔다.
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-from core.result import DetectorResult, Evidence, to_team_event
+from core.result import DetectorResult, Evidence
 from core.unreal import Runtime, PROCESS_EVENT_IDX
 
 # 게임 애셋에 오타가 있다. Provocation 이 아니라 **Provoaction** 이다.
@@ -132,15 +132,10 @@ def scan():
     return r
 
 
-def main(argv=None):
-    """단독 실행. 인자로 session_id 를 주면 그대로 쓴다 (측정 실험용)."""
-    argv = list(sys.argv[1:] if argv is None else argv)
-    session = argv.pop(0) if argv and not argv[0].endswith(".jsonl") else "whistle_001"
+def main():
     res = scan()
-    print(json.dumps(to_team_event(res, session), ensure_ascii=False, indent=2))
-    # 종료코드: 0 정상 / 1 의심 이상 / 2 검사 실패
-    return {"NORMAL": 0, "ERROR": 2, "OFFLINE": 2}.get(
-        to_team_event(res, session)["status"], 1)
+    print(json.dumps(res.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if res.result == "CLEAN" else 1
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """후크가 남긴 RPC 위반 기록을 팀 공통 계약으로 바꾼다.
 
-판정은 C++ 후크(`native/whistle_hook/src/main.cpp`)가 인프로세스에서 한다.
+판정은 C++ 후크(`native/src/main.cpp`)가 인프로세스에서 한다.
 RPC 호출 시점은 외부에서 볼 수 없어서 후킹이 아니면 방법이 없다.
 이 파일은 그 결과를 읽어 `result.py` 계약으로 옮기는 보고 계층이다.
 
@@ -8,38 +8,23 @@ RPC 호출 시점은 외부에서 볼 수 없어서 후킹이 아니면 방법�
 후크가 C++ 인 것은 구현 제약이지 계약의 예외가 아니다.
 
 사용법:
-    python detectors/whistle_rpc.py                      # 기본 경로에서 읽는다
-    python detectors/whistle_rpc.py <ac-whistle.jsonl>
+    python rpc_report.py                      # 기본 경로에서 읽는다
+    python rpc_report.py <ac-whistle.jsonl>
 """
 
 import json
 import os
 import sys
 
-# 이 파일을 직접 실행해도(`python detectors/whistle_rpc.py`) core/ 를 찾게 한다.
+# 이 파일을 직접 실행해도 core/ 를 찾게 한다.
 # 팀원마다 실행 방식이 달라서 둘 다 되게 해둔다.
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-from core.result import DetectorResult, Evidence, to_team_event
+from core.result import DetectorResult, Evidence
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# 후크는 **자기 DLL 이 있는 폴더**에 로그를 쓴다(main.cpp `DllDirectory()`).
-# 빌드 위치가 사람마다 달라서 후보를 순서대로 본다. 인자로 직접 넘겨도 된다.
-LOG_CANDIDATES = [
-    os.path.join(_ROOT, "logs", "raw", "ac-whistle.jsonl"),
-    os.path.join(_ROOT, "native", "whistle_hook", "bin", "Release", "ac-whistle.jsonl"),
-    os.path.join(_ROOT, "native", "whistle_hook", "bin", "ac-whistle.jsonl"),
-]
-
-
-def default_log():
-    """존재하는 첫 후보를 돌려준다. 하나도 없으면 첫 후보(오류 메시지용)."""
-    for p in LOG_CANDIDATES:
-        if os.path.exists(p):
-            return p
-    return LOG_CANDIDATES[0]
+DEFAULT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "native", "bin", "Release", "ac-whistle.jsonl")
 
 # 후크가 내보내는 위반 코드 -> (점수, 대응하는 실측 취약점, 서버측 권고)
 RULES = {
@@ -53,7 +38,7 @@ RULES = {
 
 def scan(path=None):
     r = DetectorResult("whistle_rpc")
-    path = path or default_log()
+    path = path or DEFAULT_LOG
 
     if not os.path.exists(path):
         return r.fail(f"후크 로그가 없습니다: {path}\n"
@@ -125,15 +110,10 @@ def scan(path=None):
     return r
 
 
-def main(argv=None):
-    """단독 실행. 인자로 session_id 를 주면 그대로 쓴다 (측정 실험용)."""
-    argv = list(sys.argv[1:] if argv is None else argv)
-    session = argv.pop(0) if argv and not argv[0].endswith(".jsonl") else "whistle_rpc_001"
-    res = scan(argv[0] if argv else None)
-    print(json.dumps(to_team_event(res, session), ensure_ascii=False, indent=2))
-    # 종료코드: 0 정상 / 1 의심 이상 / 2 검사 실패
-    return {"NORMAL": 0, "ERROR": 2, "OFFLINE": 2}.get(
-        to_team_event(res, session)["status"], 1)
+def main():
+    res = scan(sys.argv[1] if len(sys.argv) > 1 else None)
+    print(json.dumps(res.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if res.result == "CLEAN" else 1
 
 
 if __name__ == "__main__":

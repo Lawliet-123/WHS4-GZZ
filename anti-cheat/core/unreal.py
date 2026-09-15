@@ -48,6 +48,9 @@ CLASS_OFFSET = 0x10            # UObject::ClassPrivate
 EXEC_FUNCTION_OFF = 0xD8       # UFunction::ExecFunction
 PROCESS_EVENT_IDX = 0x4C       # UObject vtable 슬롯
 
+SUPER_STRUCT_OFF = 0x40        # UStruct::SuperStruct — 상속 사슬을 타고 올라간다
+CDO_OFF = 0x110                # UClass::ClassDefaultObject
+
 GOBJ_CHUNKS = 0x00
 GOBJ_NUM = 0x14
 CHUNK_SIZE = 65536
@@ -80,6 +83,8 @@ class Runtime:
 
         self._names = {}
         self._class_names = {}
+        self._cdos = {}
+        self._chains = {}
         if self.resolve(0) != "None":
             raise RuntimeError("FNamePool 검증 실패 (0번 이름이 'None' 이 아님) — 빌드 불일치")
 
@@ -143,6 +148,51 @@ class Runtime:
             return self.resolve(nid)
         except Exception:
             return ""
+
+    # ── 클래스 사슬 · CDO ────────────────────────────────────────────────
+    def cdo_of(self, cls_ptr):
+        """UClass -> ClassDefaultObject.
+
+        **기준값을 우리가 저장하지 않기 위해 필요하다.** 값 변조를 잡으려면
+        "원래 얼마였나"를 알아야 하는데, 그걸 상수로 박아두면 게임이 패치될
+        때마다 틀린다. 언리얼은 클래스마다 기본값 인스턴스를 들고 있으니
+        그것을 그대로 기준으로 쓴다. vtable 범위 비교와 같은 원리다.
+        """
+        if not cls_ptr:
+            return 0
+        if cls_ptr in self._cdos:
+            return self._cdos[cls_ptr]
+        try:
+            v = self.rq(cls_ptr + CDO_OFF)
+        except Exception:
+            v = 0
+        self._cdos[cls_ptr] = v
+        return v
+
+    def class_chain(self, cls_ptr, limit=32):
+        """자기 자신부터 최상위까지 클래스 이름을 순서대로 돌려준다.
+
+        블루프린트 클래스는 이름이 `..._Survivor_Default_Fukuyoka_1point4_C`
+        처럼 파생돼 있어서, 이름 하나로 매칭하면 자식 클래스를 전부 놓친다.
+        """
+        if cls_ptr in self._chains:
+            return self._chains[cls_ptr]
+        out, cur, seen = [], cls_ptr, set()
+        while cur and cur not in seen and len(out) < limit:
+            seen.add(cur)
+            n = self.class_name(cur)
+            if not n:
+                break
+            out.append(n)
+            try:
+                cur = self.rq(cur + SUPER_STRUCT_OFF)
+            except Exception:
+                break
+        self._chains[cls_ptr] = out
+        return out
+
+    def is_a(self, cls_ptr, base_name):
+        return base_name in self.class_chain(cls_ptr)
 
     # ── GObjects ─────────────────────────────────────────────────────────
     def iter_objects(self):
