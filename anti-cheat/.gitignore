@@ -1,0 +1,22 @@
+# 게임 바이너리에서 파생된 산출물 — 재배포하지 않는다
+CppSDK/
+*.usmap
+
+# 빌드 산출물
+build/
+bin/
+*.dll
+*.exe
+*.obj
+*.pdb
+*.lib
+*.ilk
+*.exp
+
+# 수집 로그 — 폴더만 남기고 내용은 올리지 않는다
+logs/raw/*
+logs/detection/*
+!logs/**/.gitkeep
+
+__pycache__/
+*.pyc
