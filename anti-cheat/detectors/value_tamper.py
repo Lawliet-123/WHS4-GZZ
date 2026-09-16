@@ -26,9 +26,25 @@ GodMode 상태 검사(`Dead` `Invincible` `Health`)는 처음에 여기 있었�
 값 변조를 잡으려면 "원래 얼마였나"를 알아야 한다. 상수로 박아두면 게임이
 패치될 때마다 틀리고, 틀린 줄도 모른 채 통과한다 — 조용한 미탐지다.
 
-그래서 **CDO(ClassDefaultObject)를 기준으로 쓴다.** 언리얼은 클래스마다
-기본값 인스턴스를 들고 있다. 살아있는 인스턴스와 그것을 비교한다.
-A축이 "게임 모듈 안이냐 밖이냐"만 보고 정상 값을 저장하지 않았던 것과 같다.
+그래서 **기준을 게임 메모리에서 읽는다.** 언리얼은 기본값 인스턴스를
+들고 있으니 살아있는 인스턴스와 그것을 비교한다. A축이 "게임 모듈 안이냐
+밖이냐"만 보고 정상 값을 저장하지 않았던 것과 같다.
+
+### 기준은 CDO 가 아니라 아키타입이다
+
+처음엔 `UClass::ClassDefaultObject`(CDO)만 기준으로 썼다. **깨끗한 세션에서
+오탐이 났다.**
+
+    bAutoFlushStrokes   실제=False   CDO=True    RuntimePaintable
+    bAutoFlushStrokes   실제=False   CDO=True    RuntimePaintable_GEN_VARIABLE
+
+`_GEN_VARIABLE` 은 블루프린트가 들고 있는 **컴포넌트 템플릿(아키타입)** 이다.
+C++ 클래스의 CDO 가 True 라도 블루프린트가 False 로 덮어쓸 수 있고,
+살아있는 인스턴스는 CDO 가 아니라 **그 아키타입에서 복사되어 생성된다.**
+즉 CDO 와 다른 것이 정상이었다.
+
+그래서 같은 클래스의 아키타입이 있으면 그것을 기준으로 쓰고, 없을 때만
+CDO 로 물러난다. 기준을 메모리에서 읽는다는 원칙은 그대로다.
 
 ## 다만 CDO 비교가 성립하는 필드만 넣는다
 
@@ -79,10 +95,19 @@ from core.unreal import Runtime
 # `..._Survivor_Default_Fukuyoka_1point4_C` 처럼 파생돼 있어서
 # 이름을 정확히 맞추려 하면 자식 클래스를 전부 놓친다.
 
-CHARACTER = "ABP_FirstPersonCharacter_Main_C"
-SURVIVOR = "ABP_FirstPersonCharacter_cLeon_Character_Survivor_C"
-NEAR_INTERACT = "UBPC_NearInteract_C"
-PAINTABLE = "URuntimePaintableComponent"
+# **SDK 헤더 이름과 런타임 이름이 다르다.**
+# Dumper-7 은 헤더에 언리얼 타입 접두사를 붙이지만(Actor 는 A, UObject 는 U)
+# 런타임 FName 에는 그 글자가 없다.
+#
+#   헤더  ABP_FirstPersonCharacter_Main_C   UBPC_NearInteract_C
+#   런타임 BP_FirstPersonCharacter_Main_C    BPC_NearInteract_C
+#
+# 여기에는 **런타임 이름**을 적는다. 다만 팀원이 헤더에서 그대로 복사해
+# 넣어도 조용히 안 걸리는 일이 없도록 `_in_chain()` 이 접두사를 무시한다.
+CHARACTER = "BP_FirstPersonCharacter_Main_C"
+SURVIVOR = "BP_FirstPersonCharacter_cLeon_Character_Survivor_C"
+NEAR_INTERACT = "BPC_NearInteract_C"
+PAINTABLE = "RuntimePaintableComponent"
 
 CONFIG_FIELDS = [
     # ── Hide Anywhere ────────────────────────────────────────────────
@@ -142,6 +167,53 @@ def _fmt(v, ty):
     return f"{v:g}" if ty in ("d", "f") else str(v)
 
 
+def _strip_prefix(name):
+    """헤더의 언리얼 타입 접두사(A/U)를 떼어 런타임 이름에 맞춘다."""
+    if len(name) > 1 and name[0] in "AU" and name[1].isupper():
+        return name[1:]
+    return name
+
+
+def _in_chain(chain, want):
+    """상속 사슬에 이 클래스가 있는가. 접두사 차이는 무시한다.
+
+    접두사를 안 맞춰서 대상을 못 찾으면 **에러 없이 검사 0건이 된다.**
+    조용한 미탐지라 여기서 관대하게 받는다. 실제로 이 오프셋 표를 처음
+    넣었을 때 헤더 이름을 그대로 써서 전 클래스를 놓쳤다.
+    """
+    w = _strip_prefix(want)
+    return any(_strip_prefix(c) == w for c in chain)
+
+
+# 블루프린트가 들고 있는 컴포넌트 템플릿의 이름 접미사.
+# 살아있는 인스턴스는 이것에서 복사되어 만들어진다.
+ARCHETYPE_SUFFIX = "_GEN_VARIABLE"
+
+
+def _build_baselines(rt, rows):
+    """클래스 -> 아키타입 주소.
+
+    **대상 클래스의 오브젝트만 넘겨야 한다.** 이름 해석(FName)은 오브젝트당
+    비용이 있어서 5만 개를 전부 풀면 11초가 더 걸린다. 실제로 그렇게 짰다가
+    3.3초 → 14.6초가 됐다.
+    """
+    archetypes = {}
+    for row in rows:
+        if rt.name_of(row).endswith(ARCHETYPE_SUFFIX):
+            archetypes.setdefault(row.cls, row.addr)
+    return archetypes
+
+
+def _baseline_of(rt, archetypes, cls_ptr):
+    return archetypes.get(cls_ptr) or rt.cdo_of(cls_ptr)
+
+
+def _is_template(rt, row, archetypes):
+    """기준 노릇을 하는 오브젝트인가. 자기 자신과 비교해봐야 의미가 없다."""
+    return (row.addr == rt.cdo_of(row.cls)
+            or row.addr == archetypes.get(row.cls))
+
+
 def scan():
     r = DetectorResult("value_tamper")
     t0 = time.time()
@@ -169,28 +241,50 @@ def scan():
 
     checked = 0
     cdo_missing = set()
+    # 클래스별로 몇 개를 만났는지 센다. 0 이면 그 클래스는 **검사한 게 아니다.**
+    # 이름을 잘못 적으면 에러 없이 검사 0건이 되는데 그게 조용한 미탐지다.
+    found = {}
     # 필드 하나가 여러 인스턴스에서 걸릴 수 있다. 걸릴 때마다 add() 하면
     # 같은 설명이 계속 이어붙어 읽을 수 없게 된다. 먼저 모으고 한 번만 낸다.
     violations = {}
 
-    # ── 설정값: CDO 와 비교 ──────────────────────────────────────────
+    # 대상 클래스에 해당하는 오브젝트만 먼저 추린다. 클래스 사슬은 클래스
+    # 포인터 단위로 캐시되므로 5만 개를 훑어도 싸다. 이름 해석은 비싸므로
+    # 이 목록에 대해서만 한다.
+    # 매칭 결과는 **클래스 단위로 캐시한다.** 오브젝트 5.5만 개에 클래스는
+    # 5천여 종뿐이라 오브젝트마다 사슬을 비교하면 같은 일을 열 번씩 한다.
+    match_cache = {}
+    candidates = []
     for row in rows:
-        chain = rt.class_chain(row.cls)
-        if not chain:
-            continue
-        for base, fields in by_class.items():
-            if base not in chain:
+        bases = match_cache.get(row.cls)
+        if bases is None:
+            chain = rt.class_chain(row.cls)
+            bases = [b for b in by_class if _in_chain(chain, b)] if chain else []
+            match_cache[row.cls] = bases
+        if bases:
+            candidates.append((row, bases))
+    r.meta["candidates"] = len(candidates)
+    r.meta["classes"] = len(match_cache)
+
+    archetypes = _build_baselines(rt, [c[0] for c in candidates])
+
+    # ── 설정값: 아키타입(없으면 CDO) 과 비교 ─────────────────────────
+    for row, bases in candidates:
+        for base in bases:
+            fields = by_class[base]
+            if _is_template(rt, row, archetypes):
+                continue          # 기준 자신은 비교 대상이 아니다
+            ref = _baseline_of(rt, archetypes, row.cls)
+            if not ref:
+                cdo_missing.add(rt.class_name(row.cls))
                 continue
-            cdo = rt.cdo_of(row.cls)
-            if not cdo:
-                cdo_missing.add(chain[0])
-                continue
-            if row.addr == cdo:
-                continue          # CDO 자기 자신은 비교 대상이 아니다
+            # **살아있는 인스턴스만 센다.** 파생 블루프린트마다 CDO 가 하나씩
+            # 있어서 전체 개수를 세면 검사하지도 않은 것이 커버리지로 잡힌다.
+            found[base] = found.get(base, 0) + 1
             for name, off, ty, who in fields:
                 try:
                     live = _read(rt, row.addr, off, ty)
-                    base_v = _read(rt, cdo, off, ty)
+                    base_v = _read(rt, ref, off, ty)
                 except Exception:
                     continue
                 checked += 1
@@ -210,6 +304,14 @@ def scan():
 
     r.meta["config_checks"] = checked
     r.meta["fields"] = len(CONFIG_FIELDS)
+    r.meta["live_instances"] = {b: found.get(b, 0) for b in by_class}
+
+    missing = [b for b in by_class if not found.get(b)]
+    if missing:
+        # 클래스는 있는데 **살아있는 인스턴스가 없는** 경우가 대부분이다.
+        # (예: 생존자로 플레이하지 않으면 Survivor 인스턴스가 없다)
+        # 그 필드들은 검사한 것이 아니므로 커버리지로 밝힌다.
+        r.meta["no_live_instance"] = missing
     r.meta["elapsed_ms"] = int((time.time() - t0) * 1000)
 
     if cdo_missing:
@@ -219,8 +321,10 @@ def scan():
     if checked == 0:
         # 대상이 하나도 없으면 검사한 게 아니다. CLEAN 으로 내보내면
         # 로비에서 돌린 세션이 "깨끗함"으로 집계된다.
-        return r.fail("대상 클래스를 하나도 찾지 못했습니다. "
-                      "게임이 로비이거나 오프셋이 맞지 않습니다.")
+        return r.fail("대상 클래스를 하나도 찾지 못했습니다: "
+                      + ", ".join(by_class)
+                      + "\n    게임이 로비이거나 클래스 이름·오프셋이 "
+                        "맞지 않습니다.")
 
     if not r.reasons:
         r.detail = (f"오브젝트 {len(rows):,} / 설정값 비교 {checked}건 "
