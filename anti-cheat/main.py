@@ -45,10 +45,11 @@ LOG_DIR = os.path.join(ROOT, "logs", "detection")
 # 팀원이 탐지기를 추가할 때 여기 한 줄만 넣으면 된다.
 # 조건은 하나: `scan()` 이 `result.DetectorResult` 를 돌려줄 것.
 DETECTORS = [
-    ("filesystem",   "detectors.filesystem",   "치트 파일 흔적 (게임 실행 불필요)"),
-    ("whistle",      "detectors.whistle",      "휘파람 후킹 — ExecFunction/vtable/사운드"),
-    ("value_tamper", "detectors.value_tamper", "값 변조 — CDO 대조 + 불변식"),
-    ("whistle_rpc",  "detectors.whistle_rpc",  "도발 RPC 위반 (인프로세스 후크 로그)"),
+    ("filesystem",   "detectors.filesystem",           "치트 파일 흔적 (게임 실행 불필요)"),
+    ("injection",    "detectors.injection", "주입·후킹 범용 — 핵 종류 무관"),
+    ("whistle",      "detectors.whistle",  "휘파람 후킹 — ExecFunction/vtable/사운드"),
+    ("value_tamper", "detectors.value_tamper",    "값 변조 — CDO 대조"),
+    ("whistle_rpc",  "detectors.whistle_rpc",        "도발 RPC 위반 (인프로세스 후크 로그)"),
 ]
 
 
