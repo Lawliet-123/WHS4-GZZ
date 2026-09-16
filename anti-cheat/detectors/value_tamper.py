@@ -8,6 +8,19 @@ A축은 후킹 여부만 보므로 핵 종류를 가리지 않았다. B축은 �
 대상 목록은 심재민이 2026-09-15 정리한 "ZIP 실제 코드 기준" 표에서 가져왔고,
 오프셋은 Dumper-7 CppSDK 에서 직접 확인했다.
 
+## 담당 범위 (2026-09-15 심재민과 분담)
+
+이 파일은 **내 담당 4종**만 다룬다.
+
+    내 담당    휘파람 조작 · Hide Anywhere · Auto Paint v1 · ESP
+    심재민     GodMode · Noclip · Auto Paint v2 · AIMBOT
+
+휘파람은 `whistle_detector.py` 가 따로 맡는다(A축). 여기 남는 것은
+Hide Anywhere 와 Auto Paint v1 이다. ESP 는 아래에 적은 이유로 검사할 것이 없다.
+
+GodMode 상태 검사(`Dead` `Invincible` `Health`)는 처음에 여기 있었으나
+분담 후 심재민 쪽으로 넘겼다. 찾아둔 오프셋은 아래 주석에 남겨둔다.
+
 ## 기준값을 저장하지 않는다
 
 값 변조를 잡으려면 "원래 얼마였나"를 알아야 한다. 상수로 박아두면 게임이
@@ -17,23 +30,29 @@ A축은 후킹 여부만 보므로 핵 종류를 가리지 않았다. B축은 �
 기본값 인스턴스를 들고 있다. 살아있는 인스턴스와 그것을 비교한다.
 A축이 "게임 모듈 안이냐 밖이냐"만 보고 정상 값을 저장하지 않았던 것과 같다.
 
-## 다만 CDO 비교가 성립하지 않는 필드가 있다
+## 다만 CDO 비교가 성립하는 필드만 넣는다
 
-체력은 게임 중에 당연히 변한다. CDO 와 다르다고 잡으면 전원이 걸린다.
-그래서 필드를 두 종류로 나눈다.
+체력처럼 게임 플레이로 변하는 값은 CDO 와 다른 것이 정상이다. 넣으면 전원이
+걸린다. 복제되는 값(`Net` `RepNotify`)도 서버가 런타임에 바꾸므로 마찬가지다.
 
-    설정값   런타임에 바뀌면 안 되는 값      → CDO 와 다르면 변조
-    상태값   게임 플레이로 바뀌는 값          → CDO 비교 불가. 불변식으로 본다
+    넣는다     런타임에 바뀌면 안 되는 설정값   → CDO 와 다르면 변조
+    안 넣는다  게임 플레이·복제로 바뀌는 값      → 불변식으로 봐야 한다
 
-상태값은 "서로 모순되는가"를 본다. 죽지 않았는데 체력이 0 이하이거나,
-체력이 기본값보다 크면 게임 로직으로는 나올 수 없는 조합이다.
+무엇을 어느 쪽으로 뒀는지는 `CONFIG_FIELDS` 아래 주석에 적어뒀다.
 
-## 못 잡는 것
+## 못 잡는 것 (내 담당 중)
 
-  - **에임봇** `AController::ControlRotation` 은 매 프레임 정상적으로 바뀐다.
-    정적 스냅샷 한 장으로는 정상과 구분할 수 없다. Raw Input 과 비교해야 하고
-    그건 3번(입력·시그니처) 담당이다.
-  - **ESP** 는 읽기만 해서 바꾸는 값이 없다. B축에 걸릴 것이 없다.
+  - **ESP** 는 외부에서 읽기만 한다. **바꾸는 값이 없어 B축에 걸릴 것이 없고,
+    코드도 안 건드리므로 A축에도 안 걸린다.** 2번 레이어에서는 원리적으로
+    탐지 불가다. 게임 프로세스를 여는 핸들을 감시하는 1번이라야 한다.
+  - **Auto Paint v1 의 호출 자체** — 제한값을 안 건드리고 정상 속도로
+    자동 클릭만 하면 여기 걸리지 않는다. 그때는 RPC 호출 패턴을 봐야 하고
+    그건 `rpc_report.py` + 인프로세스 후크 쪽이다.
+
+## 남의 담당 (참고)
+
+  - **에임봇** `AController::ControlRotation` 0x0320 은 매 프레임 정상적으로
+    바뀐다. 스냅샷 한 장으로는 구분 불가고 Raw Input 비교가 필요하다.
 """
 
 import json
@@ -63,25 +82,45 @@ from core.unreal import Runtime
 CHARACTER = "ABP_FirstPersonCharacter_Main_C"
 SURVIVOR = "ABP_FirstPersonCharacter_cLeon_Character_Survivor_C"
 NEAR_INTERACT = "UBPC_NearInteract_C"
+PAINTABLE = "URuntimePaintableComponent"
 
 CONFIG_FIELDS = [
-    # 런타임에 바뀌면 안 되는 값. CDO 와 다르면 변조다.
+    # ── Hide Anywhere ────────────────────────────────────────────────
+    # 상호작용 거리·탐색 반경·각도를 키워서 멀리서, 아무 데나 숨는다.
     (CHARACTER,     "InteractLength", 0x0510, "d", "Hide Anywhere"),
     (CHARACTER,     "EnableInteract", 0x0676, "b", "Hide Anywhere"),
     (SURVIVOR,      "PreStencil",     0x0D20, "i", "Hide Anywhere"),
     (NEAR_INTERACT, "SearchRadius",   0x00C0, "d", "Hide Anywhere"),
     (NEAR_INTERACT, "Angle",          0x00C8, "d", "Hide Anywhere"),
+
+    # ── Auto Paint v1 ────────────────────────────────────────────────
+    # 칠하기에는 **속도 제한이 전부 설정값으로 노출돼 있다.** 봇이 빨리
+    # 칠하려면 이걸 풀어야 하고, 전부 CDO 대조가 그대로 성립한다.
+    # MinScreenPaintDistance 를 0 으로 만들면 한 점에서 무한히 칠할 수 있다.
+    (PAINTABLE, "MinScreenPaintDistance",           0x0138, "f", "Auto Paint v1"),
+    (PAINTABLE, "MaxBatchSize",                     0x01EC, "i", "Auto Paint v1"),
+    (PAINTABLE, "MaxNetworkBatchesPerTick",         0x01F0, "i", "Auto Paint v1"),
+    (PAINTABLE, "MaxReplicatedPaintStrokesPerTick", 0x01F4, "i", "Auto Paint v1"),
+    (PAINTABLE, "AutoFlushThreshold",               0x01E8, "i", "Auto Paint v1"),
+    (PAINTABLE, "bAutoFlushStrokes",                0x01E7, "b", "Auto Paint v1"),
+    (PAINTABLE, "bRealtimeNetworkSync",             0x013D, "b", "Auto Paint v1"),
 ]
 
-STATE_FIELDS = [
-    # 게임 플레이로 바뀌는 값. 읽어서 불변식 검사에만 쓴다.
-    (CHARACTER, "Dead",       0x05AA, "b"),
-    (CHARACTER, "Invincible", 0x05AB, "b"),
-    (CHARACTER, "Health",     0x0638, "d"),
-]
+# 일부러 뺀 것
+#
+#   URuntimePaintableComponent::MaxDecoySpawnCount  0x01E0 (int32)
+#       Net + RepNotify 다. 서버가 런타임에 정상적으로 바꾼다.
+#       CDO 와 달라지는 것이 정상이므로 넣으면 전원이 걸린다.
+#
+#   심재민 담당으로 넘긴 GodMode 상태값 (오프셋만 남겨둔다)
+#       ABP_FirstPersonCharacter_Main_C::Dead        0x05AA (bool)
+#       ABP_FirstPersonCharacter_Main_C::Invincible  0x05AB (bool)
+#       ABP_FirstPersonCharacter_Main_C::Health      0x0638 (double)
+#       셋 다 게임 플레이로 변하므로 CDO 대조가 성립하지 않는다.
+#       불변식으로 봐야 한다 — 체력이 0 이하인데 Dead 가 false 면 모순이다.
 
-SIZES = {"b": 1, "i": 4, "d": 8}
-FMT = {"b": "<?", "i": "<i", "d": "<d"}
+SIZES = {"b": 1, "i": 4, "f": 4, "d": 8}
+FMT = {"b": "<?", "i": "<i", "f": "<f", "d": "<d"}
 
 # 부동소수 비교. 설정값은 에디터에서 넣은 상수라 그대로 일치해야 하지만,
 # 직렬화 경로에 따라 최하위 비트가 흔들릴 수 있어 여유를 둔다.
@@ -94,13 +133,13 @@ def _read(rt, addr, off, ty):
 
 
 def _differs(a, b, ty):
-    if ty == "d":
+    if ty in ("d", "f"):
         return abs(a - b) > EPS * max(1.0, abs(b))
     return a != b
 
 
 def _fmt(v, ty):
-    return f"{v:g}" if ty == "d" else str(v)
+    return f"{v:g}" if ty in ("d", "f") else str(v)
 
 
 def scan():
@@ -169,77 +208,23 @@ def scan():
                         f"{o} / 기본값 {_fmt(b, ty)}")
                for o, v, b in hits[:3]])
 
-    # ── 상태값: 불변식 ──────────────────────────────────────────────
-    invincible = []
-    contradictions = []
-    over_max = []
-    chars = 0
-
-    for row in rows:
-        if CHARACTER not in rt.class_chain(row.cls):
-            continue
-        cdo = rt.cdo_of(row.cls)
-        if row.addr == cdo:
-            continue
-        chars += 1
-        try:
-            dead = _read(rt, row.addr, 0x05AA, "b")
-            inv = _read(rt, row.addr, 0x05AB, "b")
-            hp = _read(rt, row.addr, 0x0638, "d")
-        except Exception:
-            continue
-        obj = rt.name_of(row)
-
-        if inv:
-            invincible.append((obj, hp))
-        if not dead and hp <= 0.0:
-            contradictions.append((obj, hp))
-        if cdo:
-            try:
-                base_hp = _read(rt, cdo, 0x0638, "d")
-                if base_hp > 0 and hp > base_hp + EPS:
-                    over_max.append((obj, hp, base_hp))
-            except Exception:
-                pass
-
-    if contradictions:
-        # 게임 로직으로는 나올 수 없는 조합이다. Dead 를 강제로 false 로
-        # 돌려놓는 갓모드가 정확히 이 모양을 만든다.
-        r.add("dead_flag_contradiction", 70,
-              f"체력이 0 이하인데 사망 상태가 아님 {len(contradictions)}건",
-              [Evidence("value", f"Health={hp:g}", obj)
-               for obj, hp in contradictions[:3]])
-
-    if over_max:
-        r.add("health_over_default", 60,
-              f"체력이 기본값을 초과 {len(over_max)}건",
-              [Evidence("value", f"Health={hp:g}", f"{obj} / 기본 {b:g}")
-               for obj, hp, b in over_max[:3]])
-
-    if invincible:
-        # 게임이 정상적으로 무적을 켜는 구간(리스폰 직후 등)이 있을 수 있다.
-        # 단독으로는 확정하지 않는다. 확인 전까지 의심까지만 준다.
-        r.add("invincible_flag_set", 35,
-              f"Invincible 플래그가 켜진 캐릭터 {len(invincible)}명 "
-              f"(정상 무적 구간 여부는 미확인)",
-              [Evidence("value", "Invincible=True", obj)
-               for obj, _ in invincible[:3]])
-
-    r.meta["characters"] = chars
     r.meta["config_checks"] = checked
+    r.meta["fields"] = len(CONFIG_FIELDS)
     r.meta["elapsed_ms"] = int((time.time() - t0) * 1000)
 
     if cdo_missing:
         # CDO 를 못 읽으면 그 클래스는 검사한 게 아니다. 조용히 넘기지 않는다.
         r.meta["cdo_unreadable"] = sorted(cdo_missing)[:5]
 
-    if checked == 0 and chars == 0:
+    if checked == 0:
+        # 대상이 하나도 없으면 검사한 게 아니다. CLEAN 으로 내보내면
+        # 로비에서 돌린 세션이 "깨끗함"으로 집계된다.
         return r.fail("대상 클래스를 하나도 찾지 못했습니다. "
                       "게임이 로비이거나 오프셋이 맞지 않습니다.")
 
     if not r.reasons:
-        r.detail = (f"오브젝트 {len(rows):,} / 캐릭터 {chars} / "
-                    f"설정값 비교 {checked}건 — 값 변조 없음")
+        r.detail = (f"오브젝트 {len(rows):,} / 설정값 비교 {checked}건 "
+                    f"— 값 변조 없음")
     return r
 
 
