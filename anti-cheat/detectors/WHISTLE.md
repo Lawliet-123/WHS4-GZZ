@@ -75,7 +75,9 @@ python detectors/whistle.py whistle_001
 | W-2 캐릭터 vtable | 0 | `..._Survivor_..._1point4_C` → `whistle_v14.dll` |
 | W-3 사운드 교체 | 0 | `Industry_Hatch_Plastic_Closing_05` |
 
-표본: 오브젝트 54,741~56,391 / UFunction 17,232 / 캐릭터 20. 소요 13~23초.
+표본: 오브젝트 61,273 / UFunction 17,282 / 캐릭터 20. 소요 1.7초.
+
+전체 A/B 기록과 교차 검증은 `../MEASUREMENT.md` 에 있다.
 
 > **오탐 0% 는 정상 세션 1개 기준이고, 치트가 깔린 PC 에서 잰 값이다.**
 > 깨끗한 설치본에서 PC 를 바꿔가며 다시 재야 통계적 의미가 생긴다.
