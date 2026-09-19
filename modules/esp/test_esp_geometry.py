@@ -230,6 +230,39 @@ class LayoutTests(unittest.TestCase):
             (0x0A3FB000, 0x4F2390A3, 0x0A03AB06),
             esp.MecchaESP.SUPPORTED_BUILD_FINGERPRINTS)
 
+    def test_september_19_steam_build_is_explicitly_supported(self):
+        self.assertIn(
+            (0x0ADBC000, 0x74BBB0FB, 0x0A9D9EFB),
+            esp.MecchaESP.SUPPORTED_BUILD_FINGERPRINTS)
+
+    def test_september_19_build_uses_its_verified_transform_flags_fallback(self):
+        reader = esp.MecchaESP.__new__(esp.MecchaESP)
+        reader._advanced_build_ok = True
+        reader._build_fingerprint = (0x0ADBC000, 0x74BBB0FB, 0x0A9D9EFB)
+        reader.offsets = {}
+        reader._layout_warnings = []
+
+        class Resolver:
+            @staticmethod
+            def resolve(class_name, property_name):
+                return None
+
+        reader.resolver = Resolver()
+        reader._configure_build_offsets()
+
+        self.assertEqual(
+            reader.offsets["USceneComponent::TransformFlags"], 0x240)
+        self.assertEqual(
+            reader.offsets["USceneComponent::ComponentToWorld"], 0x1E0)
+        self.assertEqual(
+            reader.offsets[
+                "USkinnedMeshComponent::ComponentSpaceTransformsArray"],
+            0x5F0)
+        self.assertEqual(
+            reader.offsets[
+                "USkinnedMeshComponent::CurrentReadComponentTransforms"],
+            0x638)
+
     def test_unknown_build_uses_reflection_without_native_fallbacks(self):
         reader = esp.MecchaESP.__new__(esp.MecchaESP)
         reader._advanced_build_ok = False
@@ -424,6 +457,40 @@ class SkeletonSnapshotTests(unittest.TestCase):
         memory.put(native_data, transforms)
         return reader, memory
 
+    def _unknown_build_probe_reader(self, valid_payload=True):
+        reader, memory = self._sparse_native_pose_reader()
+        mesh, native_data = 0x10000, 0x20000
+        profile = esp.PAINTMAN_PROFILE
+        reader._advanced_build_ok = False
+        reader._build_fingerprint = (0xDEADBEEF, 0x12345678, 0x87654321)
+        reader._layout_warnings = []
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            reader.offsets.pop(key)
+        reader.offsets.pop("USceneComponent::ComponentToWorld")
+        reader.offsets.update({
+            "USceneComponent::AttachParent": 0xC8,
+            "USceneComponent::AttachSocketName": 0xD0,
+            "USceneComponent::RelativeLocation": 0x140,
+            "USceneComponent::RelativeRotation": 0x158,
+            "USceneComponent::RelativeScale3D": 0x170,
+        })
+        reader._object_is_a = lambda obj, class_name: True
+
+        # _component_relative_transform uses one bulk read.  Populate the whole
+        # reflected block so this remains a strict sparse-memory test elsewhere.
+        memory.put(mesh + 0xC8, bytes(0x1A1 - 0xC8))
+        memory.put(mesh + 0x140, struct.pack(
+            "<3d", 100.0, 200.0, 300.0))
+        memory.put(mesh + 0x158, struct.pack("<3d", 0.0, 0.0, 0.0))
+        memory.put(mesh + 0x170, struct.pack("<3d", 1.0, 1.0, 1.0))
+
+        if valid_payload:
+            transforms = b"".join(
+                pack_ftransform(translation=(float(index), 0.0, 0.0))
+                for index in range(len(profile.bone_names)))
+            memory.put(native_data, transforms)
+        return reader, memory, mesh, native_data, profile
+
     def test_unsupported_skeleton_profile_is_negative_cached(self):
         memory = Memory()
         reader = esp.MecchaESP.__new__(esp.MecchaESP)
@@ -466,6 +533,8 @@ class SkeletonSnapshotTests(unittest.TestCase):
     def test_reflected_sdk_pose_path_is_not_blocked_by_build_flag(self):
         reader, memory, mesh, _, _ = self._bulk_pose_reader()
         reader._advanced_build_ok = False
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            reader.offsets.pop(key)
         reader.offsets.pop("USceneComponent::ComponentToWorld")
         reader.offsets.update({
             "USceneComponent::AttachParent": 0xC8,
@@ -484,6 +553,89 @@ class SkeletonSnapshotTests(unittest.TestCase):
             0x50000, (100.0, 200.0, 300.0))
         self.assertIsNotNone(pose)
         self.assertEqual(reader._skeleton_source_counts, {"sdk-cache": 1})
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            self.assertNotIn(key, reader.offsets)
+
+    def test_unknown_build_promotes_only_runtime_validated_native_pose_pair(self):
+        reader, _, _, _, _ = self._unknown_build_probe_reader()
+
+        pose = reader.read_skeleton_pose(
+            0x50000, (100.0, 200.0, 300.0))
+
+        self.assertIsNotNone(pose)
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            self.assertEqual(reader.offsets[key], esp.BUILD_OFFSETS[key])
+        self.assertNotIn("USceneComponent::ComponentToWorld", reader.offsets)
+        self.assertEqual(reader._skeleton_source_counts, {"native-current": 1})
+        self.assertTrue(any(
+            "runtime-validated on live mesh" in warning
+            for warning in reader._layout_warnings))
+
+    def test_unknown_build_native_probe_rejects_invalid_ftransforms(self):
+        reader, _, _, _, _ = self._unknown_build_probe_reader(
+            valid_payload=False)
+
+        self.assertIsNone(reader.read_skeleton_pose(
+            0x50000, (100.0, 200.0, 300.0)))
+        self.assertEqual(reader._skeleton_failure_counts, {"pose_data": 1})
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            self.assertNotIn(key, reader.offsets)
+
+    def test_unknown_build_native_probe_rejects_racing_payload(self):
+        reader, memory, _, native_data, _ = self._unknown_build_probe_reader()
+        original_read = memory.read_bytes
+        payload_reads = 0
+
+        def changing_read(address, size):
+            nonlocal payload_reads
+            raw = original_read(address, size)
+            if address == native_data:
+                payload_reads += 1
+                if payload_reads == 2:
+                    changed = bytearray(raw)
+                    changed[0x20] ^= 1
+                    return bytes(changed)
+            return raw
+
+        memory.read_bytes = changing_read
+        self.assertIsNone(reader.read_skeleton_pose(
+            0x50000, (100.0, 200.0, 300.0)))
+        self.assertEqual(reader._skeleton_failure_counts, {"race": 1})
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            self.assertNotIn(key, reader.offsets)
+
+    def test_unknown_build_native_probe_rejects_bad_selector_or_count(self):
+        for failure in ("selector", "count"):
+            with self.subTest(failure=failure):
+                reader, memory, mesh, native_data, profile = \
+                    self._unknown_build_probe_reader()
+                if failure == "selector":
+                    memory.put(mesh + esp.BUILD_OFFSETS[
+                        "USkinnedMeshComponent::CurrentReadComponentTransforms"],
+                        struct.pack("<i", 2))
+                else:
+                    memory.put(mesh + esp.BUILD_OFFSETS[
+                        "USkinnedMeshComponent::ComponentSpaceTransformsArray"],
+                        struct.pack(
+                            "<Qii", native_data, len(profile.bone_names) + 1,
+                            len(profile.bone_names) + 1))
+
+                self.assertIsNone(reader.read_skeleton_pose(
+                    0x50000, (100.0, 200.0, 300.0)))
+                self.assertEqual(
+                    reader._skeleton_failure_counts, {"pose_header": 1})
+                for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+                    self.assertNotIn(key, reader.offsets)
+
+    def test_unknown_build_native_probe_requires_reflected_world_transform(self):
+        reader, _, _, _, _ = self._unknown_build_probe_reader()
+        reader.offsets.pop("USceneComponent::RelativeScale3D")
+
+        self.assertIsNone(reader.read_skeleton_pose(
+            0x50000, (100.0, 200.0, 300.0)))
+        self.assertEqual(reader._skeleton_failure_counts, {"transform": 1})
+        for key in esp.NATIVE_SKELETON_POSE_OFFSET_KEYS:
+            self.assertNotIn(key, reader.offsets)
 
     def test_sdk_cache_rejects_payload_changed_during_read(self):
         reader, memory, _, pose_data, _ = self._bulk_pose_reader()
@@ -1151,6 +1303,92 @@ class SnapshotArchitectureTests(unittest.TestCase):
 
         self.assertEqual(len(overlay.esp.pose_reads), 2)
         self.assertAlmostEqual(FakeClock.now, 201.907)
+        self.assertLessEqual(
+            overlay._skeleton_suspended_until, FakeClock.now)
+        self.assertTrue(all(
+            FakeClock.now - cached.captured_at
+            <= overlay.SKELETON_CACHE_TTL_SECONDS
+            for cached in overlay._skeleton_pose_cache.values()))
+
+    def test_transient_pose_failure_keeps_last_good_cache(self):
+        actor = 0x10000
+        now = 250.0
+
+        class FakeESP:
+            _world_epoch = 1
+            _skeleton_failure_counts = {}
+
+            def read_skeleton_pose(self, found_actor, position):
+                self._skeleton_failure_counts = {"race": 1}
+                return None
+
+        player = esp.PlayerRenderSnapshot(
+            False, (1000.0, 0.0, 0.0), 0, actor, "survivor",
+            None, None)
+        frame = esp.FrameRenderSnapshot(
+            1, now, now, 0.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "hunter", (player,),
+            (("collection_valid", True), ("world_epoch", 1)), (), None)
+        cached_pose = esp.SkeletonPose(
+            "cached", ((1000.0, 0.0, 0.0),), (),
+            ((0.0, 0.0, 0.0),), actor)
+        overlay = esp.Overlay.__new__(esp.Overlay)
+        overlay.esp = FakeESP()
+        overlay.config = esp.Config(skeleton_esp=True)
+        overlay._viewport_size = (1920, 1080)
+        overlay._snapshot_stop = esp.threading.Event()
+        overlay._ensure_skeleton_state()
+        overlay._skeleton_pose_cache[actor] = esp.CachedSkeletonPose(
+            now, cached_pose, player.position, None, 1)
+
+        with mock.patch.object(esp.time, "monotonic", return_value=now):
+            overlay._refresh_skeleton_cache(frame)
+
+        self.assertIs(
+            overlay._skeleton_pose_cache[actor].pose, cached_pose)
+        self.assertEqual(overlay._last_skeleton_failures, (("race", 1),))
+
+    def test_persistent_pose_failure_evicts_last_good_cache(self):
+        actor = 0x10000
+        now = 275.0
+
+        class FakeESP:
+            _world_epoch = 1
+            _skeleton_failure_counts = {}
+
+            def read_skeleton_pose(self, found_actor, position):
+                self._skeleton_failure_counts = {"identity": 1}
+                return None
+
+        player = esp.PlayerRenderSnapshot(
+            False, (1000.0, 0.0, 0.0), 0, actor, "survivor",
+            None, None)
+        frame = esp.FrameRenderSnapshot(
+            1, now, now, 0.0,
+            {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0),
+             "fov": 90.0},
+            "hunter", (player,),
+            (("collection_valid", True), ("world_epoch", 1)), (), None)
+        pose = esp.SkeletonPose(
+            "cached", ((1000.0, 0.0, 0.0),), (),
+            ((0.0, 0.0, 0.0),), actor)
+        overlay = esp.Overlay.__new__(esp.Overlay)
+        overlay.esp = FakeESP()
+        overlay.config = esp.Config(skeleton_esp=True)
+        overlay._viewport_size = (1920, 1080)
+        overlay._snapshot_stop = esp.threading.Event()
+        overlay._ensure_skeleton_state()
+        overlay._skeleton_pose_cache[actor] = esp.CachedSkeletonPose(
+            now, pose, player.position, None, 1)
+
+        with mock.patch.object(esp.time, "monotonic", return_value=now):
+            overlay._refresh_skeleton_cache(frame)
+
+        self.assertNotIn(actor, overlay._skeleton_pose_cache)
+        self.assertEqual(
+            overlay._last_skeleton_failures, (("identity", 1),))
 
     def test_fast_batch_refreshes_and_merges_fifteen_players(self):
         actors = tuple(0x10000 + index * 0x100 for index in range(15))
@@ -1436,7 +1674,8 @@ class SnapshotArchitectureTests(unittest.TestCase):
         self.assertEqual(overlay.esp.mesh_refreshes, [])
 
         self.assertIsNone(overlay._cached_skeleton_for_player(
-            actor, (100.0, 0.0, 0.0), current_root, 10.2, 7))
+            actor, (100.0, 0.0, 0.0), current_root,
+            9.9 + overlay.SKELETON_CACHE_TTL_SECONDS + 0.01, 7))
 
     def test_cached_pose_rebases_rotation_and_translation_without_rpm(self):
         actor = 0x12340
@@ -1672,7 +1911,9 @@ class SnapshotArchitectureTests(unittest.TestCase):
         config = esp.Config(
             box_esp=False, skeleton_esp=True, snap_lines=False,
             show_names=False, show_distance=False)
-        for pose_age, expected_lines in ((0.100, 1), (0.300, 0)):
+        for pose_age, expected_lines in (
+                (0.100, 1),
+                (esp.Overlay.SKELETON_CACHE_TTL_SECONDS + 0.050, 0)):
             with self.subTest(pose_age=pose_age):
                 player = esp.PlayerRenderSnapshot(
                     False, (1000.0, 0.0, 0.0), 1, 0x12340,
