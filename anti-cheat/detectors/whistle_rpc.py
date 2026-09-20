@@ -23,8 +23,33 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from core.result import DetectorResult, Evidence
 
-DEFAULT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "native", "bin", "Release", "ac-whistle.jsonl")
+LOG_NAME = "ac-whistle.jsonl"
+
+# 후크는 **자기 DLL 이 있는 폴더**에 로그를 쓴다(main.cpp `DllDirectory()`).
+# 빌드 위치가 사람마다 다르고 개발 트리와 팀 레포의 배치도 달라서,
+# 있을 법한 자리를 순서대로 본다. 인자로 직접 넘겨도 된다.
+#
+# **이 목록이 한 자리만 보게 두면 안 된다.** 실제로 개발 트리 기준 경로
+# 하나만 박아뒀다가, 팀 레포에서는 후크가 로그를 정상적으로 남겼는데도
+# "로그가 없습니다"로 ERROR 가 났다.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+
+LOG_CANDIDATES = [
+    os.path.join(_ROOT, "logs", "raw", LOG_NAME),
+    os.path.join(_ROOT, "native", "whistle_hook", "bin", "Release", LOG_NAME),
+    os.path.join(_ROOT, "native", "whistle_hook", "bin", LOG_NAME),
+    os.path.join(_HERE, "native", "bin", "Release", LOG_NAME),
+    os.path.join(_HERE, "native", "bin", LOG_NAME),
+]
+
+
+def default_log():
+    """존재하는 첫 후보. 하나도 없으면 첫 후보(오류 메시지에 쓴다)."""
+    for p in LOG_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return LOG_CANDIDATES[0]
 
 # 후크가 내보내는 위반 코드 -> (점수, 대응하는 실측 취약점, 서버측 권고)
 RULES = {
@@ -38,11 +63,14 @@ RULES = {
 
 def scan(path=None):
     r = DetectorResult("whistle_rpc")
-    path = path or DEFAULT_LOG
+    path = path or default_log()
 
     if not os.path.exists(path):
-        return r.fail(f"후크 로그가 없습니다: {path}\n"
-                      f"    ac_whistle_v1.dll 을 주입했는지 확인하세요.")
+        # 어디를 봤는지 전부 적는다. 경로가 틀린 것과 후크가 안 붙은 것은
+        # 원인이 완전히 다른데, 한 자리만 보여주면 구분이 안 된다.
+        return r.fail("후크 로그가 없습니다. 찾아본 자리:\n    "
+                      + "\n    ".join(LOG_CANDIDATES)
+                      + "\n    ac_whistle_v1.dll 을 주입했는지 확인하세요.")
 
     started = False
     violations = []
