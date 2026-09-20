@@ -244,3 +244,63 @@ ESP 가 남기는 유일한 흔적은 **게임 프로세스를 여는 핸들**�
 하려면 커널 콜백(`ObRegisterCallbacks`)이 낫다 — 역할표 5번이다.
 
 **2번의 한계를 숨기지 않고 1번·5번으로 넘긴다.**
+
+---
+
+# Auto Paint v1 측정
+
+2026-09-20. `modules/auto-paint` 를 실행한 상태에서 측정했다.
+
+```
+세션 autopaint_001
+
+  filesystem     DETECTED   100   (파일 흔적 — 원래 있던 것)
+  injection      SUSPICIOUS  40   untrusted_module
+  whistle        NORMAL       0
+  value_tamper   NORMAL       0   설정값 비교 15건
+```
+
+## 잡은 근거
+
+```
+meccha-direct-bridge-v1-e223ff07…-b4947bff….dll   서명없음 + 기타 경로
+C:\Users\<user>\AppData\Local\MecchaCamouflage\auto-paint-only\runtime\
+    i-b4947bff…\meccha-direct-bridge-v1-…dll
+```
+
+**DLL 이름이 설치마다 해시로 랜덤화되어 있다.** 이름 목록으로는 원리적으로
+못 잡는다. 서명과 경로로 잡았다.
+
+1차 실측에서 모듈 이름 화이트리스트가 오탐 115건을 내서 점수에서 뺐는데,
+이번 결과가 그 판단의 근거가 된다. 같은 세션에서 이름 화이트리스트는
+"미확인 118건"을 냈고 그 안에 진짜 하나가 섞여 있었다. **서명+경로는
+161개 중 정확히 1건만 집었다.**
+
+## `value_tamper` 가 NORMAL 인 것은 내 가설이 틀렸기 때문이다
+
+`URuntimePaintableComponent` 의 속도 제한(`MinScreenPaintDistance`,
+`MaxBatchSize`, `MaxNetworkBatchesPerTick`, `MaxReplicatedPaintStrokesPerTick`,
+`AutoFlushThreshold`, `bAutoFlushStrokes`, `bRealtimeNetworkSync`)을
+"봇이 빨리 칠하려면 풀어야 한다"고 추론해서 대상에 넣었다.
+
+**핵 소스를 확인해보니 이 필드들을 하나도 쓰지 않는다.**
+Auto Paint v1 은 제한값을 건드리지 않고 정상 속도로 RPC 를 호출한다.
+
+그래서 이 7개 필드는 **검증된 탐지면이 아니라 추측**이다. 지우지는 않는다 —
+제한을 푸는 변종이 나오면 걸린다. 다만 실측으로 확인된 것처럼 보이지
+않도록 여기에 적어둔다.
+
+## Auto Paint v1 의 실제 탐지면
+
+| 경로 | 결과 |
+|---|---|
+| 주입된 DLL (서명+경로) | **SUSPICIOUS 40** ← 유일하게 확인된 탐지면 |
+| 코드 패치 | 없음 (`process_event_hooked` 안 걸림) |
+| 설정값 변조 | 없음 |
+| RPC 호출 패턴 | **미구현** — `ServerPaintBatch` / `PaintAtUVWithBrush` |
+
+40점(SUSPICIOUS)에 그치는 것이 맞다. 정상 오버레이·드라이버도 서명이 없을
+수 있어 단독으로 확정하지 않는다.
+
+확정하려면 RPC 호출 패턴을 봐야 하고, 그건 휘파람에서 막힌 것과 같은
+문제다 — `ProcessEvent` 가 아니라 `ExecFunction` 을 가로채야 한다.
