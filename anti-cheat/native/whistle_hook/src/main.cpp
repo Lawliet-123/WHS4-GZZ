@@ -266,6 +266,43 @@ static void ReportStats(bool Force)
     LogLine(Buf);
 }
 
+/* ── 진단 ──────────────────────────────────────────────────────────────
+   ProcessEvent 는 초당 수천 번 불리는데 도발 매칭이 0 건이면 원인이 셋이다.
+   휘파람을 안 불었거나, 이름 매칭이 틀렸거나, GetName() 자체가 깨졌거나.
+   로그만으로는 구분이 안 돼서 실제로 오래 헤맸다.
+
+   그래서 **처음 본 함수 이름 몇 개를 그대로 남긴다.** 이름이 멀쩡하면
+   GetName() 은 정상이고, 그러면 남은 원인은 둘로 좁혀진다.
+   그리고 "provo" 가 들어간 이름은 대소문자 구분 없이 전부 남긴다 —
+   접두사가 아니라 어디에 있든 잡아서 진짜 이름을 보여준다. */
+static std::mutex gSampleLock;
+static std::unordered_set<std::string> gSeenNames;
+static int gSampleLeft = 24;
+static int gProvoSampleLeft = 40;
+
+static void SampleName(const std::string& Name)
+{
+    std::string Lower;
+    Lower.reserve(Name.size());
+    for (char c : Name) Lower += static_cast<char>(::tolower((unsigned char)c));
+    const bool Provo = Lower.find("provo") != std::string::npos;
+
+    {
+        std::lock_guard<std::mutex> Lock(gSampleLock);
+        if (!Provo && gSampleLeft <= 0) return;
+        if (Provo && gProvoSampleLeft <= 0) return;
+        if (!gSeenNames.insert(Name).second) return;
+        if (Provo) --gProvoSampleLeft; else --gSampleLeft;
+    }
+
+    char Buf[512];
+    snprintf(Buf, sizeof(Buf),
+             "{\"t\":%.3f,\"event\":\"name\",\"provo\":%s,\"fn\":\"%s\"}",
+             static_cast<double>(GetTickCount64() - gStartTick) / 1000.0,
+             Provo ? "true" : "false", Escape(Name).c_str());
+    LogLine(Buf);
+}
+
 static void Report(void* Object, const std::string& FnName, const Verdict& V)
 {
     const double T = static_cast<double>(GetTickCount64() - gStartTick) / 1000.0;
@@ -298,6 +335,7 @@ static bool Inspect(void* Object, UFunction* Function)
     const unsigned long long Seen =
         gTotalPE.fetch_add(1, std::memory_order_relaxed) + 1;
     if ((Seen & 511) == 0) ReportStats(false);
+    SampleName(Name);
 
     if (IsProvocationInput(Name))
     {

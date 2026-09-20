@@ -108,15 +108,25 @@ CHARACTER = "BP_FirstPersonCharacter_Main_C"
 SURVIVOR = "BP_FirstPersonCharacter_cLeon_Character_Survivor_C"
 NEAR_INTERACT = "BPC_NearInteract_C"
 PAINTABLE = "RuntimePaintableComponent"
+CAMERA = "BP_Camera_Base_C"
 
 CONFIG_FIELDS = [
     # ── Hide Anywhere ────────────────────────────────────────────────
-    # 상호작용 거리·탐색 반경·각도를 키워서 멀리서, 아무 데나 숨는다.
-    (CHARACTER,     "InteractLength", 0x0510, "d", "Hide Anywhere"),
-    (CHARACTER,     "EnableInteract", 0x0676, "b", "Hide Anywhere"),
-    (SURVIVOR,      "PreStencil",     0x0D20, "i", "Hide Anywhere"),
-    (NEAR_INTERACT, "SearchRadius",   0x00C0, "d", "Hide Anywhere"),
-    (NEAR_INTERACT, "Angle",          0x00C8, "d", "Hide Anywhere"),
+    # 대상 목록은 추측이 아니라 **핵 소스에서 직접 읽었다**
+    # (modules/hide-anywhere/hide_anywhere.cpp). 상호작용 거리·탐색 반경·
+    # 각도·카메라 거리를 키워서 멀리서, 아무 데나 숨는다.
+    (CHARACTER,     "InteractLength",    0x0510, "d", "Hide Anywhere"),  # → 5000
+    (CHARACTER,     "EnableInteract",    0x0676, "b", "Hide Anywhere"),  # → true
+    (CHARACTER,     "IsInViewCheckLate", 0x0668, "d", "Hide Anywhere"),  # → 1e9
+    (CHARACTER,     "UseNearInteract",   0x0AF8, "b", "Hide Anywhere"),  # → true
+    (SURVIVOR,      "PreStencil",        0x0D20, "i", "Hide Anywhere"),  # → 0
+    (NEAR_INTERACT, "SearchRadius",      0x00C0, "d", "Hide Anywhere"),  # → 5000
+    (NEAR_INTERACT, "Angle",             0x00C8, "d", "Hide Anywhere"),  # → 360
+    (NEAR_INTERACT, "AngleBias",         0x00F0, "d", "Hide Anywhere"),  # → 360
+    (NEAR_INTERACT, "IgnoreUpVector",    0x00E9, "b", "Hide Anywhere"),  # → true
+    (CAMERA,        "EnableDistance",        0x0500, "d", "Hide Anywhere"),  # → 5000
+    (CAMERA,        "EnableDistanceGimmick", 0x0508, "d", "Hide Anywhere"),  # → 5000
+    (CAMERA,        "Is_in_View_Check_Late", 0x0540, "d", "Hide Anywhere"),  # → 1e9
 
     # ── Auto Paint v1 ────────────────────────────────────────────────
     # 칠하기에는 **속도 제한이 전부 설정값으로 노출돼 있다.** 봇이 빨리
@@ -132,6 +142,12 @@ CONFIG_FIELDS = [
 ]
 
 # 일부러 뺀 것
+#
+#   ABP_FirstPersonCharacter_Main_C::IsTalkNow                  0x0675 (bool)
+#   ABP_..._Survivor_C::FilledValue                             0x0D18 (double)
+#       Hide Anywhere 가 둘 다 쓰지만 **게임 플레이로 정상적으로 변한다.**
+#       말하는 중인지, 얼마나 칠해졌는지는 기준값과 다른 것이 정상이다.
+#       넣으면 평범하게 플레이하는 사람이 전부 걸린다.
 #
 #   URuntimePaintableComponent::MaxDecoySpawnCount  0x01E0 (int32)
 #       Net + RepNotify 다. 서버가 런타임에 정상적으로 바꾼다.
@@ -335,7 +351,7 @@ def scan():
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     session = argv[0] if argv else "value_001"
-    from result import to_team_event
+    from core.result import to_team_event
     res = scan()
     ev = to_team_event(res, session)
     print(json.dumps(ev, ensure_ascii=False, indent=2))

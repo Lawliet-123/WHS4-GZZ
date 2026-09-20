@@ -136,3 +136,69 @@ character_vtable_hooked   BP_FirstPersonCharacter_cLeon_Character_Survivor_
   코드도 없어 두 축 모두에 걸리지 않는다. 2번 레이어의 원리적 한계다.
 - **상시 감시용이 아니다.** 한 세션에 오브젝트 6만 개를 외부에서 읽는다.
   전체 5개 모듈이 7.5~8.6초, 주기적 스캔용이다.
+
+---
+
+# 부록 — RPC 후크가 도발 호출을 못 본 이유 (미해결, 원인 특정)
+
+`whistle_rpc` 는 A/B 표에서 계속 ERROR 였다. 실패로 덮지 않고 원인을
+어디까지 좁혔는지 적는다.
+
+## 관측
+
+인프로세스 후크(`ac_whistle_v4.dll`)를 주입하고 실제로 휘파람을 불었다.
+
+```
+vtable 3,644개 후킹
+ProcessEvent 총 호출 80,896건 / 37초   ← 후크는 확실히 불리고 있다
+도발(Provocation) 매칭 0건
+```
+
+후크가 본 함수 이름을 그대로 남겨보니
+
+```
+{"event":"name","provo":false,"fn":"ReceiveTick"}
+{"event":"name","provo":false,"fn":"BlueprintUpdateCamera"}
+{"event":"name","provo":true, "fn":"InpActEvt_IA_Provocation_K2Node_EnhancedInputActionEvent_5"}
+```
+
+**이름 해석은 정상이다.** 그리고 **입력 핸들러는 `ProcessEvent` 를 지나간다.**
+그런데 `Provocation(Local)` / `(Client)` / `(Server)` 는 한 번도 안 나왔다.
+이 함수들은 GObjects 에 분명히 존재한다(외부 스캔으로 확인).
+
+## 해석
+
+언리얼에서 블루프린트가 **자기 안의 다른 블루프린트 함수를 호출할 때는
+`ProcessEvent` 를 거치지 않는다.** 바이트코드 VM 이 직접 실행한다.
+`ProcessEvent` 는 *외부에서* 들어올 때의 입구다.
+
+그래서 입력 → 도발로 이어지는 정상 경로는 이 후크에 보이지 않는다.
+
+## 아직 검증하지 못한 것
+
+핵이 `Provocation(Server)` 를 **직접 호출**하면 그때는 `ProcessEvent` 를
+통과해야 한다. 외부 코드가 블루프린트 함수를 부르는 길이 그것뿐이기 때문이다.
+그렇다면 "입력 이벤트 없이 ProcessEvent 로 들어온 도발" 자체가 위반 신호가 된다.
+
+**이 가설은 검증하지 못했다.** 보유한 `whistle_v14.dll` 은 소리를 바꾸는
+핵이라 정상 입력으로 동작한다. RPC 를 직접 부르는 경로를 태워보지 않았다.
+
+## 다음에 할 것
+
+1. RPC 를 직접 호출하는 경로로 재시험한다 (가설 확인/반증)
+2. 아니면 가로채는 지점을 바꾼다 — `Provocation` UFunction 들의
+   `ExecFunction` 을 개별 교체하면 VM 경로도 잡힌다. 초당 수천 번이 아니라
+   분당 몇 번이라 비용도 낮다.
+
+## 남겨둔 것
+
+이 과정에서 세 가지를 고쳤고 전부 **에러 없이 조용히 넘어가는** 종류였다.
+
+- 후크 로그 경로를 한 자리만 봐서, 정상 동작을 "로그 없음"으로 읽었다
+- 위반만 기록해서, "안 불렀다"와 "불렀는데 정상"과 "후크가 안 붙었다"가
+  전부 NORMAL 로 나왔다
+- 헤더 이름 `Provocation_Local_` 로 매칭했는데 런타임 FName 은
+  `Provocation(Local)` 이었다 (Dumper-7 이 괄호를 언더스코어로 바꾼다)
+
+지금은 관측 수(`calls` / `process_event`)를 같이 남기므로, 같은 증상이
+다시 나오면 원인이 로그에서 바로 갈린다.

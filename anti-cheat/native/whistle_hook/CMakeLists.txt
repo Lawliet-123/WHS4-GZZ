@@ -35,7 +35,7 @@ endif()
 
 # 주입된 DLL 은 매핑된 채로 남아 링커가 덮어쓰지 못한다(LNK1104).
 # 코드를 고칠 때마다 이 숫자를 올려 새 파일명을 만든다.
-set(AC_VERSION "3")
+set(AC_VERSION "4")
 
 set_target_properties(ac_whistle PROPERTIES
     OUTPUT_NAME "ac_whistle_v${AC_VERSION}"
