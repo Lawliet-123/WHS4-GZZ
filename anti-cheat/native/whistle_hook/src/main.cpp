@@ -52,10 +52,22 @@ using namespace CLeonSDK;
 static constexpr int kIsHunterOffset = 0x0C3A;   // ABP_..._cLeon_Character_C::IsHunter
 static constexpr int kDeadOffset     = 0x05AA;   // ABP_FirstPersonCharacter_Main_C::Dead
 
-/* 게임 애셋에 오타가 있다. Provocation 이 아니라 Provoaction 인 자산도 있다. */
+/* 게임 애셋에 오타가 있다. Provocation 이 아니라 Provoaction 인 자산도 있다.
+
+   **SDK 헤더의 C++ 식별자와 런타임 FName 은 다르다.**
+   Dumper-7 은 헤더에서 괄호를 언더스코어로 바꾼다.
+
+       헤더   Provocation_Local_   Provocation_Client_   Provocation_Server_
+       런타임 Provocation(Local)   Provocation(Client)   Provocation(Server)
+
+   처음에 헤더 이름을 그대로 써서 "Provocation_" 접두사로 검사했고,
+   **후크는 정상인데 도발 호출을 한 건도 못 잡았다.** 에러가 나지 않아
+   NORMAL 로 보고됐다. 런타임 이름은 밖에서 GObjects 를 훑어 확인했다.
+   ProvocationRemote 도 그때 같이 나왔다. */
 static bool IsProvocationFn(const std::string& Name)
 {
-    return Name.rfind("Provocation_", 0) == 0;   // Provocation_Local_/Client_/Server_
+    // Provocation(Local) / (Client) / (Server) / ProvocationRemote 를 모두 받는다.
+    return Name.rfind("Provocation", 0) == 0;
 }
 static bool IsProvocationInput(const std::string& Name)
 {
@@ -83,6 +95,13 @@ static std::atomic<bool> gRunning{true};
 static std::atomic<bool> gBlockMode{false};      // .block 파일이 있으면 차단까지
 static std::atomic<unsigned long long> gViolations{0};
 static std::atomic<unsigned long long> gCalls{0};
+/* 도발과 무관한 것까지 포함한 ProcessEvent 총 호출 수.
+
+   진단용이다. calls 가 0 일 때 원인이 두 가지인데 구분이 안 됐다 —
+   후크가 아예 안 불리는 것과, 불리는데 함수 이름 매칭이 틀린 것.
+   실제로 후자였고(런타임 FName 이 헤더와 다름) 알아내는 데 오래 걸렸다.
+   이 값이 크고 calls 가 0 이면 이름 매칭을 의심하면 된다. */
+static std::atomic<unsigned long long> gTotalPE{0};
 
 static std::mutex gLogLock;
 static std::wstring gLogPath;
@@ -240,9 +259,10 @@ static void ReportStats(bool Force)
 
     char Buf[256];
     snprintf(Buf, sizeof(Buf),
-             "{\"t\":%.3f,\"event\":\"stats\",\"calls\":%llu,\"violations\":%llu}",
+             "{\"t\":%.3f,\"event\":\"stats\",\"calls\":%llu,\"violations\":%llu,"
+             "\"process_event\":%llu}",
              static_cast<double>(Now - gStartTick) / 1000.0,
-             gCalls.load(), gViolations.load());
+             gCalls.load(), gViolations.load(), gTotalPE.load());
     LogLine(Buf);
 }
 
@@ -272,6 +292,12 @@ static ProcessEventFn FindOriginal(void* Object)
 static bool Inspect(void* Object, UFunction* Function)
 {
     const std::string Name = Function->GetName();
+    /* 도발 호출이 0 건이어도 관측 사실은 남아야 한다. 그래야 "후크가 안
+       불린다" 와 "이름 매칭이 틀렸다" 가 구분된다. 여기는 초당 수천 번
+       지나가는 자리라 512 번에 한 번만 시각을 본다(실제 기록은 3초 간격). */
+    const unsigned long long Seen =
+        gTotalPE.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((Seen & 511) == 0) ReportStats(false);
 
     if (IsProvocationInput(Name))
     {
