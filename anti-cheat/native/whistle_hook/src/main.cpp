@@ -36,6 +36,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -109,8 +110,19 @@ static ULONGLONG gStartTick = 0;
 
 /* 마지막 입력 핸들러 시각 (V1 판정용) */
 static std::atomic<ULONGLONG> gLastInputTick{0};
-/* 마지막 도발 시각 (V2 판정용) */
-static std::atomic<ULONGLONG> gLastProvoTick{0};
+/* 마지막 도발 시각 (V2 판정용) — **함수 이름별로 따로 둔다.**
+   휘파람 한 번이 Server/Client 쌍으로 불려서 전역 하나로 재면 오탐이 난다. */
+static std::mutex gLastLock;
+static std::unordered_map<std::string, ULONGLONG> gLastProvoByFn;
+
+static ULONGLONG LastTickOf(const std::string& Fn, ULONGLONG Now)
+{
+    std::lock_guard<std::mutex> Lock(gLastLock);
+    auto It = gLastProvoByFn.find(Fn);
+    const ULONGLONG Prev = (It == gLastProvoByFn.end()) ? 0 : It->second;
+    gLastProvoByFn[Fn] = Now;
+    return Prev;
+}
 
 /* ── 로그 ─────────────────────────────────────────────────────────────── */
 static std::wstring DllDirectory()
@@ -212,8 +224,14 @@ static Verdict Judge(void* Object, const std::string& FnName)
         V.add("foreign_target", "다른 플레이어의 폰에 대고 호출했습니다");
 
     /* V2 — 호출 빈도 (S-3)
-       실측에서 1.016초에 5회가 전부 전파됐다. 서버에 쿨다운이 없다. */
-    const ULONGLONG Last = gLastProvoTick.exchange(Now);
+       실측에서 1.016초에 5회가 전부 전파됐다. 서버에 쿨다운이 없다.
+
+       **함수별로 따로 잰다.** 휘파람 한 번이 Provocation(Server) 와
+       Provocation(Client) 쌍으로 불리기 때문이다. 전역 시각 하나로 재면
+       Client 는 항상 직전 Server 와 0.000초가 되어 **평범하게 분 휘파람까지
+       전부 위반으로 잡힌다.** 첫 실측에서 실제로 그렇게 나왔다 —
+       1초 간격으로 분 것이 0.000초 간격으로 기록됐다. */
+    const ULONGLONG Last = LastTickOf(FnName, Now);
     if (Last != 0)
     {
         const double Gap = static_cast<double>(Now - Last) / 1000.0;
@@ -516,6 +534,175 @@ static void* ExecThunk(int Slot)
     }
 }
 
+/* ── ProcessInternal 후킹 ──────────────────────────────────────────────
+
+   ExecFunction 을 4개 다 교체했는데도 호출이 안 잡혔다. 입력 직후 지나가는
+   함수를 전부 찍어봐도 도발이 없었다. 언리얼이 블루프린트 이벤트를 ubergraph
+   바이트코드에 인라인해서, 로컬 실행 경로가 UFunction 객체를 안 거치기
+   때문으로 보인다.
+
+   남은 지점이 `ProcessInternal` 이다. **모든 블루프린트 함수 실행이 반드시
+   여기를 지나간다.** 4개 함수의 원본 ExecFunction 이 전부 이 주소 하나였다.
+
+   ## 왜 이번에는 인라인 후킹인가
+
+   지금까지는 포인터만 바꿨다(vtable 슬롯, ExecFunction 필드). ProcessInternal
+   은 함수 그 자체라 바꿀 포인터가 없고 **코드 앞부분을 점프로 덮어야 한다.**
+
+   ## 위험을 줄인 방법
+
+   프롤로그를 먼저 디스어셈블해서 확인했다.
+
+       +0   (5) mov [rsp+8],  rbx      <- 정확히 5바이트
+       +5   (5) mov [rsp+0x10], rbp
+       +10  (5) mov [rsp+0x18], rsi
+       분기·RIP상대 명령 없음
+
+   첫 명령이 딱 5바이트라 `E9 rel32` 하나로 깔끔하게 덮인다. 재배치해야 할
+   상대 주소도 없다.
+
+   더 중요한 것은 **패치가 원자적**이라는 점이다. 대상 주소가 16바이트
+   정렬이라 첫 8바이트가 한 정렬된 qword 안에 들어간다. 5바이트 점프와
+   뒤 3바이트 원본을 합쳐 `InterlockedExchange64` 한 번으로 쓴다.
+   다른 스레드가 그 순간 이 함수에 들어와도 **명령어가 찢어지지 않는다.**
+   여러 바이트를 나눠 쓰면 그 틈에 실행 중인 스레드가 반쯤 덮인 코드를
+   만나 죽는다.
+
+   rel32 는 ±2GB 만 닿는데 우리 DLL 은 2.4GB 떨어져 있다. 그래서 대상
+   근처에 스텁을 잡고(`AllocNear`) 거기서 절대 주소로 튄다. */
+
+using ProcessInternalFn = void (*)(void*, void*, void*);
+static ProcessInternalFn gTrampoline = nullptr;   // 원본 5바이트 + 복귀 점프
+static void* gProcessInternal = nullptr;
+
+/* FFrame 레이아웃을 추측하지 않는다. 우리가 이미 UFunction 포인터 4개를
+   알고 있으므로, 프레임 앞쪽 몇 칸을 읽어 그 중 하나와 같은지 본다.
+   맞는 칸이 곧 Node 오프셋이다. 게임이 알려주게 한다. */
+static constexpr int kFrameProbe[] = {0x10, 0x08, 0x18, 0x20, 0x28};
+static std::atomic<int> gNodeOffset{-1};
+
+static void* AllocNear(void* target, std::size_t size)
+{
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    const std::uintptr_t Gran = si.dwAllocationGranularity;
+    const std::uintptr_t At = reinterpret_cast<std::uintptr_t>(target);
+
+    for (std::uintptr_t delta = Gran; delta < 0x60000000ull; delta += Gran)
+    {
+        for (int dir = 0; dir < 2; ++dir)
+        {
+            const std::uintptr_t Try = dir ? At + delta : At - delta;
+            if (Try < 0x10000) continue;
+            void* p = VirtualAlloc(reinterpret_cast<void*>(Try & ~(Gran - 1)),
+                                   size, MEM_COMMIT | MEM_RESERVE,
+                                   PAGE_EXECUTE_READWRITE);
+            if (p) return p;
+        }
+    }
+    return nullptr;
+}
+
+static void HookedProcessInternal(void* Context, void* Stack, void* Result);
+
+static bool InstallProcessInternalHook()
+{
+    if (gTrampoline || !gOrigExec[0]) return gTrampoline != nullptr;
+
+    auto* T = reinterpret_cast<std::uint8_t*>(gOrigExec[0]);
+    gProcessInternal = T;
+
+    /* 대상 근처 스텁: jmp [rip+0] ; <절대주소 8바이트> */
+    auto* Stub = reinterpret_cast<std::uint8_t*>(AllocNear(T, 64));
+    if (!Stub) return false;
+    Stub[0] = 0xFF; Stub[1] = 0x25;
+    *reinterpret_cast<std::uint32_t*>(Stub + 2) = 0;
+    *reinterpret_cast<void**>(Stub + 6) =
+        reinterpret_cast<void*>(&HookedProcessInternal);
+
+    /* 트램폴린: 원본 5바이트 + 절대 점프로 +5 복귀 */
+    auto* Tr = reinterpret_cast<std::uint8_t*>(
+        VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
+                     PAGE_EXECUTE_READWRITE));
+    if (!Tr) return false;
+    memcpy(Tr, T, 5);
+    Tr[5] = 0xFF; Tr[6] = 0x25;
+    *reinterpret_cast<std::uint32_t*>(Tr + 7) = 0;
+    *reinterpret_cast<void**>(Tr + 11) = T + 5;
+    gTrampoline = reinterpret_cast<ProcessInternalFn>(Tr);
+
+    /* 원자적 패치. 첫 8바이트를 한 번에 쓴다. */
+    const std::intptr_t Rel =
+        reinterpret_cast<std::uint8_t*>(Stub) - (T + 5);
+    if (Rel > INT32_MAX || Rel < INT32_MIN) return false;
+
+    std::uint64_t Fresh = 0;
+    memcpy(&Fresh, T, 8);                       // 뒤 3바이트는 그대로 둔다
+    auto* B = reinterpret_cast<std::uint8_t*>(&Fresh);
+    B[0] = 0xE9;
+    *reinterpret_cast<std::int32_t*>(B + 1) = static_cast<std::int32_t>(Rel);
+
+    DWORD Old{};
+    if (!VirtualProtect(T, 8, PAGE_EXECUTE_READWRITE, &Old)) return false;
+    InterlockedExchange64(reinterpret_cast<volatile LONG64*>(T),
+                          static_cast<LONG64>(Fresh));
+    VirtualProtect(T, 8, Old, &Old);
+    FlushInstructionCache(GetCurrentProcess(), T, 8);
+
+    char Buf[256];
+    snprintf(Buf, sizeof(Buf),
+             "{\"t\":%.3f,\"event\":\"pi_hook\",\"target\":\"0x%p\","
+             "\"stub\":\"0x%p\",\"trampoline\":\"0x%p\"}",
+             static_cast<double>(GetTickCount64() - gStartTick) / 1000.0,
+             (void*)T, (void*)Stub, (void*)Tr);
+    LogLine(Buf);
+    return true;
+}
+
+static void PiInspect(void* Context, void* Stack)
+{
+    auto* F = reinterpret_cast<std::uint8_t*>(Stack);
+    const int Used = gExecCount.load();
+
+    int Known = gNodeOffset.load(std::memory_order_relaxed);
+    const int* Offs = (Known >= 0) ? &Known : kFrameProbe;
+    const int Count = (Known >= 0) ? 1
+                    : static_cast<int>(sizeof(kFrameProbe) / sizeof(int));
+
+    for (int k = 0; k < Count; ++k)
+    {
+        void* Node = *reinterpret_cast<void**>(F + Offs[k]);
+        for (int s = 0; s < Used; ++s)
+        {
+            if (Node != gExecFunc[s]) continue;
+            if (Known < 0)
+            {
+                gNodeOffset.store(Offs[k]);
+                char B[192];
+                snprintf(B, sizeof(B),
+                         "{\"t\":%.3f,\"event\":\"frame_node\",\"offset\":%d}",
+                         static_cast<double>(GetTickCount64() - gStartTick) / 1000.0,
+                         Offs[k]);
+                LogLine(B);
+            }
+            ExecInspect(Context, s);
+            return;
+        }
+    }
+}
+
+static void HookedProcessInternal(void* Context, void* Stack, void* Result)
+{
+    if (Context && Stack && gInHook == 0)
+    {
+        gInHook++;
+        __try { PiInspect(Context, Stack); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        gInHook--;
+    }
+    gTrampoline(Context, Stack, Result);
+}
+
 /* 도발 UFunction 들의 ExecFunction 을 교체한다. 이미 건 것은 건너뛴다. */
 static int InstallExecHooks()
 {
@@ -620,6 +807,9 @@ static DWORD WINAPI Worker(void*)
         /* 도발 RPC 는 ExecFunction 쪽에서만 보인다(위 주석 참고).
            ProcessEvent 후킹은 다른 핵의 vtable 변조를 보기 위해 유지한다. */
         InstallExecHooks();
+        /* ExecFunction 교체는 **원본 주소(ProcessInternal)를 알아내는 용도**다.
+           실측에서 그 경로로는 호출이 안 들어왔다. 실제 관측은 아래가 한다. */
+        InstallProcessInternalHook();
 
         const int Added = InstallHooks();
         if (Added > 0 || gKnownVTables.size() != LastTotal)
