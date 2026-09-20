@@ -77,6 +77,7 @@ def scan(path=None):
     hooks_total = 0
     calls_seen = 0
     pe_seen = 0
+    exec_hooks = []
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -92,6 +93,8 @@ def scan(path=None):
                     started = True
                 elif kind == "hooks":
                     hooks_total = ev.get("total", hooks_total)
+                elif kind == "exec_hook":
+                    exec_hooks.append(ev.get("fn", "?"))
                 elif kind == "stats":
                     calls_seen = max(calls_seen, ev.get("calls", 0))
                     pe_seen = max(pe_seen, ev.get("process_event", 0))
@@ -109,6 +112,7 @@ def scan(path=None):
     r.meta["hooked_vtables"] = hooks_total
     r.meta["provocation_calls"] = calls_seen
     r.meta["process_event_calls"] = pe_seen
+    r.meta["exec_hooked_functions"] = exec_hooks
     r.meta["violation_records"] = len(violations)
 
     if calls_seen == 0:
@@ -116,20 +120,23 @@ def scan(path=None):
         # 후크가 붙기만 하고 도발이 한 번도 안 불렸으면 이 검사는 아무것도
         # 검증하지 않은 것이다. 후크가 고장나도 로그 모양이 똑같으므로
         # CLEAN 으로 내보내면 조용한 미탐지가 된다.
-        if pe_seen == 0:
+        if not exec_hooks:
+            hint = ("도발 UFunction 의 ExecFunction 을 하나도 걸지 못했습니다. "
+                    "게임이 로비이거나 함수 이름이 다릅니다.")
+        elif pe_seen == 0:
             hint = ("후크가 한 번도 불리지 않았습니다. "
                     "vtable 슬롯 교체가 실제로 먹혔는지 확인하세요.")
         else:
             hint = (f"후크는 불리고 있습니다(ProcessEvent {pe_seen:,}건). "
-                    f"게임에서 휘파람을 불지 않았거나, 도발 함수 이름 매칭이 "
-                    f"틀렸습니다.")
+                    f"ExecFunction 을 {len(exec_hooks)}개 걸었으므로 "
+                    f"휘파람을 불지 않은 것으로 보입니다.")
         return r.fail(
             f"후크는 붙었으나(vtable {hooks_total}개) 도발 호출을 "
             f"한 건도 관측하지 못했습니다.\n    {hint}")
 
     if not violations:
-        r.detail = (f"vtable {hooks_total}개 후킹 / 도발 호출 {calls_seen}건 관측 "
-                    f"— 위반 없음")
+        r.detail = (f"vtable {hooks_total}개 + ExecFunction {len(exec_hooks)}개 후킹 / "
+                    f"도발 호출 {calls_seen}건 관측 — 위반 없음")
         return r
 
     # 같은 코드가 여러 번 나와도 점수는 한 번만 준다.

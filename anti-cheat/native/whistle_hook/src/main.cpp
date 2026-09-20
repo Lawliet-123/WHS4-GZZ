@@ -394,6 +394,130 @@ static bool PatchSlot(void** VTable, int Index, void* New, void** OutOld)
     return true;
 }
 
+/* ── ExecFunction 후킹 ────────────────────────────────────────────────
+
+   `ProcessEvent` 로는 도발 호출이 보이지 않는다. 언리얼은 블루프린트가
+   자기 안의 함수를 부를 때 바이트코드 VM 으로 직접 실행하고, ProcessEvent
+   는 **외부에서** 들어올 때의 입구이기 때문이다. 실측으로 확인했다 —
+   37초에 ProcessEvent 80,896건이 지나갔는데 도발은 0건이었다.
+
+   그래서 가로채는 지점을 `UFunction::ExecFunction` 으로 옮긴다. VM 경로가
+   여기를 지나간다. 휘파람 핵도 같은 벽에 부딪혀 같은 방법을 썼다
+   (tools/whistle `HookedPlayExec`). 이 빌드에서 동작이 확인된 기법이다.
+
+   비용도 낮다. ProcessEvent 는 초당 수천 번이지만 여기는 도발을 불 때만
+   불린다.
+
+   ## 함정
+
+   `ExecFunction(Context, Stack, Result)` 은 **어떤 함수가 불렸는지 알려주지
+   않는다.** 핵은 함수 하나만 걸어서 문제가 없었다. 우리는 넷이라 슬롯마다
+   다른 함수가 필요하다. `Stack`(FFrame)에서 UFunction 을 읽는 방법도 있지만
+   FFrame 레이아웃을 추측해야 해서, 템플릿으로 슬롯별 썽크를 만든다. */
+
+using NativeExecFn = void (*)(void*, void*, void*);
+
+static constexpr int kMaxExecHooks = 8;
+static NativeExecFn gOrigExec[kMaxExecHooks]{};
+static std::string gExecName[kMaxExecHooks];
+static UFunction* gExecFunc[kMaxExecHooks]{};
+static std::atomic<int> gExecCount{0};
+
+/* 판정부를 따로 둔다. Verdict 가 소멸자를 가져서 __try 와 같은 함수에
+   두면 C2712 가 난다. ProcessEvent 쪽 Inspect() 와 같은 이유다. */
+static void ExecInspect(void* Context, int Slot)
+{
+    gCalls.fetch_add(1, std::memory_order_relaxed);
+    const Verdict V = Judge(Context, gExecName[Slot]);
+    if (V.violated)
+    {
+        gViolations.fetch_add(1, std::memory_order_relaxed);
+        Report(Context, gExecName[Slot], V);
+        ReportStats(true);
+    }
+    else
+    {
+        ReportStats(false);
+    }
+}
+
+static void OnExecCall(void* Context, int Slot)
+{
+    if (!Context || gInHook > 0) return;
+    gInHook++;
+    __try { ExecInspect(Context, Slot); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    gInHook--;
+}
+
+template <int N>
+static void HookedExec(void* Context, void* Stack, void* Result)
+{
+    OnExecCall(Context, N);
+    if (gOrigExec[N]) gOrigExec[N](Context, Stack, Result);
+}
+
+static void* ExecThunk(int Slot)
+{
+    switch (Slot)
+    {
+    case 0: return reinterpret_cast<void*>(&HookedExec<0>);
+    case 1: return reinterpret_cast<void*>(&HookedExec<1>);
+    case 2: return reinterpret_cast<void*>(&HookedExec<2>);
+    case 3: return reinterpret_cast<void*>(&HookedExec<3>);
+    case 4: return reinterpret_cast<void*>(&HookedExec<4>);
+    case 5: return reinterpret_cast<void*>(&HookedExec<5>);
+    case 6: return reinterpret_cast<void*>(&HookedExec<6>);
+    case 7: return reinterpret_cast<void*>(&HookedExec<7>);
+    default: return nullptr;
+    }
+}
+
+/* 도발 UFunction 들의 ExecFunction 을 교체한다. 이미 건 것은 건너뛴다. */
+static int InstallExecHooks()
+{
+    int Added = 0;
+    for (int i = 0; i < UObject::GObjects->Num(); ++i)
+    {
+        UObject* Obj = UObject::GObjects->GetByIndex(i);
+        if (!Obj || !Obj->IsA(UFunction::StaticClass())) continue;
+
+        const std::string Name = Obj->GetName();
+        if (!IsProvocationFn(Name)) continue;
+
+        auto* Fn = static_cast<UFunction*>(Obj);
+        bool Known = false;
+        const int Used = gExecCount.load();
+        for (int s = 0; s < Used; ++s) if (gExecFunc[s] == Fn) { Known = true; break; }
+        if (Known || Used >= kMaxExecHooks) continue;
+
+        void* Thunk = ExecThunk(Used);
+        if (!Thunk) continue;
+
+        gOrigExec[Used] = reinterpret_cast<NativeExecFn>(Fn->ExecFunction);
+        gExecName[Used] = Name;
+        gExecFunc[Used] = Fn;
+
+        DWORD Old{};
+        if (!VirtualProtect(&Fn->ExecFunction, sizeof(void*), PAGE_READWRITE, &Old))
+            continue;
+        Fn->ExecFunction = reinterpret_cast<decltype(Fn->ExecFunction)>(Thunk);
+        VirtualProtect(&Fn->ExecFunction, sizeof(void*), Old, &Old);
+
+        gExecCount.store(Used + 1);
+        ++Added;
+
+        char Buf[512];
+        snprintf(Buf, sizeof(Buf),
+                 "{\"t\":%.3f,\"event\":\"exec_hook\",\"slot\":%d,\"fn\":\"%s\","
+                 "\"original\":\"0x%p\"}",
+                 static_cast<double>(GetTickCount64() - gStartTick) / 1000.0,
+                 Used, Escape(Name).c_str(), (void*)gOrigExec[Used]);
+        LogLine(Buf);
+    }
+    return Added;
+}
+
 static int InstallHooks()
 {
     const int Idx = Offsets::ProcessEventIdx;
@@ -449,6 +573,10 @@ static DWORD WINAPI Worker(void*)
            기본이 탐지인 이유: 클라 차단은 치터가 우리 DLL 을 안 띄우면
            그만이라 방어가 아니다. 서버 검사의 실증용으로만 켠다. */
         gBlockMode.store(GetFileAttributesW(BlockFlag.c_str()) != INVALID_FILE_ATTRIBUTES);
+
+        /* 도발 RPC 는 ExecFunction 쪽에서만 보인다(위 주석 참고).
+           ProcessEvent 후킹은 다른 핵의 vtable 변조를 보기 위해 유지한다. */
+        InstallExecHooks();
 
         const int Added = InstallHooks();
         if (Added > 0 || gKnownVTables.size() != LastTotal)

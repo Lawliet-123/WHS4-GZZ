@@ -174,21 +174,48 @@ ProcessEvent 총 호출 80,896건 / 37초   ← 후크는 확실히 불리고 �
 
 그래서 입력 → 도발로 이어지는 정상 경로는 이 후크에 보이지 않는다.
 
-## 아직 검증하지 못한 것
+## ExecFunction 으로 지점을 옮겨봤다 — 그래도 안 보인다
 
-핵이 `Provocation(Server)` 를 **직접 호출**하면 그때는 `ProcessEvent` 를
-통과해야 한다. 외부 코드가 블루프린트 함수를 부르는 길이 그것뿐이기 때문이다.
-그렇다면 "입력 이벤트 없이 ProcessEvent 로 들어온 도발" 자체가 위반 신호가 된다.
+`Provocation` UFunction 4개의 `ExecFunction` 을 직접 교체했다(`ac_whistle_v6`).
+설치는 전부 성공했다.
 
-**이 가설은 검증하지 못했다.** 보유한 `whistle_v14.dll` 은 소리를 바꾸는
-핵이라 정상 입력으로 동작한다. RPC 를 직접 부르는 경로를 태워보지 않았다.
+```
+exec_hook slot 0  ProvocationRemote     original 0x7FF7702603D0
+exec_hook slot 1  Provocation(Local)    original 0x7FF7702603D0
+exec_hook slot 2  Provocation(Client)   original 0x7FF7702603D0
+exec_hook slot 3  Provocation(Server)   original 0x7FF7702603D0
+
+t=7.094  입력 핸들러 InpActEvt_IA_Provocation... 발동   ← 키 입력 확인됨
+t=64.1   calls 0
+```
+
+**그리고 그때 게임에서 휘파람 소리가 실제로 났다.** 즉 함수는 실행됐는데
+우리 후크를 지나가지 않았다.
+
+### 원인
+
+넷의 원본 ExecFunction 이 **모두 같은 주소**였다 — `ProcessInternal`,
+블루프린트 VM 의 공용 진입점이다. 순수 블루프린트 함수는 자기만의 네이티브
+진입점이 없다.
+
+그래서 VM 이 블루프린트 함수를 부를 때는 `UFunction::ExecFunction` 포인터를
+거치지 않고 `ProcessInternal` 로 바로 들어간다. 슬롯을 바꿔도 안 불린다.
+
+휘파람 핵이 `Play()` 에 같은 기법을 써서 성공한 것은 **`Play()` 가 네이티브
+함수**(`UAudioComponent::Play`)이기 때문이다. 네이티브 UFunction 은
+`ExecFunction` 이 실제 진입점이라 교체가 먹힌다.
+
+**정리: ExecFunction 후킹은 네이티브 함수에만 통한다. 순수 블루프린트
+함수에는 통하지 않는다.**
 
 ## 다음에 할 것
 
-1. RPC 를 직접 호출하는 경로로 재시험한다 (가설 확인/반증)
-2. 아니면 가로채는 지점을 바꾼다 — `Provocation` UFunction 들의
-   `ExecFunction` 을 개별 교체하면 VM 경로도 잡힌다. 초당 수천 번이 아니라
-   분당 몇 번이라 비용도 낮다.
+남은 지점은 `ProcessInternal` 자체다. 주소는 이미 알아냈다
+(`0x7FF7702603D0`). 다만 모든 블루프린트 함수 호출이 여기를 지나가므로
+`FFrame::Node` 를 읽어 어떤 함수인지 가려야 하고, FFrame 레이아웃을
+확인해야 한다. 빈도도 ProcessEvent 급이다.
+
+**시간이 없어 여기서 멈춘다. 추측을 결론으로 적지 않는다.**
 
 ## 남겨둔 것
 
