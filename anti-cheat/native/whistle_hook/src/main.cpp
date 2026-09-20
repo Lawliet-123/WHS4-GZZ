@@ -280,6 +280,24 @@ static std::unordered_set<std::string> gSeenNames;
 static int gSampleLeft = 24;
 static int gProvoSampleLeft = 40;
 
+/* 입력 직후 호출 순서 기록.
+
+   `Provocation(Local/Client/Server)` 4개의 ExecFunction 을 전부 교체했는데도
+   호출이 안 잡혔다. 가능성이 둘인데 아직 구분을 못 했다.
+
+     (a) VM 이 ExecFunction 경로를 안 탄다 -> ProcessInternal 을 후킹해야 한다
+     (b) 그 4개가 애초에 안 불린다 -> 휘파람 소리는 다른 함수가 낸다
+
+   (b)면 엉뚱한 함수를 걸고 있었던 것이므로 (a) 작업이 통째로 불필요하다.
+   그래서 **입력 핸들러가 발동한 직후 실제로 무엇이 불리는지** 그대로 남긴다.
+   후킹을 추가하지 않고 기록만 하므로 위험이 없다.
+
+   중복도 그대로 남긴다. 순서와 반복이 곧 호출 경로다. */
+static std::atomic<int> gSeqLeft{0};
+static std::atomic<ULONGLONG> gSeqUntil{0};
+static constexpr int kSeqMax = 120;          // 게임 스레드에서 파일을 쓰므로 제한
+static constexpr ULONGLONG kSeqWindowMs = 400;
+
 static void SampleName(const std::string& Name)
 {
     std::string Lower;
@@ -339,8 +357,33 @@ static bool Inspect(void* Object, UFunction* Function)
 
     if (IsProvocationInput(Name))
     {
-        gLastInputTick.store(GetTickCount64());
+        const ULONGLONG Now = GetTickCount64();
+        gLastInputTick.store(Now);
+        /* 여기서부터 잠깐 동안 지나가는 함수를 전부 적는다. */
+        gSeqLeft.store(kSeqMax);
+        gSeqUntil.store(Now + kSeqWindowMs);
+        char B[256];
+        snprintf(B, sizeof(B), "{\"t\":%.3f,\"event\":\"input\",\"window_ms\":%llu}",
+                 static_cast<double>(Now - gStartTick) / 1000.0, kSeqWindowMs);
+        LogLine(B);
         return false;
+    }
+
+    /* 입력 직후 창이 열려 있으면 순서대로 기록한다. */
+    if (gSeqLeft.load(std::memory_order_relaxed) > 0)
+    {
+        if (GetTickCount64() > gSeqUntil.load(std::memory_order_relaxed))
+        {
+            gSeqLeft.store(0);
+        }
+        else if (gSeqLeft.fetch_sub(1, std::memory_order_relaxed) > 0)
+        {
+            char B[512];
+            snprintf(B, sizeof(B), "{\"t\":%.3f,\"event\":\"seq\",\"fn\":\"%s\"}",
+                     static_cast<double>(GetTickCount64() - gStartTick) / 1000.0,
+                     Escape(Name).c_str());
+            LogLine(B);
+        }
     }
     if (!IsProvocationFn(Name)) return false;
 
