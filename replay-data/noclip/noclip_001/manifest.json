@@ -1,0 +1,8 @@
+﻿{
+    "label":  "CHEAT",
+    "player_id":  "player_001",
+    "session_id":  "noclip_001",
+    "cheat_start_ms":  301000,
+    "cheat_type":  "NOCLIP",
+    "cheat_end_ms":  339000
+}
