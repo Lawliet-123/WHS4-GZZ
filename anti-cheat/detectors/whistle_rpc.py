@@ -75,6 +75,7 @@ def scan(path=None):
     started = False
     violations = []
     hooks_total = 0
+    calls_seen = 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -90,6 +91,8 @@ def scan(path=None):
                     started = True
                 elif kind == "hooks":
                     hooks_total = ev.get("total", hooks_total)
+                elif kind == "stats":
+                    calls_seen = max(calls_seen, ev.get("calls", 0))
                 elif ev.get("codes"):
                     violations.append(ev)
     except Exception as e:
@@ -102,10 +105,22 @@ def scan(path=None):
 
     r.meta["log"] = path
     r.meta["hooked_vtables"] = hooks_total
-    r.meta["provocation_calls"] = len(violations)
+    r.meta["provocation_calls"] = calls_seen
+    r.meta["violation_records"] = len(violations)
+
+    if calls_seen == 0:
+        # **위반이 없는 것과 볼 것이 없었던 것은 다르다.**
+        # 후크가 붙기만 하고 도발이 한 번도 안 불렸으면 이 검사는 아무것도
+        # 검증하지 않은 것이다. 후크가 고장나도 로그 모양이 똑같으므로
+        # CLEAN 으로 내보내면 조용한 미탐지가 된다.
+        return r.fail(
+            f"후크는 붙었으나(vtable {hooks_total}개) 도발 호출을 "
+            f"한 건도 관측하지 못했습니다.\n"
+            f"    게임에서 휘파람을 불고 다시 실행하세요.")
 
     if not violations:
-        r.detail = f"vtable {hooks_total}개 후킹 — 도발 RPC 위반 없음"
+        r.detail = (f"vtable {hooks_total}개 후킹 / 도발 호출 {calls_seen}건 관측 "
+                    f"— 위반 없음")
         return r
 
     # 같은 코드가 여러 번 나와도 점수는 한 번만 준다.

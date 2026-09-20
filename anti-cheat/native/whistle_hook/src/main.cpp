@@ -219,6 +219,33 @@ static Verdict Judge(void* Object, const std::string& FnName)
     return V;
 }
 
+/* 관측 사실을 남긴다.
+
+   Report() 는 **위반일 때만** 기록한다. 그래서 로그만 봐서는
+   "도발을 한 번도 안 불렀다" 와 "불렀는데 전부 정상이었다" 가 구분되지 않는다.
+   후크가 아예 안 붙었어도 로그 모양이 똑같아진다 — 조용한 미탐지다.
+
+   그래서 호출을 하나라도 본 뒤에는 주기적으로 관측 수를 남긴다.
+   호출이 없으면 이 줄도 없으므로, 보고 계층이 "검사한 것이 아니다" 를
+   구분할 수 있다. */
+static std::atomic<ULONGLONG> gLastStatsTick{0};
+static constexpr ULONGLONG kStatsIntervalMs = 3000;
+
+static void ReportStats(bool Force)
+{
+    const ULONGLONG Now = GetTickCount64();
+    const ULONGLONG Last = gLastStatsTick.load(std::memory_order_relaxed);
+    if (!Force && Now - Last < kStatsIntervalMs) return;
+    gLastStatsTick.store(Now, std::memory_order_relaxed);
+
+    char Buf[256];
+    snprintf(Buf, sizeof(Buf),
+             "{\"t\":%.3f,\"event\":\"stats\",\"calls\":%llu,\"violations\":%llu}",
+             static_cast<double>(Now - gStartTick) / 1000.0,
+             gCalls.load(), gViolations.load());
+    LogLine(Buf);
+}
+
 static void Report(void* Object, const std::string& FnName, const Verdict& V)
 {
     const double T = static_cast<double>(GetTickCount64() - gStartTick) / 1000.0;
@@ -259,8 +286,10 @@ static bool Inspect(void* Object, UFunction* Function)
     {
         gViolations.fetch_add(1, std::memory_order_relaxed);
         Report(Object, Name, V);
+        ReportStats(true);            // 위반 옆에 관측 수를 같이 남긴다
         return gBlockMode.load();     // 차단 모드면 원본을 안 부른다
     }
+    ReportStats(false);               // 정상 호출도 "봤다"는 사실은 남긴다
     return false;
 }
 

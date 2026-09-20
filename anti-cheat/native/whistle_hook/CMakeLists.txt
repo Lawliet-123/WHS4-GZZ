@@ -4,21 +4,13 @@ project(ac_whistle CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Dumper-7 로 뽑은 CppSDK 가 필요하다.
-#
-# **SDK 는 이 저장소에 넣지 않는다.** 게임 바이너리에서 파생된 산출물이라
-# 재배포하지 않는다는 규칙이다. 각자 Dumper-7 로 뽑아서 경로만 넘긴다.
-#
-#   cmake -B build -DSDK_DIR=C:/path/to/CppSDK
-#
+# 공격측에서 이미 덤프해둔 SDK 를 그대로 쓴다. 같은 4.0.2 빌드다.
 set(SDK_DIR "" CACHE PATH "Dumper-7 CppSDK 루트 (SDK/Basic.hpp 가 있는 폴더)")
 
-if(NOT SDK_DIR OR NOT EXISTS "${SDK_DIR}/SDK/Basic.hpp")
+if(NOT EXISTS "${SDK_DIR}/SDK/Basic.hpp")
     message(FATAL_ERROR
-        "CppSDK 를 찾지 못했습니다 (SDK_DIR='${SDK_DIR}').\n"
-        "  Dumper-7 로 MECCHA CHAMELEON 4.0.2 를 덤프한 뒤\n"
-        "  cmake -B build -DSDK_DIR=<CppSDK 경로> 로 지정하세요.\n"
-        "  절차: docs/18-dumper7-runbook.md")
+        "CppSDK not found at ${SDK_DIR}. "
+        "tools/whistle/CppSDK 가 있는지 확인하세요.")
 endif()
 
 set(SDK_SOURCES
@@ -43,7 +35,7 @@ endif()
 
 # 주입된 DLL 은 매핑된 채로 남아 링커가 덮어쓰지 못한다(LNK1104).
 # 코드를 고칠 때마다 이 숫자를 올려 새 파일명을 만든다.
-set(AC_VERSION "1")
+set(AC_VERSION "2")
 
 set_target_properties(ac_whistle PROPERTIES
     OUTPUT_NAME "ac_whistle_v${AC_VERSION}"
