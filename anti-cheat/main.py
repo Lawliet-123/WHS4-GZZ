@@ -49,6 +49,7 @@ DETECTORS = [
     ("injection",    "detectors.injection", "주입·후킹 범용 — 핵 종류 무관"),
     ("whistle",      "detectors.whistle",  "휘파람 후킹 — ExecFunction/vtable/사운드"),
     ("value_tamper", "detectors.value_tamper",    "값 변조 — CDO 대조"),
+    ("overlay_hook", "detectors.overlay_hook",  "인라인·렌더링 후킹 — 익스포트 프롤로그"),
     ("whistle_rpc",  "detectors.whistle_rpc",        "도발 RPC 위반 (인프로세스 후크 로그)"),
 ]
 
