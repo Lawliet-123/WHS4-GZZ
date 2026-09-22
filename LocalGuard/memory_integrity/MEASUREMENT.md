@@ -3,7 +3,10 @@
 담당: 말랑미 (역할표 2번) · 대상: MECCHA CHAMELEON 4.0.2 · 2026-09-20
 
 같은 게임 세션에서 **깨끗한 상태 → 휘파람 핵 주입** 순으로 두 번 측정했다.
-원본 로그는 `logs/detection/clean_002.jsonl` / `hack_001.jsonl`.
+원본 로그는 `measurements/clean_002.jsonl` / `hack_001.jsonl`.
+(커밋하는 고정 증거는 `measurements/`, 실행할 때마다 쌓이는 것은
+`logs/detection/` 으로 나눠 뒀다. 6번 scoring 이 옛 기록을 실시간
+탐지로 읽으면 안 되기 때문이다.)
 
 ---
 
@@ -23,11 +26,11 @@
 
 ```bash
 # A
-python main.py --session clean_002
+python run_session.py --session clean_002
 # 핵 주입 (관리자 권한)
 python tools/inject.py tools/whistle/bin/Release/whistle_v14.dll
 # B
-python main.py --session hack_001
+python run_session.py --session hack_001
 ```
 
 ---

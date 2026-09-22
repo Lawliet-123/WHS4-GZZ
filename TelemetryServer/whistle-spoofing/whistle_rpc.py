@@ -16,10 +16,15 @@ import json
 import os
 import sys
 
-# 이 파일을 직접 실행해도 core/ 를 찾게 한다.
-# 팀원마다 실행 방식이 달라서 둘 다 되게 해둔다.
+# core/ 는 2번 모듈(LocalGuard/memory_integrity) 이 갖고 있다. 이 파일은
+# 휘파람 핵 담당(TelemetryServer) 쪽이라 부모 폴더에 core/ 가 없다.
+# 레포 루트를 거쳐 한 번 건너간다. 직접 실행해도 러너로 돌려도 둘 다 된다.
+#
+# core/ 를 공용 shared/ 로 올릴지는 8번(공통 로그 규격) 확정 후에 정한다.
+# 지금 올리면 아직 주인이 없는 자리를 선점하게 된다.
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_sys.path.insert(0, _os.path.join(_REPO, "LocalGuard", "memory_integrity"))
 
 from core.result import DetectorResult, Evidence
 
@@ -32,13 +37,17 @@ LOG_NAME = "ac-whistle.jsonl"
 # **이 목록이 한 자리만 보게 두면 안 된다.** 실제로 개발 트리 기준 경로
 # 하나만 박아뒀다가, 팀 레포에서는 후크가 로그를 정상적으로 남겼는데도
 # "로그가 없습니다"로 ERROR 가 났다.
+# **_HERE 기준이다.** 예전에 _ROOT(부모)를 썼는데, 이 파일이
+# TelemetryServer/whistle-spoofing/ 으로 내려오면서 부모가 8개 핵이 공유하는
+# TelemetryServer/ 가 됐다. 그대로 뒀으면 남의 폴더를 뒤지고 로그는 못 찾는다.
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
 
 LOG_CANDIDATES = [
-    os.path.join(_ROOT, "logs", "raw", LOG_NAME),
-    os.path.join(_ROOT, "native", "whistle_hook", "bin", "Release", LOG_NAME),
-    os.path.join(_ROOT, "native", "whistle_hook", "bin", LOG_NAME),
+    os.path.join(_HERE, "logs", "raw", LOG_NAME),
+    os.path.join(_HERE, "native", "whistle_hook", "bin", "Release", LOG_NAME),
+    os.path.join(_HERE, "native", "whistle_hook", "bin", LOG_NAME),
+    # 개발 트리 배치. 지우지 않는다 — 후보를 줄였다가 후크가 로그를 남겼는데도
+    # ERROR 가 난 적이 있다.
     os.path.join(_HERE, "native", "bin", "Release", LOG_NAME),
     os.path.join(_HERE, "native", "bin", LOG_NAME),
 ]

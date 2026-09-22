@@ -33,10 +33,15 @@ import time
 
 import pymem.exception
 
-# 이 파일을 직접 실행해도 core/ 를 찾게 한다.
-# 팀원마다 실행 방식이 달라서 둘 다 되게 해둔다.
+# core/ 는 2번 모듈(LocalGuard/memory_integrity) 이 갖고 있다. 이 파일은
+# 휘파람 핵 담당(TelemetryServer) 쪽이라 부모 폴더에 core/ 가 없다.
+# 레포 루트를 거쳐 한 번 건너간다. 직접 실행해도 러너로 돌려도 둘 다 된다.
+#
+# core/ 를 공용 shared/ 로 올릴지는 8번(공통 로그 규격) 확정 후에 정한다.
+# 지금 올리면 아직 주인이 없는 자리를 선점하게 된다.
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_sys.path.insert(0, _os.path.join(_REPO, "LocalGuard", "memory_integrity"))
 
 from core.result import DetectorResult, Evidence
 from core.unreal import Runtime, PROCESS_EVENT_IDX

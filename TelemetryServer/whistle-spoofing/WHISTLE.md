@@ -40,10 +40,10 @@
 
 ```bash
 # 게임이 켜져 있어야 한다
-python detectors/whistle.py whistle_001
+python whistle.py whistle_001
 ```
 
-출력은 팀 공통 형식(`core/result.py`)이다.
+출력은 팀 공통 형식이다 (`../../LocalGuard/memory_integrity/core/result.py`).
 
 ```json
 {"session_id": "whistle_001", "module": "whistle", "timestamp_ms": 18400,
@@ -110,7 +110,7 @@ python detectors/whistle.py whistle_001
 cmake -B build -DSDK_DIR=<Dumper-7 CppSDK 경로>    # SDK 는 커밋하지 않는다
 cmake --build build --config Release
 # DLL 을 주입하면 자기 옆에 ac-whistle.jsonl 을 남긴다
-python detectors/whistle_rpc.py whistle_rpc_001
+python whistle_rpc.py whistle_rpc_001
 ```
 
 기본은 **탐지만** 하고, 옆에 `ac-whistle.block` 파일을 두면 차단까지 한다.
@@ -125,13 +125,27 @@ python detectors/whistle_rpc.py whistle_rpc_001
 
 ## 파일
 
+여기(`TelemetryServer/whistle-spoofing/`)에 있는 것 — 휘파람 핵 담당 몫.
+
 ```
-core/result.py        탐지기 공통 결과 계약 + 팀 형식 변환 (팀 공유)
+main.py                   휘파람 러너 (등록표만 갖고 2번 러너를 재사용)
+whistle.py                W-1/W-2/W-3 정적 스캔         ← 검증 완료
+whistle_rpc.py            후크 로그 → 공통 형식          ← 검증 완료 (A/B)
+native/whistle_hook/      ProcessInternal 후크 (C++)     ← 관측 성공
+measurements/             A/B 원본 로그 2세션
+```
+
+2번 모듈(`LocalGuard/memory_integrity/`)에서 빌려 쓰는 것 —
+`sys.path` 한 줄로 건너간다.
+
+```
+core/result.py        탐지기 공통 결과 계약 + 팀 형식 변환
 core/unreal.py        UE5 런타임 외부 읽기 + FName 해석
-detectors/whistle.py      W-1/W-2/W-3 정적 스캔      ← 검증 완료
-detectors/whistle_rpc.py  후크 로그 → 공통 형식      ← 미검증
-native/whistle_hook/      ProcessEvent 후크 (C++)    ← 미검증
+run_session.py        세션 묶기·공통 형식 출력·종료 코드
 ```
+
+`core/` 를 공용 `shared/` 로 올릴지는 8번(공통 로그 규격) 확정 후에 정한다.
+지금 올리면 주인이 정해지지 않은 자리를 선점하게 된다.
 
 `core/unreal.py` 의 `NAMEPOOL_RVA` 는 Dumper-7 이 준 `GNames` 값이 틀려서
 `AppendString` 디스어셈블로 직접 찾은 것이다. 게임이 업데이트되면 다시 떠야 한다.

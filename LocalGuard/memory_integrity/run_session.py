@@ -38,6 +38,15 @@ import traceback
 from core.result import (DetectorResult, set_session_start, set_player_id,
                          to_team_event)
 
+# 한글 윈도 콘솔은 기본이 cp949 라 일부 문장부호를 못 찍고 **죽는다.**
+# 탐지기가 내놓는 근거 문자열에 뭐가 들어올지 모르는데, 출력하다 죽으면
+# 검사 결과가 통째로 날아간다. 못 찍는 글자는 버리고 계속 찍게 한다.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(ROOT, "logs", "detection")
 
@@ -45,13 +54,19 @@ LOG_DIR = os.path.join(ROOT, "logs", "detection")
 #
 # 팀원이 탐지기를 추가할 때 여기 한 줄만 넣으면 된다.
 # 조건은 하나: `scan()` 이 `result.DetectorResult` 를 돌려줄 것.
+# 여기 있는 넷은 2번(메모리·코드 변조 감시) 몫이다. 휘파람 두 개는 핵 담당
+# 쪽이라 TelemetryServer/whistle-spoofing/main.py 가 자기 등록표로 갖고 있다.
+#
+# **1번·3번도 이 러너를 그대로 쓸 수 있다.** 아래에 한 줄씩 넣으면 된다.
+#     ("external_access", "detectors.local_guard_access", "설명"),
+# 그러면 세션 id 와 기준 시각(t0)이 하나로 묶여 ReplayAnalyzer 에서 타임라인이
+# 겹친다. 러너를 각자 만들면 그게 안 맞는다.
+# 이 파일을 LocalGuard/main.py 로 올릴지는 은지님·동효님이 정해 주세요.
 DETECTORS = [
-    ("filesystem",   "detectors.filesystem",           "치트 파일 흔적 (게임 실행 불필요)"),
-    ("injection",    "detectors.injection", "주입·후킹 범용 — 핵 종류 무관"),
-    ("whistle",      "detectors.whistle",  "휘파람 후킹 — ExecFunction/vtable/사운드"),
-    ("value_tamper", "detectors.value_tamper",    "값 변조 — CDO 대조"),
-    ("overlay_hook", "detectors.overlay_hook",  "인라인·렌더링 후킹 — 익스포트 프롤로그"),
-    ("whistle_rpc",  "detectors.whistle_rpc",        "도발 RPC 위반 (인프로세스 후크 로그)"),
+    ("filesystem",   "detectors.filesystem",   "치트 파일 흔적 (게임 실행 불필요)"),
+    ("injection",    "detectors.injection",    "주입·후킹 범용 (핵 종류 무관)"),
+    ("value_tamper", "detectors.value_tamper", "값 변조 (CDO·아키타입 대조)"),
+    ("overlay_hook", "detectors.overlay_hook", "인라인·렌더링 후킹 (익스포트 프롤로그)"),
 ]
 
 
@@ -102,7 +117,8 @@ def post(url, events):
 
 
 def run(session_id=None, only=None, post_url=None, log_dir=None,
-        player_id=None):
+        player_id=None, detectors=None, log_name=None):
+    detectors = DETECTORS if detectors is None else detectors
     t0 = time.time()
     set_session_start(t0)          # 모든 모듈이 같은 기준 시각을 쓰게 한다
     set_player_id(player_id)       # 로그에 누구 PC 인지 박아둔다
@@ -110,12 +126,12 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
     if not session_id:
         session_id = "ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    picked = [d for d in DETECTORS if not only or d[0] in only]
+    picked = [d for d in detectors if not only or d[0] in only]
     if only:
-        unknown = set(only) - {d[0] for d in DETECTORS}
+        unknown = set(only) - {d[0] for d in detectors}
         if unknown:
             print(f"알 수 없는 탐지기: {', '.join(sorted(unknown))}", file=sys.stderr)
-            print(f"등록된 것: {', '.join(d[0] for d in DETECTORS)}", file=sys.stderr)
+            print(f"등록된 것: {', '.join(d[0] for d in detectors)}", file=sys.stderr)
             return None, 2
 
     events = []
@@ -128,9 +144,13 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
         # window 는 하나뿐이고(0), 순서만 남긴다. core/result.py 주석 참고.
         events.append(to_team_event(res, session_id, sample_id=i))
 
+    # 기본은 세션별 파일이다. 구조안의 "logs/detections/각자핵.jsonl 에 계속
+    # 추가" 방식은 --log-dir 과 --log-name 으로 맞출 수 있게만 열어뒀다.
+    # **기본값으로 박지 않는다** — 6번 scoring 이 tail 할 규격(폴더명·파일 단위)이
+    # 아직 안 정해졌고, 먼저 박으면 나중에 두 규격이 섞인다.
     log_dir = log_dir or LOG_DIR
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"{session_id}.jsonl")
+    log_path = os.path.join(log_dir, f"{log_name or session_id}.jsonl")
     with open(log_path, "a", encoding="utf-8") as f:
         for ev in events:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -188,22 +208,40 @@ def render(summary):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="안티치트 실행기")
+    return main_with(argv, DETECTORS)
+
+
+def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=None):
+    """CLI 를 등록표와 분리한다.
+
+    핵 담당자가 자기 폴더에 러너를 두더라도 세션 묶기·공통 형식 변환·종료
+    코드는 이 한 벌만 쓰게 하기 위해서다. 복사해서 쓰면 세션 id 와 기준
+    시각이 두 벌이 되고, 어긋나는 순간 ReplayAnalyzer 에서 타임라인이
+    안 겹친다. 그런 어긋남은 에러 없이 조용히 생긴다.
+    """
+    ap = argparse.ArgumentParser(description=desc)
     ap.add_argument("--session", help="세션 id. 측정 실험에서는 직접 지정한다")
     ap.add_argument("--only", help="쉼표로 구분한 탐지기 이름")
     ap.add_argument("--post", help="TelemetryServer 엔드포인트 URL")
     ap.add_argument("--player", help="플레이어 식별자 (기본 player_001)")
     ap.add_argument("--json", action="store_true", help="요약 대신 JSON 출력")
     ap.add_argument("--list", action="store_true", help="등록된 탐지기 목록")
+    ap.add_argument("--log-dir", help="출력 폴더 (기본 logs/detection)")
+    ap.add_argument("--log-name", help="출력 파일 이름 (기본 세션 id). "
+                                       "핵별 누적 파일을 쓸 때 지정한다")
     a = ap.parse_args(argv)
 
     if a.list:
-        for name, path, desc in DETECTORS:
-            print(f"  {name:<14} {desc}   ({path}.py)")
+        for name, path, one_line in detectors:
+            print(f"  {name:<14} {one_line}   ({path}.py)")
         return 0
 
     only = [s.strip() for s in a.only.split(",")] if a.only else None
-    summary, code = run(a.session, only, a.post, player_id=a.player)
+    # 러너마다 자기 폴더에 쓴다. 안 그러면 휘파람 세션이 2번 폴더에 섞인다.
+    summary, code = run(a.session, only, a.post,
+                        log_dir=a.log_dir or default_log_dir,
+                        player_id=a.player, detectors=detectors,
+                        log_name=a.log_name)
     if summary is None:
         return code
 
