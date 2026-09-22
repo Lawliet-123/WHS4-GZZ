@@ -125,7 +125,7 @@ python whistle_rpc.py whistle_rpc_001
 
 ## 파일
 
-여기(`TelemetryServer/detectors/whistle-spoofing/`)에 있는 것 — 휘파람 핵 담당 몫.
+여기(`client/detectors/whistle-spoofing/`)에 있는 것 — 휘파람 핵 담당 몫.
 
 ```
 main.py                   휘파람 러너 (등록표만 갖고 2번 러너를 재사용)
@@ -135,7 +135,7 @@ native/whistle_hook/      ProcessInternal 후크 (C++)     ← 관측 성공
 measurements/             A/B 원본 로그 2세션
 ```
 
-2번 모듈(`LocalGuard/memory_integrity/`)에서 빌려 쓰는 것 —
+2번 모듈(`client/LocalGuard/memory_integrity/`)에서 빌려 쓰는 것 —
 `sys.path` 한 줄로 건너간다.
 
 ```

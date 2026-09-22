@@ -20,11 +20,15 @@ ReplayAnalyzer 에서 타임라인이 안 겹친다.
 ## 사용법
 
     python main.py --session rpc_001
-    python main.py --session rpc_001 --log-dir ../../logs/detections --log-name whistle-spoofing
+    python main.py --session rpc_001 --log-dir <서버>/logs/detections --log-name whistle-spoofing
 
 두 번째 형태가 구조안의 "logs/detections/각자핵.jsonl 에 계속 추가" 방식이다.
-**기본값으로 박지 않았다** — 6번 scoring 이 읽을 폴더명·파일 단위가 확정되면
-그때 기본값을 바꾼다.
+**기본값으로 박지 않았다.**
+
+2026-09-22 구조안에서 scoring 이 중앙 server/ 로 옮겨갔다. 즉 결과를 보내는
+경로가 "폴더에 파일 쓰기"에서 "HTTP 전송"으로 바뀐다(`shared/logger.py`).
+그 창구가 생기면 이 러너는 --log-dir 대신 그쪽을 부르면 된다.
+탐지 로직은 건드릴 것이 없다 — 이미 같은 형식으로 결과만 만들고 있다.
 """
 
 import os

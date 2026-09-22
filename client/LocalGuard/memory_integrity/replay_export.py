@@ -31,6 +31,33 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _repo_root():
+    """replay-data/ 를 가진 폴더를 찾는다. **상위 개수를 세지 않는다.**
+
+    이 파일은 팀 구조가 바뀔 때마다 깊이가 달라졌다(anti-cheat/ ->
+    LocalGuard/memory_integrity/ -> client/LocalGuard/memory_integrity/).
+    dirname 을 몇 번 부를지 박아두면 그때마다 조용히 엉뚱한 자리를 가리킨다.
+    실제로 예전 배치에서는 레포 **바깥**을 가리키고 있었다.
+    """
+    d = HERE
+    while True:
+        if os.path.isdir(os.path.join(d, "replay-data")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            # 아직 안 만들어졌을 수 있다. 그때는 .git 이 있는 자리를 레포로 본다.
+            d2 = HERE
+            while True:
+                if os.path.isdir(os.path.join(d2, ".git")):
+                    return d2
+                p2 = os.path.dirname(d2)
+                if p2 == d2:
+                    raise SystemExit(
+                        "레포 루트를 찾지 못했습니다. --out 으로 직접 지정해 주세요.")
+                d2 = p2
+        d = parent
 DEFAULT_LOGS = os.path.join(HERE, "logs", "detection")
 
 # 우리 모듈 -> 팀 replay-data 폴더 (modules/ 이름과 맞춘다)
@@ -139,8 +166,7 @@ def main(argv=None):
     ap.add_argument("--player", default="player_001")
     a = ap.parse_args(argv)
 
-    out = a.out or os.path.join(
-        os.path.dirname(os.path.dirname(HERE)), "replay-data")
+    out = a.out or os.path.join(_repo_root(), "replay-data")
     dest, manifest = export(a.session, None if a.clean else a.cheat,
                             out, a.logs, a.player)
     print(f"{dest}")
