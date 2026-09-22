@@ -125,7 +125,7 @@ python whistle_rpc.py whistle_rpc_001
 
 ## 파일
 
-여기(`TelemetryServer/whistle-spoofing/`)에 있는 것 — 휘파람 핵 담당 몫.
+여기(`TelemetryServer/detectors/whistle-spoofing/`)에 있는 것 — 휘파람 핵 담당 몫.
 
 ```
 main.py                   휘파람 러너 (등록표만 갖고 2번 러너를 재사용)

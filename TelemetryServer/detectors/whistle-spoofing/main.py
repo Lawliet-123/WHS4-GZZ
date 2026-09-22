@@ -5,6 +5,10 @@
 회의에 참석하지 못해 회의록 목록과 구조안 핵 폴더 목록 양쪽에 휘파람이
 빠져 있어서, 이미 머지된 `modules/whistle-spoofing` 과 같은 이름으로 만들었다.
 
+핵 코드와 탐지 코드는 자리를 갈라 둔다 — 핵 PoC·분석은 `hack/<핵>/`,
+탐지는 `TelemetryServer/detectors/<핵>/`. 같은 이름 폴더가 두 군데 있으면
+`whistle-spoofing` 이 핵 코드인지 탐지 코드인지 헷갈린다.
+
 ## 왜 러너를 따로 두는가
 
 탐지기 자체는 세션 묶기·공통 형식 변환을 몰라도 되게 두었다. 그 일은
@@ -16,7 +20,7 @@ ReplayAnalyzer 에서 타임라인이 안 겹친다.
 ## 사용법
 
     python main.py --session rpc_001
-    python main.py --session rpc_001 --log-dir ../logs/detections --log-name whistle-spoofing
+    python main.py --session rpc_001 --log-dir ../../logs/detections --log-name whistle-spoofing
 
 두 번째 형태가 구조안의 "logs/detections/각자핵.jsonl 에 계속 추가" 방식이다.
 **기본값으로 박지 않았다** — 6번 scoring 이 읽을 폴더명·파일 단위가 확정되면
@@ -27,13 +31,33 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO = os.path.dirname(os.path.dirname(_HERE))
+
+
+def _memory_integrity():
+    """2번 모듈 폴더를 찾는다. **상위 폴더 개수를 세지 않는다.**
+
+    이 파일은 detectors/ 가 생기면서 한 번 더 내려갔다. 그때 dirname 을
+    세는 코드가 조용히 엉뚱한 폴더를 가리켰다. 또 움직여도 안 깨지게
+    올라가면서 찾는다.
+    """
+    d = _HERE
+    while True:
+        cand = os.path.join(d, "LocalGuard", "memory_integrity")
+        if os.path.isdir(cand):
+            return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            raise SystemExit(
+                "LocalGuard/memory_integrity 를 찾지 못했습니다. "
+                "레포 안에서 실행하고 있는지 확인해 주세요.")
+        d = parent
+
 
 # 자기 폴더를 먼저 넣어 whistle / whistle_rpc 를 최상위 모듈로 부른다.
 # 폴더 이름에 하이픈이 있어 점 표기(import a.b)로는 못 부른다.
 sys.path.insert(0, _HERE)
 # 러너와 core/ 는 2번 모듈이 갖고 있다.
-sys.path.insert(0, os.path.join(_REPO, "LocalGuard", "memory_integrity"))
+sys.path.insert(0, _memory_integrity())
 
 import run_session  # noqa: E402
 

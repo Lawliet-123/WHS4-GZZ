@@ -23,8 +23,28 @@ import sys
 # core/ 를 공용 shared/ 로 올릴지는 8번(공통 로그 규격) 확정 후에 정한다.
 # 지금 올리면 아직 주인이 없는 자리를 선점하게 된다.
 import os as _os, sys as _sys
-_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-_sys.path.insert(0, _os.path.join(_REPO, "LocalGuard", "memory_integrity"))
+
+def _memory_integrity():
+    """2번 모듈 폴더를 찾는다. **상위 폴더 개수를 세지 않는다.**
+
+    이 파일은 detectors/ 가 생기면서 한 번 더 내려갔다. 그때 dirname 을
+    세 번 부르던 코드가 조용히 엉뚱한 폴더를 가리켰다. 폴더가 또 움직여도
+    안 깨지게 올라가면서 찾는다.
+    """
+    d = _os.path.dirname(_os.path.abspath(__file__))
+    while True:
+        cand = _os.path.join(d, "LocalGuard", "memory_integrity")
+        if _os.path.isdir(cand):
+            return cand
+        parent = _os.path.dirname(d)
+        if parent == d:
+            raise RuntimeError(
+                "LocalGuard/memory_integrity 를 찾지 못했습니다. "
+                "레포 안에서 실행하고 있는지 확인해 주세요.")
+        d = parent
+
+
+_sys.path.insert(0, _memory_integrity())
 
 from core.result import DetectorResult, Evidence
 
