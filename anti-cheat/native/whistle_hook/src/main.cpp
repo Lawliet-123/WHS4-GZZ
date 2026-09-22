@@ -75,6 +75,22 @@ static bool IsProvocationInput(const std::string& Name)
     return Name.find("InpActEvt_IA_Provocation") != std::string::npos;
 }
 
+/* Auto Paint v1 이 부르는 RPC (심재민 2026-09-15 표 기준).
+
+   정적 스캔으로는 주입된 DLL 하나만 보였다(SUSPICIOUS 40). 코드 패치도
+   값 변조도 안 하기 때문이다. 호출 자체를 봐야 확정할 수 있고, 휘파람에서
+   만든 ProcessInternal 후크가 그대로 쓰인다.
+
+   **이 함수들의 Context 는 폰이 아니라 URuntimePaintableComponent 다.**
+   휘파람 판정(IsHunter +0x0C3A, Dead +0x05AA)을 여기에 적용하면 엉뚱한
+   메모리를 읽는다. 판정을 반드시 갈라야 한다. */
+static bool IsPaintFn(const std::string& Name)
+{
+    return Name == "ServerPaintBatch" || Name == "PaintAtUVWithBrush";
+}
+
+enum class FnKind { Provocation, Paint };
+
 /* ── 설정 ─────────────────────────────────────────────────────────────── */
 /* 쿨다운은 게임 디자인 값을 모르므로 보수적으로 잡는다. 실측에서 1.016초에
    5회(간격 약 0.2초)가 전부 통과했다. 정상 연타의 상한을 넉넉히 두고
@@ -482,12 +498,81 @@ static constexpr int kMaxExecHooks = 8;
 static NativeExecFn gOrigExec[kMaxExecHooks]{};
 static std::string gExecName[kMaxExecHooks];
 static UFunction* gExecFunc[kMaxExecHooks]{};
+static FnKind gExecKind[kMaxExecHooks]{};
 static std::atomic<int> gExecCount{0};
+
+/* 칠하기 호출 통계. **아직 판정하지 않는다.**
+
+   정상 플레이의 칠하기 빈도를 모르는 상태에서 임계값을 정하면 그 값이
+   그대로 오탐률이 된다. 휘파람 쿨다운(0.60초)도 근거 없이 잡았다가
+   첫 측정에서 오탐 100% 가 나왔다.
+
+   그래서 이번에는 **먼저 재고 나중에 판정한다.** 손으로 칠한 세션과
+   봇 세션의 간격 분포를 비교한 뒤에 규칙을 넣는다. */
+static std::atomic<unsigned long long> gPaintCalls{0};
+static std::mutex gPaintLock;
+static ULONGLONG gPaintLastTick = 0;
+static ULONGLONG gPaintMinGapMs = 0xFFFFFFFFull;
+static ULONGLONG gPaintWindowStart = 0;
+static unsigned gPaintInWindow = 0;
+static unsigned gPaintPeakPerSec = 0;
 
 /* 판정부를 따로 둔다. Verdict 가 소멸자를 가져서 __try 와 같은 함수에
    두면 C2712 가 난다. ProcessEvent 쪽 Inspect() 와 같은 이유다. */
+/* 칠하기 호출을 세고 간격 분포만 남긴다. 판정은 하지 않는다. */
+static void PaintObserve()
+{
+    const ULONGLONG Now = GetTickCount64();
+    gPaintCalls.fetch_add(1, std::memory_order_relaxed);
+
+    unsigned Peak = 0, InWin = 0;
+    ULONGLONG MinGap = 0;
+    {
+        std::lock_guard<std::mutex> Lock(gPaintLock);
+        if (gPaintLastTick)
+        {
+            const ULONGLONG Gap = Now - gPaintLastTick;
+            if (Gap < gPaintMinGapMs) gPaintMinGapMs = Gap;
+        }
+        gPaintLastTick = Now;
+
+        if (Now - gPaintWindowStart >= 1000)
+        {
+            if (gPaintInWindow > gPaintPeakPerSec) gPaintPeakPerSec = gPaintInWindow;
+            gPaintWindowStart = Now;
+            gPaintInWindow = 0;
+        }
+        ++gPaintInWindow;
+        Peak = gPaintPeakPerSec;
+        InWin = gPaintInWindow;
+        MinGap = gPaintMinGapMs;
+    }
+
+    /* 초당 한 줄만. 칠하기는 연속 호출이라 전부 적으면 로그가 폭주한다. */
+    static std::atomic<ULONGLONG> LastLog{0};
+    const ULONGLONG Prev = LastLog.load(std::memory_order_relaxed);
+    if (Now - Prev < 1000) return;
+    LastLog.store(Now, std::memory_order_relaxed);
+
+    char B[256];
+    snprintf(B, sizeof(B),
+             "{\"t\":%.3f,\"event\":\"paint\",\"calls\":%llu,\"per_sec\":%u,"
+             "\"peak_per_sec\":%u,\"min_gap_ms\":%llu}",
+             static_cast<double>(Now - gStartTick) / 1000.0,
+             gPaintCalls.load(), InWin, Peak,
+             MinGap == 0xFFFFFFFFull ? 0ull : MinGap);
+    LogLine(B);
+}
+
 static void ExecInspect(void* Context, int Slot)
 {
+    if (gExecKind[Slot] == FnKind::Paint)
+    {
+        /* Context 가 폰이 아니므로 휘파람 판정을 돌리면 안 된다. */
+        PaintObserve();
+        return;
+    }
+
     gCalls.fetch_add(1, std::memory_order_relaxed);
     const Verdict V = Judge(Context, gExecName[Slot]);
     if (V.violated)
@@ -713,7 +798,9 @@ static int InstallExecHooks()
         if (!Obj || !Obj->IsA(UFunction::StaticClass())) continue;
 
         const std::string Name = Obj->GetName();
-        if (!IsProvocationFn(Name)) continue;
+        const bool Provo = IsProvocationFn(Name);
+        const bool Paint = !Provo && IsPaintFn(Name);
+        if (!Provo && !Paint) continue;
 
         auto* Fn = static_cast<UFunction*>(Obj);
         bool Known = false;
@@ -726,6 +813,7 @@ static int InstallExecHooks()
 
         gOrigExec[Used] = reinterpret_cast<NativeExecFn>(Fn->ExecFunction);
         gExecName[Used] = Name;
+        gExecKind[Used] = Paint ? FnKind::Paint : FnKind::Provocation;
         gExecFunc[Used] = Fn;
 
         DWORD Old{};
@@ -740,9 +828,10 @@ static int InstallExecHooks()
         char Buf[512];
         snprintf(Buf, sizeof(Buf),
                  "{\"t\":%.3f,\"event\":\"exec_hook\",\"slot\":%d,\"fn\":\"%s\","
-                 "\"original\":\"0x%p\"}",
+                 "\"kind\":\"%s\",\"original\":\"0x%p\"}",
                  static_cast<double>(GetTickCount64() - gStartTick) / 1000.0,
-                 Used, Escape(Name).c_str(), (void*)gOrigExec[Used]);
+                 Used, Escape(Name).c_str(), Paint ? "paint" : "provocation",
+                 (void*)gOrigExec[Used]);
         LogLine(Buf);
     }
     return Added;
