@@ -177,14 +177,34 @@ def summarize(results):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 팀 공통 출력 형식 (허송희, 2026-09-15 #일반)
+# 팀 공통 출력 형식 (이은지 확정, 2026-09-21 노션 「역할 분배」)
 # ═══════════════════════════════════════════════════════════════════════
 #
-#   {"session_id": "noclip_001", "module": "noclip", "timestamp_ms": 507000,
-#    "status": "SUSPICIOUS", "severity": "HIGH",
-#    "reasons": [...], "evidence": {...}, "score": 3}
+#   {"session_id": "", "player_id": "", "module": "", "timestamp_ms": 0,
+#    "window_id": 0, "sample_id": 0,
+#    "evidence": {}, "reasons": [], "raw_score": 0}
 #
-#   status: NORMAL / SUSPICIOUS / DETECTED / WARNING / OFFLINE / ERROR
+# 여기에 우리가 두 키를 **더 얹어서** 내보낸다. 빼면 안 되는 것들이다.
+#
+#   status:   NORMAL / SUSPICIOUS / DETECTED / WARNING / OFFLINE / ERROR
+#   severity: HIGH / MEDIUM / LOW / NONE
+#
+# **status 가 없으면 검사 실패를 정상과 구분할 수 없다.** raw_score 만 보면
+# "검사를 못 해서 0점"과 "검사했는데 깨끗해서 0점"이 같은 줄이 된다.
+# 이 파일 맨 위에서 금지한 조용한 미탐지가 팀 형식에서 되살아나는 경로다.
+# 소비하는 쪽(6번 scoring, 7번 ReplayAnalyzer)에 같이 넘길 규칙:
+#
+#   status 가 ERROR/OFFLINE 인 이벤트는 탐지율·오탐률 집계에서 제외하고
+#   제외 건수를 표에 같이 싣는다.
+#
+# 임계치와 가중치는 우리가 확정하지 않는다. 허송희(2026-09-21 #일반):
+#
+#   "각 모듈에서 신호의 신뢰도에 따라 자체적으로 raw_score를 만들고
+#    제가 ReplayAnalyzer에서 정상/이상 로그를 비교해서 임계치랑 가중치를
+#    검증하는 방식으로요"
+#
+# 그래서 우리 T_SUSPICIOUS=20 / T_DETECTED=60 은 **잠정값**이다.
+# 실측으로 바뀔 수 있는 값이라는 뜻이지, 지금 안 써도 된다는 뜻이 아니다.
 #
 # 위쪽 DetectorResult 는 우리 내부 계약이고, 이 아래가 그것을 팀 형식으로
 # 옮기는 계층이다. 둘을 합치지 않는 이유:
@@ -208,11 +228,28 @@ STATUS_MAP = {
 _SESSION_T0 = time.time()
 
 
+# 이 PC 를 가리키는 이름. LocalGuard 는 한 대에서만 도므로 세션 내내 같다.
+# 1번(은지·지완)이 HWID 지문을 만들면 그걸로 바꿔 넣으면 된다.
+_PLAYER_ID = "player_001"
+
+
 def set_session_start(epoch_s=None):
     """세션 시작 시각을 맞춘다. 오케스트레이터(main.py)가 한 번만 부른다."""
     global _SESSION_T0
     _SESSION_T0 = time.time() if epoch_s is None else epoch_s
     return _SESSION_T0
+
+
+def set_player_id(player_id):
+    """플레이어 식별자를 맞춘다. main.py 가 한 번만 부른다.
+
+    측정 세션을 나중에 사람별로 가르려면 이 값이 로그에 박혀 있어야 한다.
+    나중에 파일 이름으로 유추하는 건 이미 정보가 없어진 뒤의 일이다.
+    """
+    global _PLAYER_ID
+    if player_id:
+        _PLAYER_ID = player_id
+    return _PLAYER_ID
 
 
 def severity_of(res):
@@ -256,15 +293,32 @@ def _evidence_dict(res):
     return out
 
 
-def to_team_event(res, session_id, timestamp_ms=None):
+# 팀 스키마가 요구하는 키. 하나라도 빠지면 6번 scoring 이 읽다가 죽는다.
+REQUIRED_KEYS = ("session_id", "player_id", "module", "timestamp_ms",
+                 "window_id", "sample_id", "evidence", "reasons", "raw_score")
+
+
+def to_team_event(res, session_id, timestamp_ms=None,
+                  player_id=None, window_id=0, sample_id=0):
     """DetectorResult 를 팀 공통 이벤트로 바꾼다.
 
     session_id 는 한 번의 테스트를 가리키는 이름이다 (`whistle_001`).
     측정 실험에서는 손으로 지정해야 비교가 된다. 자동 생성하지 않는다.
 
-    timestamp_ms 는 세션 시작 이후 경과 ms 로 본다. 재민님 예시의 507000 이
-    epoch 로는 1970년이라 경과 시간이 맞다고 판단했다.
-    **이 해석은 허송희님 확인이 필요하다.**
+    timestamp_ms 는 세션 시작 이후 경과 ms 다. 허송희님 noclip 예시의
+    507000 이 epoch 로는 1970년이라 경과 시간으로 읽었다.
+
+    ## window_id / sample_id 를 0 으로 두는 이유
+
+    이 두 키는 **구간을 잘라 반복 표집하는 탐지기**를 위한 자리다
+    (에임봇처럼 1초 창 안에서 각도 변화를 여러 번 재는 쪽).
+
+    2번 탐지기는 그렇게 안 돈다. 한 번 스캔해서 그 시점의 메모리·코드를
+    통째로 보는 스냅샷이다. 그래서 창이 하나뿐이라 `window_id` 는 0 이고,
+    `sample_id` 는 이 세션에서 몇 번째 이벤트인지를 넣는다.
+
+    **없는 구간을 지어내서 채우지 않는다.** 0 이 "구간이 하나"라는 사실이고,
+    그게 7번에서 우리 표본 수를 잘못 세지 않게 하는 정직한 값이다.
     """
     if timestamp_ms is None:
         timestamp_ms = int((time.time() - _SESSION_T0) * 1000)
@@ -276,13 +330,17 @@ def to_team_event(res, session_id, timestamp_ms=None):
 
     ev = {
         "session_id": session_id,
+        "player_id": player_id or _PLAYER_ID,
         "module": res.detector,
         "timestamp_ms": timestamp_ms,
+        "window_id": window_id,
+        "sample_id": sample_id,
+        "evidence": _evidence_dict(res),
+        "reasons": list(res.reasons),
+        "raw_score": res.score,
+        # ── 아래 둘은 팀 스키마에 없는 우리 확장이다. 위 주석 참고. ──
         "status": status,
         "severity": severity_of(res),
-        "reasons": list(res.reasons),
-        "evidence": _evidence_dict(res),
-        "score": res.score,
     }
     return ev
 
@@ -323,6 +381,22 @@ def _selftest():
 
     assert to_team_event(hit, "t", timestamp_ms=507000)["timestamp_ms"] == 507000
     assert severity_of(hit) == "HIGH" and severity_of(off) == "NONE"
+
+    # ── 팀 스키마 키 ────────────────────────────────────────────────
+    # 키 이름 하나가 어긋나면 6번 scoring 이 우리 jsonl 만 못 읽는다.
+    # 그건 조용히 빠지는 실패라 여기서 강제한다.
+    ev = to_team_event(hit, "t", player_id="p1", window_id=2, sample_id=5)
+    for k in REQUIRED_KEYS:
+        assert k in ev, f"팀 스키마 키 누락: {k}"
+    assert ev["raw_score"] == hit.score, "점수는 raw_score 로 나가야 한다"
+    assert "score" not in ev, "score 는 raw_score 로 이름이 바뀌었다"
+    assert ev["player_id"] == "p1"
+    assert (ev["window_id"], ev["sample_id"]) == (2, 5)
+    # 기본값도 살아 있어야 한다. player_id 가 비면 세션 전역값을 쓴다.
+    assert to_team_event(hit, "t")["player_id"] == _PLAYER_ID
+    # 확장 키를 지우면 ERROR 가 raw_score 0 인 정상 이벤트와 구분되지 않는다.
+    assert to_team_event(bad, "t")["raw_score"] == 0
+    assert to_team_event(bad, "t")["status"] == "ERROR", "0점 실패 ≠ 0점 정상"
 
 
 _selftest()

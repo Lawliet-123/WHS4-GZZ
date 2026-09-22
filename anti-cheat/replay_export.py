@@ -63,12 +63,17 @@ def to_replay_event(ev, player_id):
     """
     return {
         "session_id": ev["session_id"],
-        "player_id": player_id,
+        # 이벤트에 박힌 값이 우선이다. 인자는 예전 로그를 위한 대비책이다.
+        "player_id": ev.get("player_id") or player_id,
         "module": ev["module"],
         "timestamp_ms": ev["timestamp_ms"],
+        "window_id": ev.get("window_id", 0),
+        "sample_id": ev.get("sample_id", 0),
         "evidence": ev.get("evidence", {}),
         "reasons": ev.get("reasons", []),
-        "raw_score": ev.get("score", 0),
+        # `score` 는 2026-09-21 이전 로그의 옛 키다. 그때 찍은 세션 4개를
+        # 다시 못 읽으면 지금까지의 측정이 통째로 날아간다.
+        "raw_score": ev.get("raw_score", ev.get("score", 0)),
         # 우리 계약의 상태를 같이 싣는다. ERROR/OFFLINE 은 CLEAN 이 아니고
         # 집계에서 빼야 하는데, raw_score 만 보면 0 이라 구분이 안 된다.
         "status": ev.get("status"),

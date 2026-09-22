@@ -35,7 +35,8 @@ import sys
 import time
 import traceback
 
-from core.result import DetectorResult, set_session_start, to_team_event
+from core.result import (DetectorResult, set_session_start, set_player_id,
+                         to_team_event)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(ROOT, "logs", "detection")
@@ -100,9 +101,11 @@ def post(url, events):
         return False, str(e)
 
 
-def run(session_id=None, only=None, post_url=None, log_dir=None):
+def run(session_id=None, only=None, post_url=None, log_dir=None,
+        player_id=None):
     t0 = time.time()
     set_session_start(t0)          # 모든 모듈이 같은 기준 시각을 쓰게 한다
+    set_player_id(player_id)       # 로그에 누구 PC 인지 박아둔다
 
     if not session_id:
         session_id = "ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -116,12 +119,14 @@ def run(session_id=None, only=None, post_url=None, log_dir=None):
             return None, 2
 
     events = []
-    for name, path, _desc in picked:
+    for i, (name, path, _desc) in enumerate(picked):
         res = run_one(name, path)
         # 등록표의 이름을 쓴다. 탐지기가 제 이름을 다르게 적어도
         # 대시보드에서 모듈이 둘로 보이면 안 된다.
         res.detector = name
-        events.append(to_team_event(res, session_id))
+        # sample_id 는 이 세션에서 몇 번째 이벤트인가다. 한 번 스캔이라
+        # window 는 하나뿐이고(0), 순서만 남긴다. core/result.py 주석 참고.
+        events.append(to_team_event(res, session_id, sample_id=i))
 
     log_dir = log_dir or LOG_DIR
     os.makedirs(log_dir, exist_ok=True)
@@ -175,7 +180,7 @@ def render(summary):
         if len(reason) > 44:
             reason = reason[:43] + "…"
         print(f" {MARK.get(ev['status'], '  ')} {ev['module']:<14} "
-              f"{ev['status']:<11} {ev['score']:>4}  {reason}")
+              f"{ev['status']:<11} {ev['raw_score']:>4}  {reason}")
     if "posted" in summary:
         print()
         print("전송 " + ("성공" if summary["posted"] else
@@ -187,6 +192,7 @@ def main(argv=None):
     ap.add_argument("--session", help="세션 id. 측정 실험에서는 직접 지정한다")
     ap.add_argument("--only", help="쉼표로 구분한 탐지기 이름")
     ap.add_argument("--post", help="TelemetryServer 엔드포인트 URL")
+    ap.add_argument("--player", help="플레이어 식별자 (기본 player_001)")
     ap.add_argument("--json", action="store_true", help="요약 대신 JSON 출력")
     ap.add_argument("--list", action="store_true", help="등록된 탐지기 목록")
     a = ap.parse_args(argv)
@@ -197,7 +203,7 @@ def main(argv=None):
         return 0
 
     only = [s.strip() for s in a.only.split(",")] if a.only else None
-    summary, code = run(a.session, only, a.post)
+    summary, code = run(a.session, only, a.post, player_id=a.player)
     if summary is None:
         return code
 
