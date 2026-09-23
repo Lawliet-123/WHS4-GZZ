@@ -553,3 +553,53 @@ Client 가 Server 와 같은 실제 간격을 보고한다. 수정 확인.
 `kMinIntervalSec = 0.60` 은 게임 디자인 값이 아니라 우리가 보수적으로 잡은
 값이다. 실제 쿨다운을 모르는 상태라 **이 값 자체가 오탐률을 좌우한다.**
 정상 플레이 로그로 간격 분포를 재서 정해야 한다.
+
+---
+
+# 반복 관측 — 탐지 지연 · Post-OFF 를 재기 위한 방법 (2026-09-23)
+
+7번 1차 분석에서 "manifest 에 cheat ON/OFF 시간이 없어서 탐지 지연시간/Post-OFF
+계산 불가"가 나왔다. 외부 스냅샷은 핵을 언제 켰는지 알 수 없어서, 지금까지는
+모르는 값을 지어내지 않으려고 비워서 냈다.
+
+```
+python run_session.py --session hide_hack_001 --only value_tamper,injection --watch 150 --interval 10
+#   150초 동안 10초마다 반복 스캔. 핵을 켜거나 끌 때마다 Enter.
+python replay_export.py hide_hack_001 --cheat hide-anywhere
+#   manifest 에 cheat_start_ms / cheat_end_ms / cheat_windows_ms 가 채워진다
+```
+
+## manifest 에 덧붙인 것 — 분석하는 쪽이 알아야 할 것
+
+| 키 | 뜻 |
+|---|---|
+| `module_timing` | 모듈이 무엇을 따라가는가. **`toggle` 인 모듈만** 핵 구간으로 지연·Post-OFF 를 잰다. `injection`·`overlay_hook`·`whistle` 은 `dll_resident` — 토글이 아니라 DLL 이 들어와 있는지를 보므로, 토글 구간으로 재면 지연이 음수로 나온다 |
+| `post_off_censored` | 끈 뒤 **세션 끝까지** 계속 걸린 모듈. Post-OFF 는 "그만큼 지속"이 아니라 "적어도 그만큼"이다 |
+| `cheat_open_ended` | 켜진 채로 끝났다. 마지막 구간의 끝은 세션 끝으로 채운 값이다 |
+| `phase_counts` · 이벤트별 `cheat_phase` | `BOUNDARY` 는 스캔 도중에 켜거나 끈 것 — 어느 상태를 봤는지 모르므로 빼는 게 안전하다 |
+| `error_events` | 바퀴 단위 검사 실패 수. 모듈 전체가 실패한 경우만 `excluded_from_scoring` 에 들어간다 |
+
+이벤트에는 `scan_start_ms` / `scan_end_ms` 를 최상위에 싣는다. value_tamper 는 한 번에
+10초 넘게 걸려서, 끝난 시각(`timestamp_ms`)만으로는 경계에 걸친 스캔을 가를 수 없다.
+
+## Hide Anywhere 은 Post-OFF 가 길게 나온다 — 탐지기 오류가 아니다
+
+핵은 매 프레임 값을 덮어쓰고, 끄면 **쓰기만 멈춘다.** 게임이 그 값을 원래대로
+되돌리지 않으면 메모리에 5000 이 그대로 남고 value_tamper 는 계속 DETECTED 를 낸다.
+변조된 값이 실제로 남아 있는 걸 정확히 본 것이다. `post_off_censored` 로 표시된다.
+
+## 이 기능을 만들며 막은 것 (2026-09-23 3관점 반박 검토, 확인 25건)
+
+- **같은 세션 이름으로 다시 돌리면 두 실행이 섞였다.** 마커까지 섞여 핵 구간이
+  "켠 시각은 2회차, 끈 시각은 1회차"가 됐다. 이제 같은 이름을 거부한다(`--overwrite`).
+  이미 섞인 옛 파일은 export 가 시각 역행을 보고 거부한다.
+- **whistle_rpc 가 후크 로그를 매번 처음부터 읽었다.** 위반이 한 번 찍히면 이후 모든
+  바퀴가 DETECTED 라 Post-OFF 가 세션 끝까지 갔다. 반복 관측에서는 바퀴마다 새로
+  쓰인 줄만 읽는다.
+- **Enter 를 input() 으로 받던 스레드가 종료 때 인터프리터를 죽였다**(stdout 이 파일·
+  파이프일 때 `Fatal Python error`, 0xC0000005). 콘솔은 msvcrt 폴링, 파이프는
+  `os.read` 로 바꿨다. 시작 전 버퍼에 남은 Enter 도 비운다.
+- **시작 상태를 코드에만 두었다.** 이제 마커 파일 첫 줄에 적는다(`--start-on`).
+- **`core/`·`detectors/` 에 `__init__.py` 가 없었다.** 네임스페이스 패키지라
+  sys.path 어디에든 `core` 라는 모듈이 있으면 그쪽이 이겨서 탐지기 전부가 import
+  실패로 죽는다. 테스트 중 스크래치 폴더의 `core.py` 에 가려져 발견했다.

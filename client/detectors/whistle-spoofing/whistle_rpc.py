@@ -91,6 +91,8 @@ RULES = {
 
 
 def scan(path=None):
+    if _WATCH is not None and (path is None or path == _WATCH["path"]):
+        return _scan_window(_WATCH)
     r = DetectorResult("whistle_rpc")
     path = path or default_log()
 
@@ -168,18 +170,19 @@ def scan(path=None):
                     f"도발 호출 {calls_seen}건 관측 — 위반 없음")
         return r
 
+    return _score(r, violations)
+
+
+def _score(r, violations):
+    """위반 기록을 점수와 근거로 바꾼다. 단발·구간 관측이 같이 쓴다."""
     # 같은 코드가 여러 번 나와도 점수는 한 번만 준다.
     # 반복은 확신을 높이지만 등급을 무한히 올리면 의미가 없어진다.
-    seen = set()
     counts = {}
     for ev in violations:
         for code in ev.get("codes", []):
             counts[code] = counts.get(code, 0) + 1
 
     for code, n in sorted(counts.items(), key=lambda kv: -kv[1]):
-        if code in seen:
-            continue
-        seen.add(code)
         points, vuln, fix = RULES.get(code, (30, "미분류", "-"))
         r.add(code, points,
               f"{vuln} 위반 {n}회 (서버측 권고 {fix})",
@@ -196,6 +199,127 @@ def scan(path=None):
         r.meta["blocked"] = blocked
         r.detail += f" / 차단 {blocked}건"
     return r
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 반복 관측 (run_session.py --watch)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 단발 scan() 은 후크 로그를 **처음부터 끝까지** 읽는다. 한 번 보고 끝나는
+# 검사에서는 맞는 동작이다. 반복 관측에서는 틀린다 — 위반이 한 번 찍히면
+# 그 뒤 모든 바퀴가 계속 DETECTED 가 되어 핵을 꺼도 안 내려오고(Post-OFF 가
+# 세션 끝까지), 이전 게임 실행의 위반까지 섞인다. 후크는 로그를 덮어쓰지 않고
+# 이어 쓰기 때문이다(main.cpp LogLine, OPEN_ALWAYS + 끝에 붙이기).
+# 2026-09-23 검토에서 재현됐다.
+#
+# 그래서 반복 관측에서는 **바퀴마다 새로 쓰인 줄만** 읽는다.
+# begin_watch() 가 지금 파일 끝을 기준점으로 잡고, 이후 scan() 은 거기서부터
+# 읽고 기준점을 옮긴다. 이전 실행의 위반은 기준점 앞이라 안 섞인다.
+#
+# 후크 연결 상태(start / hooks / exec_hook)는 기준점 **앞**에 있으므로
+# 시작할 때 한 번 전부 읽어 따로 들고 있는다. 이것까지 버리면 후크가 붙어
+# 있는데도 "시작 기록이 없다" 로 ERROR 가 난다.
+#
+# 호출 수는 후크가 3초마다 남기는 누적 카운터(stats.calls)의 **증가분**이다.
+# 바퀴 사이에 stats 줄이 안 찍혔으면 0 으로 보이고 다음 바퀴에 몰려서 잡힌다.
+# 최대 3초 늦을 수 있다는 뜻이다.
+
+_WATCH = None
+
+
+def begin_watch(path=None):
+    """반복 관측을 시작한다. 지금 로그 끝을 기준점으로 잡는다."""
+    global _WATCH
+    st = {"path": path or default_log(), "offset": 0, "started": False,
+          "hooks_total": 0, "exec_hooks": [], "pe": 0, "calls": 0,
+          "restarts": 0}
+    if os.path.exists(st["path"]):
+        _consume(st)            # 후크 상태만 챙기고 기존 위반은 버린다
+    _WATCH = st
+    return st
+
+
+def end_watch():
+    global _WATCH
+    _WATCH = None
+
+
+def _consume(st):
+    """기준점부터 끝까지 읽어 후크 상태를 갱신한다. (새 위반, 새 호출 수) 를 돌려준다."""
+    size = os.path.getsize(st["path"])
+    if size < st["offset"]:
+        # 파일이 줄었다 = 로그를 지우고 다시 주입했다. 처음부터 다시 읽는다.
+        st["offset"] = 0
+        st["calls"] = 0
+        st["restarts"] += 1
+    with open(st["path"], "rb") as f:
+        f.seek(st["offset"])
+        data = f.read()
+    # 마지막 줄은 후크가 쓰는 중일 수 있다. 개행으로 안 끝난 꼬리는 다음 바퀴로 미룬다.
+    cut = data.rfind(b"\n") + 1
+    st["offset"] += cut
+
+    violations, calls_before = [], st["calls"]
+    for line in data[:cut].decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        kind = ev.get("event")
+        if kind == "start":
+            # 이 사이에 다시 주입됐다. 누적 카운터가 0 부터 다시 센다.
+            st["started"] = True
+            st["calls"] = 0
+            calls_before = 0
+        elif kind == "hooks":
+            st["hooks_total"] = ev.get("total", st["hooks_total"])
+        elif kind == "exec_hook":
+            st["exec_hooks"].append(ev.get("fn", "?"))
+        elif kind == "stats":
+            st["calls"] = max(st["calls"], ev.get("calls", 0))
+            st["pe"] = max(st["pe"], ev.get("process_event", 0))
+        elif ev.get("codes"):
+            violations.append(ev)
+    return violations, max(0, st["calls"] - calls_before)
+
+
+def _scan_window(st):
+    r = DetectorResult("whistle_rpc")
+    if not os.path.exists(st["path"]):
+        return r.fail("후크 로그가 없습니다. 찾아본 자리:\n    "
+                      + "\n    ".join(LOG_CANDIDATES)
+                      + "\n    ac_whistle DLL 을 주입했는지 확인하세요.")
+    try:
+        violations, calls = _consume(st)
+    except Exception as e:
+        return r.fail(f"로그를 읽지 못했습니다: {e}")
+
+    if not st["started"]:
+        return r.fail("후크 시작 기록이 없습니다. DLL 이 로드되지 않았습니다.")
+    if not st["exec_hooks"]:
+        return r.fail("도발 UFunction 의 ExecFunction 을 하나도 걸지 못했습니다. "
+                      "게임이 로비이거나 함수 이름이 다릅니다.")
+
+    r.meta["mode"] = "window"
+    r.meta["log"] = st["path"]
+    r.meta["window_calls"] = calls
+    r.meta["window_violation_records"] = len(violations)
+    r.meta["cumulative_calls"] = st["calls"]
+    r.meta["hooked_vtables"] = st["hooks_total"]
+    if st["restarts"]:
+        r.meta["log_restarts"] = st["restarts"]
+
+    if not violations:
+        # 단발 모드와 달리 **호출 0건이 ERROR 가 아니다.** 이 구간에 휘파람을
+        # 안 불었을 뿐이고, 후크가 붙어 있다는 건 위에서 이미 확인했다.
+        # 호출 수를 meta 에 같이 남겨 "안 불어서 0" 과 "불었는데 정상" 을 가른다.
+        r.detail = (f"이 구간 도발 호출 {calls}건 — 위반 없음" if calls
+                    else "이 구간 도발 호출 없음")
+        return r
+    return _score(r, violations)
 
 
 def main(argv=None):
