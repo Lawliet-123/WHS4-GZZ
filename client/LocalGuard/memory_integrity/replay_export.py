@@ -329,8 +329,9 @@ def export(session_id, cheat, out_root, log_dir=None, player_id="player_001"):
 
     # Post-OFF 우측 절단. 마지막으로 끈 뒤 **세션 끝까지 계속 걸려 있었으면**
     # Post-OFF 는 "그만큼 지속"이 아니라 "적어도 그만큼, 끝은 모름"이다.
-    # Hide Anywhere 은 끄면 쓰기만 멈추고 값을 되돌리지 않으므로 value_tamper 가
-    # 이렇게 된다. 탐지기가 틀린 게 아니라 메모리에 변조된 값이 실제로 남아 있다.
+    # Hide Anywhere 핵 소스에는 끈 뒤 원래 값으로 되돌리는 코드가 없다. 게임도 안
+    # 되돌리면 value_tamper 가 이렇게 된다. 그때는 탐지기가 틀린 게 아니라 메모리에
+    # 변조된 값이 실제로 남아 있는 것이다. (게임이 되돌리는지는 측정으로 확인할 일)
     censored = []
     if wins and not open_ended:
         last_off = wins[-1][1]

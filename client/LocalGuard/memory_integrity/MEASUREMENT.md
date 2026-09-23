@@ -582,11 +582,12 @@ python replay_export.py hide_hack_001 --cheat hide-anywhere
 이벤트에는 `scan_start_ms` / `scan_end_ms` 를 최상위에 싣는다. value_tamper 는 한 번에
 10초 넘게 걸려서, 끝난 시각(`timestamp_ms`)만으로는 경계에 걸친 스캔을 가를 수 없다.
 
-## Hide Anywhere 은 Post-OFF 가 길게 나온다 — 탐지기 오류가 아니다
+## Hide Anywhere 은 Post-OFF 가 길게 나올 수 있다 — 그래도 탐지기 오류가 아니다
 
-핵은 매 프레임 값을 덮어쓰고, 끄면 **쓰기만 멈춘다.** 게임이 그 값을 원래대로
-되돌리지 않으면 메모리에 5000 이 그대로 남고 value_tamper 는 계속 DETECTED 를 낸다.
-변조된 값이 실제로 남아 있는 걸 정확히 본 것이다. `post_off_censored` 로 표시된다.
+핵은 매 프레임 값을 덮어쓰고, 끄면 **쓰기만 멈춘다** — 핵 소스에 원래 값으로
+되돌리는 코드가 없다. 게임이 그 값을 되돌리지 않으면 메모리에 5000 이 그대로 남고
+value_tamper 는 계속 DETECTED 를 낸다. 변조된 값이 실제로 남아 있는 걸 정확히 본 것이다.
+그런 경우 `post_off_censored` 로 표시된다. **게임이 되돌리는지는 아직 측정 전이다.**
 
 ## 이 기능을 만들며 막은 것 (2026-09-23 3관점 반박 검토, 확인 25건)
 
