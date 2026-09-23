@@ -1,0 +1,1 @@
+{"session_id": "godmode_001", "player_id": "player_001", "module": "godmode", "timestamp_ms": 21250, "evidence": {"health": 100.0, "max_health": 100.0, "dead": false, "invincible": true, "change_before_health": 100.0, "kill_event": false, "death_event": false, "heal_event": false, "respawn_event": false}, "reasons": ["Invincible abnormal persistence"], "raw_score": 2}
