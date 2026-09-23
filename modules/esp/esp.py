@@ -69,6 +69,15 @@ BUILD_OFFSETS = {
     "UCapsuleComponent::CapsuleRadius": 0x544,
 }
 
+# Reflected-field fallbacks that differ between otherwise supported shipping
+# executables.  Reflection still wins whenever the live class metadata is
+# readable; these values are used only for an exact, statically checked PE.
+BUILD_OFFSET_OVERRIDES = {
+    (0x0ADBC000, 0x74BBB0FB, 0x0A9D9EFB): {
+        "USceneComponent::TransformFlags": 0x240,
+    },
+}
+
 VERIFIED_PROPERTY_MAP = {
     "BP_FirstPersonCharacter_Main_C::Mesh":
         ("BP_FirstPersonCharacter_Main_C", "Mesh"),
@@ -96,6 +105,16 @@ VERIFIED_PROPERTY_MAP = {
 
 NATIVE_BUILD_OFFSET_KEYS = (
     "USceneComponent::ComponentToWorld",
+    "USkinnedMeshComponent::ComponentSpaceTransformsArray",
+    "USkinnedMeshComponent::CurrentReadComponentTransforms",
+)
+
+# Only these two native fields may be staged on an unknown executable.  They
+# are promoted after one complete live-pose transaction passes every identity,
+# race, payload and world-space check in read_skeleton_pose.  ComponentToWorld
+# remains fingerprint-gated because accepting it would also affect box/capsule
+# geometry and it cannot be proven by a pose header alone.
+NATIVE_SKELETON_POSE_OFFSET_KEYS = (
     "USkinnedMeshComponent::ComponentSpaceTransformsArray",
     "USkinnedMeshComponent::CurrentReadComponentTransforms",
 )
@@ -775,6 +794,7 @@ class MecchaESP:
         (0x0A3FA000, 0x15CBD51C, 0x0A041AE7),
         (0x0A3FB000, 0x018D3C6F, 0x0A046E92),
         (0x0A3FB000, 0x4F2390A3, 0x0A03AB06),
+        (0x0ADBC000, 0x74BBB0FB, 0x0A9D9EFB),
     ))
 
     GUOBJECT_SIG = bytes([
@@ -899,8 +919,10 @@ class MecchaESP:
         # FProperty::Offset_Internal is runtime metadata.  These named fields
         # remain safe to use on a new executable build when reflection resolves
         # them; only unresolved fields on an exact known build use SDK constants.
+        build_overrides = BUILD_OFFSET_OVERRIDES.get(
+            self._build_fingerprint, {})
         for key, (class_name, property_name) in VERIFIED_PROPERTY_MAP.items():
-            expected = BUILD_OFFSETS[key]
+            expected = build_overrides.get(key, BUILD_OFFSETS[key])
             try:
                 resolved = self.resolver.resolve(class_name, property_name)
             except Exception:
@@ -924,7 +946,8 @@ class MecchaESP:
         # fingerprints that were checked against the shipping executable.
         if self._advanced_build_ok:
             for key in NATIVE_BUILD_OFFSET_KEYS:
-                self.offsets[key] = BUILD_OFFSETS[key]
+                self.offsets[key] = build_overrides.get(
+                    key, BUILD_OFFSETS[key])
 
     def _scan_guobject_array(self):
         scanner = PatternScanner(self.pm, self.MODULE_NAME)
@@ -1715,7 +1738,11 @@ class MecchaESP:
         primary source.  The fingerprint-gated native double buffer remains a
         fallback, and only the selector's current buffer is ever accepted.
         """
-        mesh = self._character_mesh(actor)
+        # A pawn can replace its skeletal-mesh component without changing the
+        # actor pointer (skin/role/respawn transitions).  Pose reads are already
+        # the slow path, so revalidate actor->Mesh here instead of letting the
+        # general component cache pin an obsolete component for the whole map.
+        mesh = self._character_mesh(actor, refresh=True)
         if not mesh:
             return self._skeleton_fail("no_mesh")
         binding = getattr(self, "_skeleton_binding_cache", {}).get(mesh)
@@ -1736,6 +1763,19 @@ class MecchaESP:
             "USkinnedMeshComponent::ComponentSpaceTransformsArray")
         selector_offset = self.offsets.get(
             "USkinnedMeshComponent::CurrentReadComponentTransforms")
+        native_pose_probe = False
+        if (not getattr(self, "_advanced_build_ok", False)
+                and transforms_base_offset is None
+                and selector_offset is None):
+            # Stage the last SDK layout locally.  Nothing is added to the
+            # process-wide offset table until a real, profile-matched mesh has
+            # passed the complete transaction below.  A partial native layout
+            # is never guessed or mixed with the staged pair.
+            transforms_base_offset = BUILD_OFFSETS[
+                "USkinnedMeshComponent::ComponentSpaceTransformsArray"]
+            selector_offset = BUILD_OFFSETS[
+                "USkinnedMeshComponent::CurrentReadComponentTransforms"]
+            native_pose_probe = True
         if (leader_offset is None or mesh_asset_offset is None
                 or legacy_mesh_offset is None
                 or (cached_transforms_offset is None
@@ -1832,7 +1872,9 @@ class MecchaESP:
                         decoded = self._valid_pose_header(candidate, expected_count)
                         if decoded is not None:
                             candidates.append((
-                                "native-current", candidate_offset, candidate,
+                                ("native-probe" if native_pose_probe
+                                 else "native-current"),
+                                candidate_offset, candidate,
                                 selector_before, decoded))
         if not candidates:
             return self._skeleton_fail("pose_header")
@@ -1844,7 +1886,10 @@ class MecchaESP:
         failure_reason = "pose_header"
         for source, header_offset, header_before, selector_before, decoded in candidates:
             data, count = decoded
-            transform_snapshot = self._component_world_transform_snapshot(mesh)
+            transform_snapshot = (
+                self._component_world_transform_from_chain(mesh)
+                if source == "native-probe"
+                else self._component_world_transform_snapshot(mesh))
             if transform_snapshot is None:
                 failure_reason = "transform"
                 continue
@@ -1893,12 +1938,30 @@ class MecchaESP:
             local_points = []
             pose_valid = True
             for bone_index in range(count):
-                translation = struct.unpack_from(
-                    "<3d", pose_raw, bone_index * 0x60 + 0x20)
+                transform_raw = pose_raw[
+                    bone_index * 0x60:(bone_index + 1) * 0x60]
+                if source == "native-probe":
+                    # A matching count and plausible translations are not enough
+                    # to establish a native layout on an unknown executable.
+                    # Every record must be a structurally valid UE FTransform.
+                    decoded_transform = decode_ftransform(transform_raw)
+                    if decoded_transform is None:
+                        pose_valid = False
+                        break
+                    translation = decoded_transform[2]
+                else:
+                    translation = struct.unpack_from("<3d", transform_raw, 0x20)
                 if not finite_vector(translation, 1.0e6):
                     pose_valid = False
                     break
                 local_points.append(translation)
+            if (pose_valid and source == "native-probe"
+                    and not any(
+                        dist(local_points[parent], local_points[child]) > 1.0e-3
+                        for parent, child in profile.draw_edges)):
+                # Zero-filled or repeated identity records can otherwise look
+                # structurally valid; a live character profile has nonzero limbs.
+                pose_valid = False
             if not pose_valid:
                 failure_reason = "pose_data"
                 continue
@@ -1924,6 +1987,22 @@ class MecchaESP:
             if not pose_valid:
                 failure_reason = "pose_data"
                 continue
+
+            if source == "native-probe":
+                # The staged pair has now passed reflected object identity,
+                # selector/header stability, two identical payload reads, full
+                # FTransform validation and actor-relative world-space bounds.
+                # Promote only the pose fields; ComponentToWorld remains gated
+                # by the executable fingerprint.
+                self.offsets.update({
+                    key: BUILD_OFFSETS[key]
+                    for key in NATIVE_SKELETON_POSE_OFFSET_KEYS
+                })
+                self._add_layout_warning(
+                    "native skeleton pose layout runtime-validated on live mesh "
+                    "for unsupported PE fingerprint "
+                    f"{getattr(self, '_build_fingerprint', None)!r}")
+                source = "native-current"
 
             sources = getattr(self, "_skeleton_source_counts", None)
             if sources is None:
@@ -2912,9 +2991,16 @@ class Overlay(QWidget):
     WINDOW_SYNC_INTERVAL = 0.25
     SKELETON_REFRESH_BUDGET_SECONDS = 0.020
     MAX_SKELETON_REFRESH_PER_CYCLE = 16
-    SKELETON_CACHE_TTL_SECONDS = 0.25
+    # The pose worker is independent from the 30 Hz player collector.  Keep the
+    # last verified pose long enough for a full crowded-lobby round-robin; every
+    # frame rebases it to the current actor root, and actor/world removal still
+    # invalidates it immediately.
+    SKELETON_CACHE_TTL_SECONDS = 2.5
     SKELETON_SLOW_SAMPLE_SECONDS = 0.20
-    SKELETON_SUSPEND_SECONDS = 1.0
+    # A slow synchronous RPM already throttles the pose worker by its own
+    # duration.  An additional global pause used to outlive the old 250 ms cache
+    # and guaranteed that every skeleton disappeared after one slow sample.
+    SKELETON_SUSPEND_SECONDS = 0.0
 
     def __init__(self, esp: MecchaESP, config: Config, menu: Menu):
         super().__init__()
@@ -3316,11 +3402,17 @@ class Overlay(QWidget):
                         player.root_transform, world_epoch)
                     self._skeleton_failure_cooldowns.pop(player.actor, None)
                 else:
-                    self._skeleton_pose_cache.pop(player.actor, None)
                     persistent = any(reason in {
                         "build", "identity", "layout", "leader", "no_mesh",
-                        "profile", "pose_space"
+                        "profile", "pose_space", "epoch"
                     } for reason in actor_failures)
+                    cached = self._skeleton_pose_cache.get(player.actor)
+                    keep_last_good = (
+                        not persistent and cached is not None
+                        and sample_finished - cached.captured_at
+                        <= self.SKELETON_CACHE_TTL_SECONDS)
+                    if not keep_last_good:
+                        self._skeleton_pose_cache.pop(player.actor, None)
                     retry_delay = 2.0 if persistent else 0.10
                     self._skeleton_failure_cooldowns[player.actor] = (
                         sample_finished + retry_delay)
