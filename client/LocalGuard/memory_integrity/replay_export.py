@@ -1,8 +1,8 @@
 """탐지 세션을 팀 replay-data 양식으로 내보낸다 (7번 ReplayAnalyzer 제출용).
 
-허송희가 2026-09-17 정한 양식이고 `replay-data/noclip/noclip_001/` 이 기준 예시다.
+허송희가 2026-09-17 정한 양식이고 `ReplayAnalyzer/replay-data/noclip/noclip_001/` 이 기준 예시다.
 
-    replay-data/<핵>/<session_id>/
+    ReplayAnalyzer/replay-data/<핵>/<session_id>/
         manifest.json          라벨·구간 (정답지)
         events.jsonl           시계열 이벤트
         raw/<module>.jsonl     원본 로그 (형식 자유)
@@ -34,7 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _repo_root():
-    """replay-data/ 를 가진 폴더를 찾는다. **상위 개수를 세지 않는다.**
+    """ReplayAnalyzer/replay-data/ 를 가진 폴더를 찾는다. **상위 개수를 세지 않는다.**
 
     이 파일은 팀 구조가 바뀔 때마다 깊이가 달라졌다(anti-cheat/ ->
     LocalGuard/memory_integrity/ -> client/LocalGuard/memory_integrity/).
@@ -43,7 +43,7 @@ def _repo_root():
     """
     d = HERE
     while True:
-        if os.path.isdir(os.path.join(d, "replay-data")):
+        if os.path.isdir(os.path.join(d, "ReplayAnalyzer", "replay-data")):
             return d
         parent = os.path.dirname(d)
         if parent == d:
@@ -407,7 +407,7 @@ def main(argv=None):
     ap.add_argument("--player", default="player_001")
     a = ap.parse_args(argv)
 
-    out = a.out or os.path.join(_repo_root(), "replay-data")
+    out = a.out or os.path.join(_repo_root(), "ReplayAnalyzer", "replay-data")
     dest, manifest = export(a.session, None if a.clean else a.cheat,
                             out, a.logs, a.player)
     print(f"{dest}")
