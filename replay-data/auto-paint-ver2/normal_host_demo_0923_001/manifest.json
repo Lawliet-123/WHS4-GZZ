@@ -1,0 +1,360 @@
+{
+  "session_id": "normal_host_demo_0923_001",
+  "player_id": "player_042",
+  "label": "NORMAL",
+  "cheat_type": null,
+  "cheat_start_ms": null,
+  "cheat_end_ms": null,
+  "schema_version": 2,
+  "module": "autopaint",
+  "collector_version": "0.3.0",
+  "process_name": "PenguinHotel-Win64-Shipping.exe",
+  "requested_pid": null,
+  "network_role_reported": "host",
+  "started_at_unix_ms": 1790163543946,
+  "started_at_perf_counter_ns": 1165744348869500,
+  "timestamp_basis": "elapsed_ms_since_session_start",
+  "lua_clock_basis": "same_machine_UTC_minus_started_at_unix_ms",
+  "status": "STOPPED",
+  "behavioral_scoring_enabled": true,
+  "lua_requested": true,
+  "annotations": [
+    {
+      "session_id": "normal_host_demo_0923_001",
+      "module": "autopaint",
+      "label": "AUTOPAINT",
+      "state": "IN_ROOM",
+      "timestamp_ms": 72675
+    }
+  ],
+  "cheat_intervals": [],
+  "annotation_warnings": [],
+  "clock_alignment_valid": true,
+  "behavior_policy": {
+    "version": "autopaint-behavior-1",
+    "window_ms": 2000,
+    "settle_ms": 200,
+    "screen_match_ms": 150,
+    "minimum_uv_calls": 8,
+    "minimum_batch_calls": 2,
+    "minimum_batch_strokes": 16,
+    "stale_ms": 3000,
+    "clock_tolerance_ms": 10,
+    "maximum_records": 16000,
+    "maximum_objects": 64,
+    "threshold": 10,
+    "weights": {
+      "repeated_uv": 6,
+      "unmatched_uv": 4,
+      "mode_off": 3,
+      "batch": 2
+    }
+  },
+  "score_policy": "max(integrity_score, valid_behavior_score); threshold=10",
+  "behavior_summary": {
+    "ever_detected": false,
+    "first_detected_ms": null
+  },
+  "lua_summary": {
+    "state": "RECEIVING",
+    "records": 3893,
+    "calls": 3794,
+    "parse_errors": 0,
+    "health": {
+      "callback_errors": 0,
+      "clock_resolution_ms": 1,
+      "clock_source": "KismetMathLibrary.UTC",
+      "dropped": 0,
+      "expected_hooks": 30,
+      "hooks": [
+        {
+          "attempts": 0,
+          "available": false,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "InpActEvt_IA_PaintStart_K2Node_EnhancedInputActionEvent_17",
+          "registered": false
+        },
+        {
+          "attempts": 0,
+          "available": false,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "InpActEvt_IA_PaintShot_K2Node_EnhancedInputActionEvent_13",
+          "registered": false
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 2936,
+          "errors": 0,
+          "function_name": "PaintTick",
+          "path": "/Game/BluePrints/cLeon/BP_FirstPersonCharacter_cLeon_Character.BP_FirstPersonCharacter_cLeon_Character_C:PaintTick",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 8,
+          "errors": 0,
+          "function_name": "BeginStroke",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:BeginStroke",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 8,
+          "errors": 0,
+          "function_name": "EndStroke",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:EndStroke",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "FlushRecordedStrokesToServer",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:FlushRecordedStrokesToServer",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "SendStrokeBatchToServer",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:SendStrokeBatchToServer",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "PaintAtUVWithBrush",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:PaintAtUVWithBrush",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "PaintAtUV",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:PaintAtUV",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 581,
+          "errors": 0,
+          "function_name": "PaintAtScreenPosition",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:PaintAtScreenPosition",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerPaintBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerPaintBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerSendStrokeBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerSendStrokeBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "RequestStrokeBatchOnServer",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:RequestStrokeBatchOnServer",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "SendCustomStrokeBatchToServer",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:SendCustomStrokeBatchToServer",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerCompactPaintBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerCompactPaintBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastPaintBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastPaintBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastPaintBatchToOthers",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastPaintBatchToOthers",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastCompactPaintBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastCompactPaintBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastCompactPaintBatchToOthers",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastCompactPaintBatchToOthers",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerPaint",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerPaint",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerSendPaint",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerSendPaint",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerCompactPaint",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerCompactPaint",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastPaint",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastPaint",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastPaintToOthers",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastPaintToOthers",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerPackedPaintBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:ServerPackedPaintBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "MulticastPackedPaintBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastPackedPaintBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 226,
+          "errors": 0,
+          "function_name": "MulticastPackedPaintBatchToOthers",
+          "path": "/Script/PenguinHotel.RuntimePaintableComponent:MulticastPackedPaintBatchToOthers",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerRelayStrokeBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintRelayComponent:ServerRelayStrokeBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerRelayCompactStrokeBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintRelayComponent:ServerRelayCompactStrokeBatch",
+          "registered": true
+        },
+        {
+          "attempts": 1,
+          "available": true,
+          "calls": 0,
+          "errors": 0,
+          "function_name": "ServerRelayPackedStrokeBatch",
+          "path": "/Script/PenguinHotel.RuntimePaintRelayComponent:ServerRelayPackedStrokeBatch",
+          "registered": true
+        }
+      ],
+      "kind": "health",
+      "local_pawn": "BP_FirstPersonCharacter_cLeon_Character_C /Game/stage_level/cLeon_game.cLeon_game:PersistentLevel.BP_FirstPersonCharacter_cLeon_Character_C_2147481751",
+      "network": {
+        "is_server": true,
+        "mode": "host",
+        "net_driver": "RedpointEOSNetDriver /Engine/Transient.RedpointEOSNetDriver_2147481814",
+        "world": "World /Game/stage_level/cLeon_game.cLeon_game"
+      },
+      "player_id": "player_042",
+      "registered_hooks": 28,
+      "sequence": 3857,
+      "session_id": "normal_host_demo_0923_001",
+      "session_token": "4bb1d91dcca6487baf3a3a6929f32662",
+      "timestamp_ms": 112786,
+      "write_errors": 0
+    },
+    "stop_acknowledged": true,
+    "stream_resets": 0,
+    "backlogged": false
+  },
+  "duration_ms": 114188
+}
