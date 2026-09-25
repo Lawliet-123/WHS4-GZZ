@@ -8,6 +8,7 @@ from client.LocalGuard.external_access.process_access.allowlist import (
     ProcessAllowlist,
     ProcessAllowlistEntry,
 )
+from client.LocalGuard.external_access.process_access.handle_sensor import HandleSensorUnavailable
 from client.LocalGuard.external_access.process_access.models import ExternalHandleObservation
 from client.LocalGuard.external_access.process_access.runner import ProcessAccessRunner
 
@@ -26,6 +27,11 @@ class _FixedSensor:
 
     def scan(self, _game):
         return self._observations
+
+
+class _FailingSensor:
+    def scan(self, _game):
+        raise HandleSensorUnavailable("access denied")
 
 
 class ProcessAccessRunnerTests(unittest.TestCase):
@@ -52,7 +58,8 @@ class ProcessAccessRunnerTests(unittest.TestCase):
         self.assertEqual(report.observed_processes, 1)
         self.assertEqual(report.allowed_processes, 0)
         self.assertEqual(report.emitted_detections, 1)
-        self.assertEqual(saved[0]["raw_score"], 2)
+        self.assertEqual(saved[0]["raw_score"], 3)  # VM_WRITE 2 + unavailable trust info 1
+        self.assertIn("Process executable trust information is unavailable", saved[0]["reasons"])
         self.assertIn("scan_duration_ms", saved[0]["evidence"])
 
     def test_game_not_running_does_not_write_a_result(self):
@@ -70,6 +77,28 @@ class ProcessAccessRunnerTests(unittest.TestCase):
         report = runner.scan_once()
 
         self.assertFalse(report.game_found)
+        self.assertEqual(saved, [])
+
+    def test_sensor_permission_failure_returns_error_without_writing(self):
+        saved = []
+        game = TargetProcess(500, "game.exe", Path("C:/game.exe"), 1.0)
+        clock_values = iter([10.0, 10.0, 10.010])
+        runner = ProcessAccessRunner(
+            game_executable_name="game.exe",
+            session_id="round_12",
+            player_id="player_042",
+            output_path=Path("ignored.jsonl"),
+            locator=_FixedLocator(game),
+            sensor=_FailingSensor(),
+            writer=lambda _path, result: saved.append(result),
+            clock=lambda: next(clock_values),
+        )
+
+        report = runner.scan_once()
+
+        self.assertTrue(report.game_found)
+        self.assertEqual(report.emitted_detections, 0)
+        self.assertEqual(report.error, "access denied")
         self.assertEqual(saved, [])
 
     def test_exact_name_and_hash_allowlist_suppresses_a_reviewed_process(self):

@@ -80,6 +80,51 @@ class ProcessAccessDetectorTests(unittest.TestCase):
         )
         self.assertEqual(result["evidence"]["signature_status"], "trusted")
 
+    def test_unknown_signature_is_weak_supporting_evidence(self):
+        observation = ExternalHandleObservation(
+            source_pid=888,
+            source_name="tool.exe",
+            source_path=Path("C:/Program Files/Tool/tool.exe"),
+            granted_access=PROCESS_VM_WRITE,
+            artifact=ArtifactInfo(
+                path=Path("C:/Program Files/Tool/tool.exe"),
+                sha256="123456",
+                signature_status="unknown",
+                publisher=None,
+            ),
+        )
+
+        result = self.detector.evaluate(observation, self.context)
+
+        self.assertEqual(result["raw_score"], 3)  # VM_WRITE 2 + unknown signature 1
+        self.assertIn("Process executable signature is unknown", result["reasons"])
+
+    def test_user_writable_path_is_weak_supporting_evidence(self):
+        detector = ProcessAccessDetector(
+            environment={
+                "USERPROFILE": "C:/Users/tester",
+                "LOCALAPPDATA": "C:/Users/tester/AppData/Local",
+            }
+        )
+        observation = ExternalHandleObservation(
+            source_pid=999,
+            source_name="python.exe",
+            source_path=Path("C:/Users/tester/AppData/Local/Programs/Python/python.exe"),
+            granted_access=PROCESS_VM_WRITE,
+            artifact=ArtifactInfo(
+                path=Path("C:/Users/tester/AppData/Local/Programs/Python/python.exe"),
+                sha256="abcdef",
+                signature_status="trusted",
+                publisher="CN=Python Software Foundation",
+            ),
+        )
+
+        result = detector.evaluate(observation, self.context)
+
+        self.assertEqual(result["raw_score"], 3)  # VM_WRITE 2 + user-writable path 1
+        self.assertEqual(result["evidence"]["path_risk"], "user_writable_location")
+        self.assertIn("Process executable is located in a user-writable directory", result["reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

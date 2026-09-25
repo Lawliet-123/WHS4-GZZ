@@ -1,18 +1,23 @@
 """외부 핸들 관찰값을 팀 공통 탐지 결과 JSON으로 변환한다."""
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from ..common.detection_result import build_detection_result
 from .access_rights import describe_access_mask, risky_access_score
 from .models import ExternalHandleObservation, ScanContext
+from .path_trust import classify_suspicious_path
 
 SIGNATURE_WEIGHTS = {
     # unsigned는 위험 핸들과 결합할 때만 보조 근거가 된다.
     "unsigned": 1,
     # 변조/신뢰 실패는 단순 미서명보다 강한 보조 근거다.
     "invalid": 2,
+    # 조회 실패 자체로 치트를 확정하지 않고, 위험 handle과 결합할 때만 약하게 반영한다.
+    "unknown": 1,
 }
+
+SUSPICIOUS_PATH_WEIGHT = 1
 
 
 class ProcessAccessDetector:
@@ -20,6 +25,9 @@ class ProcessAccessDetector:
 
     module_name = "localguard"
     submodule_name = "external_process"
+
+    def __init__(self, environment: Optional[Mapping[str, str]] = None) -> None:
+        self._environment = environment
 
     def evaluate(self, observation: ExternalHandleObservation, context: ScanContext) -> Optional[Dict[str, Any]]:
         access_score = risky_access_score(observation.granted_access)
@@ -52,10 +60,18 @@ class ProcessAccessDetector:
             if signature_score:
                 score += signature_score
                 reasons.append(f"Process executable signature is {artifact.signature_status}")
+
+            path_risk = classify_suspicious_path(artifact.path, self._environment)
+            if path_risk:
+                evidence["path_risk"] = path_risk
+                score += SUSPICIOUS_PATH_WEIGHT
+                reasons.append("Process executable is located in a user-writable directory")
         else:
-            # 접근 주체가 보호 프로세스라 경로를 읽지 못할 수도 있다. 이 자체만으로
-            # 점수는 올리지 않고, 수집 불가 사실만 증거로 남긴다.
+            # 접근 주체가 보호 프로세스라 경로를 읽지 못할 수도 있다. 신뢰정보 없음은
+            # 위험 handle과 결합한 경우에만 약한 보조 근거로 반영한다.
             evidence["signature_status"] = "unknown"
+            score += SIGNATURE_WEIGHTS["unknown"]
+            reasons.append("Process executable trust information is unavailable")
 
         return build_detection_result(
             session_id=context.session_id,

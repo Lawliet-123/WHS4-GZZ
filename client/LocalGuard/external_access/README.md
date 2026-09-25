@@ -59,6 +59,17 @@ py -3 -m client.LocalGuard.external_access.process_access.runner --game-exe Peng
 `logs/external_access.jsonl`에 결과 한 줄이 기록된다. 이 모듈은 차단·종료·전송을
 하지 않는다.
 
+초기 점수 정책은 `PROCESS_VM_WRITE=2`, `PROCESS_VM_OPERATION=2`,
+`PROCESS_CREATE_THREAD=3`이다. 미서명 또는 조회 불가 서명은 위험 handle과 결합할
+때만 `+1`, 유효하지 않은 서명은 `+2`를 더한다. 실행 파일이 `TEMP`, `AppData`,
+`Desktop`, `Downloads` 같은 사용자 쓰기 가능 위치에 있으면 약한 경로 근거로
+`+1`을 더한다. 경로나 서명만으로는 탐지 결과를 만들지 않는다.
+
+최신 Windows에서 kernel object 주소가 숨겨진 경우 후보 handle을 복제해
+`GetProcessId`로 실제 대상이 게임인지 확인한다. 조회 전용 권한 복제를 먼저
+시도하고, Windows가 이를 거부하는 handle만 원래 권한으로 잠깐 복제해 PID를
+확인한 즉시 닫는다. 복제한 handle로 게임 메모리를 읽거나 쓰지는 않는다.
+
 검토가 끝난 정상 프로세스는 `process_access/allowlist.json`에 실행 파일 이름과
 SHA-256을 함께 등록한다. 이름만으로 예외 처리하거나 첫 실행 결과를 자동 등록하지
 않는다. 게임 또는 Windows 업데이트로 해시가 바뀌면 다시 정상 여부를 확인한 뒤
@@ -69,3 +80,6 @@ Windows 핵심 프로세스처럼 강한 예외가 필요한 항목은 이름과
 모두 만족할 때만 정상 처리하므로, 같은 이름으로 위장하거나 서명이 깨진 파일은
 예외 처리되지 않는다. Windows kernel `System`(PID 4)은 사용자 영역 실행 파일이
 아니므로 handle 수집 단계에서 제외한다.
+
+실게임 정상 환경, 직접 제작한 에임봇, CPU·메모리 측정 결과는
+[`MEASUREMENTS.md`](MEASUREMENTS.md)에 정리한다.

@@ -178,23 +178,40 @@ def handle_targets_process(entry: SystemHandleEntry, target_pid: int) -> bool:
     if not source_process:
         return False
 
-    duplicated = wintypes.HANDLE()
     try:
-        success = kernel32.DuplicateHandle(
-            source_process,
-            wintypes.HANDLE(entry.handle_value),
-            kernel32.GetCurrentProcess(),
-            ctypes.byref(duplicated),
-            0,
-            False,
-            DUPLICATE_SAME_ACCESS,
+        # 먼저 조회 전용 권한으로 축소 복제를 시도한다. 일부 handle은 Windows가
+        # 권한 축소 복제를 거부하므로, 그때만 원래 권한 그대로 복제해 PID만 읽고
+        # 즉시 닫는다. 어느 경우에도 복제 handle로 메모리를 읽거나 쓰지 않는다.
+        attempts = (
+            (PROCESS_QUERY_LIMITED_INFORMATION, 0),
+            (0, DUPLICATE_SAME_ACCESS),
         )
-        if not success:
-            return False
-        return int(kernel32.GetProcessId(duplicated)) == target_pid
+        for desired_access, options in attempts:
+            duplicated = wintypes.HANDLE()
+            success = kernel32.DuplicateHandle(
+                source_process,
+                wintypes.HANDLE(entry.handle_value),
+                kernel32.GetCurrentProcess(),
+                ctypes.byref(duplicated),
+                desired_access,
+                False,
+                options,
+            )
+            if not success:
+                continue
+            try:
+                duplicated_pid = int(kernel32.GetProcessId(duplicated))
+                if duplicated_pid == target_pid:
+                    return True
+                if duplicated_pid != 0:
+                    # PID를 정상 확인했으며 다른 process를 가리키는 handle이다.
+                    return False
+                # 조회 전용 복제 handle에서 PID 조회가 거부된 경우에는
+                # DUPLICATE_SAME_ACCESS 방식으로 한 번 더 확인한다.
+            finally:
+                kernel32.CloseHandle(duplicated)
+        return False
     finally:
-        if duplicated.value:
-            kernel32.CloseHandle(duplicated)
         kernel32.CloseHandle(source_process)
 
 
