@@ -1,0 +1,38 @@
+{
+  "entries": [
+    {
+      "executable_name": "PenguinHotel.exe",
+      "sha256": "5a7b93351803c9deb842a4a46c86ea2ddbc3a073f7deaaf82b8926dad834ac66",
+      "note": "MECCHA CHAMELEON launcher observed during reviewed normal startup"
+    },
+    {
+      "executable_name": "conhost.exe",
+      "sha256": "e449bce01f275cd08f3d4e64bb73b3b43ae845a0dbdb3e6131426e66537705e5",
+      "note": "Microsoft Windows console host observed during reviewed normal startup"
+    },
+    {
+      "executable_name": "csrss.exe",
+      "sha256": "a958083fd4982697973d1f4a05a8f51b1f5d551a558cfa0097cfb6867fdce3ba",
+      "executable_path": "%SystemRoot%/System32/csrss.exe",
+      "signature_status": "trusted",
+      "publisher_contains": "O=Microsoft Corporation",
+      "note": "Reviewed Windows Client Server Runtime Process"
+    },
+    {
+      "executable_name": "lsass.exe",
+      "sha256": "b112d00d1b4db2d49d971dbb04484917c673ed747f8811c7d257a81878c7be2a",
+      "executable_path": "%SystemRoot%/System32/lsass.exe",
+      "signature_status": "trusted",
+      "publisher_contains": "O=Microsoft Corporation",
+      "note": "Reviewed Windows Local Security Authority process"
+    },
+    {
+      "executable_name": "svchost.exe",
+      "sha256": "1222a44a5fdb4efde4dfcb41093648627950e7ec02d8667f1c26ccae31d922e2",
+      "executable_path": "%SystemRoot%/System32/svchost.exe",
+      "signature_status": "trusted",
+      "publisher_contains": "O=Microsoft Corporation",
+      "note": "Reviewed Windows Service Host observed during normal play"
+    }
+  ]
+}

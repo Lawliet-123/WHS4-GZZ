@@ -1,6 +1,7 @@
 """EXE/DLL 파일의 SHA-256과 Windows Authenticode 정보를 조회한다."""
 
 import hashlib
+import locale
 import os
 import subprocess
 from pathlib import Path
@@ -52,7 +53,12 @@ def read_windows_authenticode(path: Path) -> Tuple[str, Optional[str]]:
     try:
         completed = subprocess.run(
             ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-            check=False, capture_output=True, text=True, encoding="utf-8", timeout=15,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding=locale.getpreferredencoding(False),
+            errors="replace",
+            timeout=15,
             env={**os.environ, "LOCALGUARD_ARTIFACT_PATH": str(path)},
         )
     except (OSError, subprocess.SubprocessError):
