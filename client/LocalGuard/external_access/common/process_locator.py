@@ -43,6 +43,21 @@ class ProcessLocator:
         return (previous.pid, previous.create_time) != (current.pid, current.create_time)
 
 
+def describe_process(pid: int) -> TargetProcess:
+    """PID 하나의 실행 파일 정보를 best-effort로 조회한다.
+
+    보호 프로세스처럼 경로 조회가 거부되는 경우에도 관찰 자체는 버리지 않고
+    ``pid_<숫자>`` 이름과 None 경로를 반환한다.
+    """
+    path = get_process_image_path(pid)
+    return TargetProcess(
+        pid=pid,
+        executable_name=path.name if path else f"pid_{pid}",
+        executable_path=path,
+        create_time=get_process_create_time(pid),
+    )
+
+
 def iter_windows_processes() -> Iterator[TargetProcess]:
     if os.name != "nt":
         return
