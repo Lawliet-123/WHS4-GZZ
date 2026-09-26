@@ -45,6 +45,9 @@ class Module:
     needs_game: bool = True         # 게임이 떠 있어야 의미가 있는가
     needs_admin: bool = False       # 관리자 권한이 필요한가
     every_s: float = 0.0            # ONESHOT 을 몇 초마다 다시 부를지 (0 이면 한 번만)
+    # 이 모듈이 세션 로그(<세션>.jsonl)를 쓰는 폴더. 런처가 시작 전에
+    # "그 세션 이름이 이미 있는지" 를 보려고 쓴다. 레포 루트 기준 상대경로.
+    session_log_dir: str = ""
     note: str = ""
 
     def resolved(self, ctx: Dict[str, object]) -> List[str]:
@@ -117,6 +120,7 @@ MODULES: List[Module] = [
               "--log-name", "{session}", "--t0", "{t0}", "--window", "{window}"],
         mode=ONESHOT,
         every_s=30.0,
+        session_log_dir="client/LocalGuard/memory_integrity/logs/detection",
         note="값 변조·코드 무결성·후킹. 한 번 스캔에 수 초~10초대라 주기 검사다",
     ),
     Module(
@@ -127,6 +131,7 @@ MODULES: List[Module] = [
               "--log-name", "{session}", "--t0", "{t0}", "--window", "{window}"],
         mode=ONESHOT,
         every_s=30.0,
+        session_log_dir="client/detectors/whistle-spoofing/logs/detection",
         note="휘파람 후킹 흔적 + 도발 RPC",
     ),
     Module(

@@ -38,8 +38,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import game_launcher                                          # noqa: E402
 import ui                                                     # noqa: E402
-from modules import MODULES                                    # noqa: E402
+from modules import MODULES, REPO                              # noqa: E402
 from process_manager import MISSING, ProcessManager, SKIPPED, is_admin  # noqa: E402
+
+
+def existing_sessions(picked, session):
+    """이 세션 이름으로 이미 쌓인 로그가 있는지 본다.
+
+    주기 검사 모듈은 한 세션 안에서 여러 번 실행되므로 **누적 파일**에 쓴다
+    (`--log-name`). 그래서 run_session.py 의 "같은 이름 거부" 가 걸리지 않는다.
+    그대로 두면 런처를 같은 이름으로 두 번 돌렸을 때 두 실행이 한 파일에 섞이고,
+    시각이 되돌아가 replay_export 가 **측정이 다 끝난 뒤에** 거부한다.
+    실제로 첫 실전(run_001)에서 그렇게 됐다. 그래서 시작 전에 막는다.
+    """
+    found = []
+    for m in picked:
+        if not m.session_log_dir:
+            continue
+        p = os.path.join(REPO, m.session_log_dir, f"{session}.jsonl")
+        if os.path.exists(p):
+            found.append(os.path.relpath(p, REPO))
+    return found
 
 
 def preflight(pm, only):
@@ -69,6 +88,8 @@ def main(argv=None):
                     help="게임이 뜨기를 기다리는 시간 (기본 180초)")
     ap.add_argument("--status-every", type=float, default=10.0, metavar="SEC",
                     help="상태 화면을 몇 초마다 그릴지 (기본 10초)")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="같은 세션 이름의 기존 로그를 지우고 다시 쓴다")
     a = ap.parse_args(argv)
 
     session = a.session or ("ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -80,6 +101,18 @@ def main(argv=None):
             ui.line(f"알 수 없는 모듈: {', '.join(sorted(unknown))}")
             ui.line(f"등록된 것: {', '.join(m.name for m in MODULES)}")
             return 2
+
+    old = existing_sessions(picked, session)
+    if old:
+        if not a.overwrite:
+            ui.line(f"세션 '{session}' 기록이 이미 있습니다:")
+            for p in old:
+                ui.line(f"    {p}")
+            ui.line("새 --session 이름을 쓰세요. 지우고 다시 하려면 --overwrite.")
+            return 2
+        for p in old:
+            os.remove(os.path.join(REPO, p))
+            ui.line(f"  지움: {p}")
 
     # 세션 전체가 같은 시계를 쓴다. 주기 검사는 실행마다 새 프로세스라
     # 이걸 안 넘기면 시각이 매번 0 으로 되돌아가고 타임라인이 깨진다.
