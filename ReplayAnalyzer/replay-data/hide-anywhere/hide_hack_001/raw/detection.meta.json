@@ -1,0 +1,15 @@
+{
+  "mode": "watch",
+  "session_id": "hide_hack_001",
+  "run_id": "1790451686.778536",
+  "watch_s": 150.0,
+  "interval_s": 10.0,
+  "t0_epoch": 1790451686.778536,
+  "initial_state": "OFF",
+  "modules": [
+    "injection",
+    "value_tamper"
+  ],
+  "rounds": 15,
+  "ended_ms": 150000
+}
