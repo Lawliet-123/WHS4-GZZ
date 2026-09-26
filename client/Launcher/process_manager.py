@@ -19,6 +19,7 @@
 """
 
 import ctypes
+import json
 import os
 import subprocess
 import time
@@ -28,6 +29,21 @@ from typing import Dict, List, Optional
 from modules import CONTINUOUS, ONESHOT, REPO, Module
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
+# 안티치트 자신이 띄운 프로세스 목록. 두 곳이 쓴다.
+#
+#   1번 external_access — **우리 탐지기를 핵으로 잡는 문제를 막는다.**
+#       pymem 으로 게임 메모리를 읽으려면 PROCESS_VM_READ/WRITE 핸들을 여는데,
+#       외부에서 보면 Cheat Engine 과 구분이 안 된다. 실제로 2026-09-27 첫 실전에서
+#       은지님 탐지기가 우리 python.exe 를 raw_score 8 로 잡았다.
+#       allowlist 에 python.exe 를 넣는 건 답이 아니다 — 그러면 **모든** 파이썬
+#       스크립트가 통과해서, 파이썬으로 짠 핵을 그냥 놓친다.
+#       "우리가 방금 띄운 이 PID" 만 빼는 것이 정확하다.
+#
+#   4번 SelfDefense — 어떤 프로세스를 지켜봐야 하는지 알 수 있다.
+#
+# 프로세스가 죽으면 PID 는 재사용되므로, 살아 있는 것만 적고 바뀔 때마다 다시 쓴다.
+PID_FILE = os.path.join(LOG_DIR, "anticheat_pids.json")
 
 # 상태값. ui.py 가 이걸 보고 화면을 그린다.
 MISSING = "MISSING"    # 파일이 없다 = 아직 구현 전
@@ -135,6 +151,7 @@ class ProcessManager:
         st.started_at = time.time()
         st.runs += 1
         st.detail = ""
+        self.write_pids()
         return True
 
     def start_group(self, needs_game: bool) -> None:
@@ -152,6 +169,7 @@ class ProcessManager:
                 if code is not None:
                     st.proc = None
                     st.last_code = code
+                    self.write_pids()
                     if st.module.mode == ONESHOT:
                         # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패
                         st.status = {0: DONE, 1: DONE, 2: WARN}.get(code, FAILED)
@@ -167,6 +185,23 @@ class ProcessManager:
             if (st.status in (DONE, WARN) and st.module.every_s
                     and st.next_run_at and now >= st.next_run_at):
                 self.start(st.name)
+
+    def write_pids(self) -> None:
+        """안티치트가 띄운 PID 목록을 파일로 남긴다. 실패해도 런처는 계속 간다."""
+        alive = {st.name: st.proc.pid for st in self.states.values()
+                 if st.proc is not None and st.proc.poll() is None}
+        try:
+            with open(PID_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "launcher_pid": os.getpid(),
+                    "session_id": self.session,
+                    "modules": alive,
+                    # 게임 메모리를 읽는 모듈은 외부에서 보면 치트와 같아 보인다.
+                    # 소비하는 쪽은 이 PID 들을 자기 판정에서 빼면 된다.
+                    "note": "PIDs spawned by the anti-cheat launcher itself",
+                }, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def snapshot(self) -> List[dict]:
         return [self.states[n].snapshot() for n in self.states]
@@ -203,3 +238,4 @@ class ProcessManager:
             st.proc = None
             if st.status == RUNNING:
                 st.status = STOPPED
+        self.write_pids()

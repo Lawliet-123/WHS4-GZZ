@@ -121,3 +121,29 @@ client/Launcher/logs/<모듈>.log
 2026-09-27 기준 `SelfDefense`, `KernelWatcher`, `input_signature` 는 폴더만 있다.
 런처는 이 모듈들을 `MISSING` 으로 보여주고 나머지를 계속 띄운다. 조용히 넘기지도
 않는다 — 아직 안 만든 것과, 만들었는데 안 붙는 것은 원인이 다르기 때문이다.
+
+---
+
+## 안티치트가 자기 자신을 신고하지 않게 — `logs/anticheat_pids.json`
+
+런처는 자기가 띄운 프로세스 PID 를 이 파일에 계속 갱신한다.
+
+```json
+{
+  "launcher_pid": 42680,
+  "session_id": "run_002",
+  "modules": {"memory_integrity": 34400, "external_access": 33640}
+}
+```
+
+**왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽으려고
+`PROCESS_VM_READ`/`VM_WRITE` 핸들을 연다. 밖에서 보면 Cheat Engine 과 구분되지 않는다.
+2026-09-27 첫 실전에서 은지님 `external_access` 가 우리 `python.exe` 를
+`raw_score 8` 로 잡았다. 배포하면 안티치트가 자기 자신을 신고하게 된다.
+
+**allowlist 에 `python.exe` 를 넣는 것은 답이 아니다.** 이름+해시로 통과시키면
+같은 파이썬으로 짠 핵도 전부 통과한다. "우리가 방금 띄운 이 PID" 만 빼는 것이 정확하다.
+
+소비하는 쪽(1번 `external_access`, 4번 `SelfDefense`)은 이 파일을 읽고
+`modules` 의 PID 와 `launcher_pid` 를 자기 판정에서 빼면 된다. 프로세스가 죽으면
+PID 는 재사용되므로 **살아 있는 것만** 적고, 시작·종료할 때마다 다시 쓴다.
