@@ -1,0 +1,15 @@
+{
+  "mode": "watch",
+  "session_id": "wh_clean_003",
+  "run_id": "1790450577.121215",
+  "watch_s": 120.0,
+  "interval_s": 10.0,
+  "t0_epoch": 1790450577.1212149,
+  "initial_state": "OFF",
+  "modules": [
+    "whistle",
+    "whistle_rpc"
+  ],
+  "rounds": 12,
+  "ended_ms": 120001
+}

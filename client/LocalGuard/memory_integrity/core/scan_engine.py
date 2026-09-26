@@ -32,7 +32,7 @@ import sys
 
 import pymem
 
-from core import signature
+from core import selfid, signature
 
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
@@ -170,6 +170,22 @@ def check_module_names(pm):
 
 
 # ── [2] 모듈 서명 + 경로 ─────────────────────────────────────────────────
+def _self_bases(pm):
+    """안티치트 자신의 모듈이 올라간 주소 범위. 자기 후크를 핵으로 세지 않으려고."""
+    out = []
+    for mod in pm.list_modules():
+        f = getattr(mod, "filename", None)
+        if isinstance(f, bytes):
+            f = f.decode("utf-8", "replace")
+        if selfid.is_self_path(f):
+            out.append((mod.lpBaseOfDll, mod.lpBaseOfDll + mod.SizeOfImage))
+    return out
+
+
+def _is_self_addr(addr, self_ranges):
+    return any(lo <= addr < hi for lo, hi in self_ranges)
+
+
 def check_module_trust(pm, game_dir):
     """서명과 경로로 판정한다.
 
@@ -179,17 +195,23 @@ def check_module_trust(pm, game_dir):
     rows = _module_rows(pm)
     signature.prewarm([p for _n, p in rows])
 
-    suspects, cautions = [], 0
+    suspects, cautions, mine = [], 0, 0
     for name, path in rows:
+        if selfid.is_self_path(path):
+            # 우리 관측용 DLL 은 서명이 없고 사용자 폴더에 있어 반드시 "의심"이 된다.
+            # 이름으로 빼면 같은 이름을 쓴 핵이 통과하므로 **출처**로 가른다.
+            mine += 1
+            continue
         grade, why = signature.verdict(path, game_dir)
         if grade == "의심":
             suspects.append((name, why, path))
         elif grade == "주의":
             cautions += 1
 
+    tail = f" (주의 {cautions}건" + (f", 안티치트 자체 {mine}건" if mine else "") + ")"
     if not suspects:
         return Detection("모듈 서명 + 경로", False,
-                         f"모듈 {len(rows)}개 - 의심 0건 (주의 {cautions}건)")
+                         f"모듈 {len(rows)}개 - 의심 0건" + tail)
 
     lines = []
     for name, why, path in suspects:
@@ -251,6 +273,7 @@ def check_vtable(pm, rows, module_ranges):
     같은 슬롯에 구현이 여러 개다. 값이 하나라고 가정하면 오탐이 난다.
     """
     game_lo, game_hi = module_ranges[GAME_EXE.lower()]
+    self_ranges = _self_bases(pm)
 
     # vtable 은 클래스당 하나라 오브젝트 수보다 훨씬 적다. 중복 읽기를 없앤다.
     seen = {}
@@ -264,7 +287,7 @@ def check_vtable(pm, rows, module_ranges):
         except Exception:
             continue
         checked += cnt
-        if not (game_lo <= fn < game_hi):
+        if not (game_lo <= fn < game_hi) and not _is_self_addr(fn, self_ranges):
             outside[fn] = outside.get(fn, 0) + cnt
 
     if not outside:
