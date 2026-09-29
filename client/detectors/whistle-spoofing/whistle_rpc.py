@@ -225,23 +225,61 @@ def _score(r, violations):
 # 최대 3초 늦을 수 있다는 뜻이다.
 
 _WATCH = None
+_STATE_FILE = None
 
 
-def begin_watch(path=None):
-    """반복 관측을 시작한다. 지금 로그 끝을 기준점으로 잡는다."""
-    global _WATCH
-    st = {"path": path or default_log(), "offset": 0, "started": False,
-          "hooks_total": 0, "exec_hooks": [], "pe": 0, "calls": 0,
-          "restarts": 0}
-    if os.path.exists(st["path"]):
-        _consume(st)            # 후크 상태만 챙기고 기존 위반은 버린다
+def begin_watch(path=None, state_file=None):
+    """반복 관측을 시작한다. 지금 로그 끝을 기준점으로 잡는다.
+
+    `state_file` 을 주면 기준점을 그 파일에 저장하고, 다음에 같은 파일로 시작할 때
+    이어서 읽는다. **런처가 30초마다 새 프로세스로 부르기 때문에 필요하다.**
+    메모리에만 두면 실행마다 기준점이 사라져서, 프로세스가 바뀔 때마다 로그를
+    처음부터 다시 읽는다. 그러면 위반이 한 번 찍힌 뒤 모든 바퀴가 DETECTED 가 된다.
+
+    상태 파일은 세션 이름을 따라가므로, 새 세션이면 자동으로 새로 시작한다.
+    """
+    global _WATCH, _STATE_FILE
+    _STATE_FILE = state_file
+    st = None
+    if state_file and os.path.exists(state_file):
+        try:
+            with open(state_file, encoding="utf-8") as f:
+                saved = json.load(f)
+            # 로그 파일이 바뀌었으면 이어받지 않는다. 남의 기준점을 쓰면 안 된다.
+            if isinstance(saved, dict) and saved.get("path") == (path or default_log()):
+                st = saved
+                st.setdefault("exec_hooks", [])
+        except Exception:
+            st = None
+    if st is None:
+        st = {"path": path or default_log(), "offset": 0, "started": False,
+              "hooks_total": 0, "exec_hooks": [], "pe": 0, "calls": 0,
+              "restarts": 0}
+        if os.path.exists(st["path"]):
+            _consume(st)        # 후크 상태만 챙기고 기존 위반은 버린다
     _WATCH = st
+    _save_state()
     return st
 
 
 def end_watch():
     global _WATCH
+    _save_state()
     _WATCH = None
+
+
+def _save_state():
+    if not (_STATE_FILE and _WATCH):
+        return
+    try:
+        os.makedirs(os.path.dirname(_STATE_FILE) or ".", exist_ok=True)
+        tmp = f"{_STATE_FILE}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_WATCH, f, ensure_ascii=False)
+        os.replace(tmp, _STATE_FILE)
+    except Exception:
+        # 기준점을 못 남겨도 이번 바퀴 결과는 유효하다. 다음 실행이 처음부터 읽을 뿐이다.
+        pass
 
 
 def _consume(st):
