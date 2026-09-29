@@ -35,6 +35,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import sys
 import time
 
@@ -144,6 +145,29 @@ def preflight(pm, only):
         ui.line("    직접 지정하려면 GZZ_GAME_DIR 환경변수를 쓰세요.")
 
 
+def report_stop(ended):
+    """누가 스스로 끝났고 누가 강제로 끝났는지 보여준다.
+
+    강제로 끝난 모듈은 정리 코드가 안 돌았다. manifest 가 RUNNING 으로 남았을
+    수 있으니, 그 세션 로그를 쓸 사람은 알아야 한다. 조용히 넘기지 않는다.
+    """
+    g, f, u = ended.get("graceful", []), ended.get("forced", []), ended.get("unsignaled", [])
+    d = ended.get("defaulted", [])
+    if not (g or f or u):
+        return
+    ui.line(f"  정리 결과: 요청 후 종료 {len(g)}  /  강제 종료 {len(f) + len(u)}")
+    if d:
+        ui.line(f"    기본 처리로 끝남(정리 코드가 돌았는지 모름): {', '.join(d)}")
+    if f:
+        ui.line(f"    요청은 갔는데 제때 안 끝남: {', '.join(f)}")
+    if u:
+        ui.line(f"    요청을 못 보냄(콘솔 없음 등): {', '.join(u)}")
+    if d or f or u:
+        ui.line("    위 모듈은 manifest 가 RUNNING 으로 남았을 수 있습니다. 모듈 시작부에")
+        ui.line("    아래 한 줄이 있으면 Ctrl+Break 가 KeyboardInterrupt 로 바뀌어 finally 가 돕니다.")
+        ui.line("      signal.signal(signal.SIGBREAK, signal.default_int_handler)")
+
+
 def publish_game_dir(refresh=False):
     """찾은 게임 폴더를 자식 모듈들에게 환경변수로 알려준다.
 
@@ -168,6 +192,13 @@ def publish_game_dir(refresh=False):
 
 
 def main(argv=None):
+    # 런처도 모듈과 같은 약속을 지킨다 — Ctrl+Break 를 받으면 Ctrl+C 처럼 정리하고
+    # 끝난다. 나중에 Dashboard 나 배치 스크립트가 런처를 끌 때 쓸 수 있는 문이다.
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, signal.default_int_handler)
+        except (ValueError, OSError):
+            pass
     ap = argparse.ArgumentParser(description="MECCHA 안티치트 런처")
     ap.add_argument("--session", help="세션 id (기본: 시각으로 자동 생성)")
     ap.add_argument("--player", help="이 PC 의 player_id. 기본은 player_id.txt 를 읽고, "
@@ -282,9 +313,11 @@ def main(argv=None):
         ui.line("")
         ui.line("  중단합니다.")
     finally:
-        pm.stop_all()
+        ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (최대 십여 초).")
+        ended = pm.stop_all()
         ui.render(pm.snapshot(), ctx)
         ui.line("")
+        report_stop(ended)
         ui.line(f"  세션 {session} 종료. 모듈 로그: client/Launcher/logs/")
 
     # 런처 자체의 성공/실패만 돌려준다. 탐지 결과는 각 모듈 로그에 있다.

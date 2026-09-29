@@ -31,11 +31,12 @@ python client/Launcher/main.py
 Module(
     name="input_signature",
     owner="3번 (동효)",
-    argv=[PY, "client/LocalGuard/input_signature/main.py",
-          "--session", "{session}", "--player", "{player}"],
+    argv=[PY, "client/LocalGuard/input_signature/yara_scanner.py",
+          "--session-id", "{session}", "--player-id", "{player}"],
     mode=CONTINUOUS,     # 또는 ONESHOT + every_s=30.0
     needs_game=True,
     needs_admin=False,
+    restart=False,       # 되살리면 안 되는 모듈이면 (예: 세션 폴더를 exist_ok=False 로 만든다)
 )
 ```
 
@@ -59,6 +60,42 @@ Module(
 ReplayAnalyzer 에서 타임라인이 깨진다. 그래서 런처가 세션 전체의 기준 시각을
 `{t0}` 로 넘긴다. 받아서 기준으로 쓰면 된다
 (`memory_integrity/run_session.py` 의 `--t0` 참고).
+
+### 끌 때 정리 코드가 돌게 하려면 — 한 줄
+
+런처는 끝낼 때 모듈에 **종료를 요청**하고(Ctrl+Break), 스스로 끝나기를 기다렸다가
+(무리마다 최대 6초) 그래도 남은 것만 강제로 끈다. 파이썬 모듈은 시작부에 이 한 줄을
+넣으면 그 요청이 `KeyboardInterrupt` 로 바뀌어, 이미 있는 `except KeyboardInterrupt`
+와 `finally` 가 그대로 돈다.
+
+```python
+import signal
+signal.signal(signal.SIGBREAK, signal.default_int_handler)
+```
+
+**manifest·세션 파일·마지막 전송처럼 끝날 때 닫아야 하는 게 있는 모듈은 꼭 넣어 주세요.**
+없으면 윈도 기본 처리로 즉시 끝나서 예전 강제 종료와 같습니다(manifest 가 `RUNNING`
+으로 남습니다). 나빠지는 건 없지만 좋아지지도 않습니다.
+
+왜 Ctrl+C 가 아니라 Ctrl+Break 인가: 모듈마다 프로세스 그룹을 따로 두어야 하나씩
+골라 끌 수 있는데, 윈도는 따로 둔 그룹에는 Ctrl+C 를 보낼 수 없게 막는다.
+그 덕에 사용자가 런처 창에서 Ctrl+C 를 눌러도 모듈에 바로 가지 않는다. 런처가 받아서
+**게임 관련 모듈 먼저, SelfDefense·KernelWatcher 는 나중에** 순서대로 끈다.
+
+끝나면 런처가 누가 어떻게 끝났는지 보여준다.
+
+```
+  정리 결과: 요청 후 종료 5  /  강제 종료 1
+    기본 처리로 끝남(정리 코드가 돌았는지 모름): aimbot
+    요청은 갔는데 제때 안 끝남: kernel_watcher
+```
+
+"돌았는지 모름" 은 종료 코드가 `0xC000013A` 인 경우다. 한 줄이 없는 모듈도, 한 줄은
+있지만 `KeyboardInterrupt` 를 잡지 않고 흘려보낸 모듈도 같은 코드로 끝나서 런처는
+둘을 구분할 수 없다. 잡아서 `sys.exit(…)` 로 끝내면 이 표시가 사라진다.
+
+**한계:** 런처가 콘솔 없이 떠 있으면(pythonw, 창 모드로 패키징한 exe) 요청을 못 보내고
+바로 강제 종료로 넘어간다. `MecchaAntiCheat.exe` 로 묶을 때 콘솔 앱으로 묶어야 한다.
 
 ---
 

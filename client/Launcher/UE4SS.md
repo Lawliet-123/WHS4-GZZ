@@ -180,9 +180,16 @@ paint_calls.jsonl,  기존 세션 로그,  main.lua.backup-*
 탐지기를 **먼저** 정상 종료하고, manifest 와 `session.control` 정리가 끝난 뒤 게임을 끈다.
 강제 종료하면 manifest 가 `RUNNING` 으로 남는다.
 
-> 지금 `process_manager.stop_all()` 은 Windows `terminate()` 를 쓰는데 이건
-> `TerminateProcess` 라 자식의 정리 코드가 돌지 않는다. 이 요구를 지키려면 종료 신호를
-> 주고 기다리는 방식이 필요하다. **랑언 쪽 작업.**
+> **해결됨 (9/30).** 예전 `stop_all()` 은 `terminate()`(= `TerminateProcess`)로 끝내서
+> 자식의 정리 코드가 한 줄도 안 돌았다. 기다리는 시간을 두긴 했지만 이미 죽인 뒤였다.
+>
+> 이제 종료를 **요청**(Ctrl+Break)하고 기다린 뒤, 남은 것만 강제로 끈다. 게임 관련
+> 모듈이 먼저, SelfDefense·KernelWatcher 가 나중이다. 런처는 게임을 끄지 않으므로
+> "탐지기 먼저, 게임 나중" 은 런처가 끝낼 때 항상 지켜진다.
+>
+> **탐지기 쪽에 한 줄이 필요합니다** — `signal.signal(signal.SIGBREAK,
+> signal.default_int_handler)`. 없으면 예전처럼 즉시 끝납니다. 자세한 건
+> `README.md` 의 "끌 때 정리 코드가 돌게 하려면".
 
 ## 런처가 남길 것 (랑언 요청)
 
