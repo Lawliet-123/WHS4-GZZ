@@ -36,7 +36,7 @@ import struct
 
 import pymem
 
-from core import selfid
+from core import procopen, selfid
 
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
@@ -73,7 +73,7 @@ class UObjectRow:
 
 class Runtime:
     def __init__(self):
-        self.pm = pymem.Pymem(GAME_EXE)
+        self.pm = procopen.open_game(GAME_EXE)
         self.base = self.pm.process_base.lpBaseOfDll
         self.blocks = self.base + NAMEPOOL_RVA + NAMEPOOL_BLOCKS
 

@@ -32,7 +32,7 @@ import sys
 
 import pymem
 
-from core import selfid, signature
+from core import procopen, selfid, signature
 
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
@@ -355,7 +355,7 @@ def main():
     baseline = sys.argv[1] if len(sys.argv) > 1 else None
 
     try:
-        pm = pymem.Pymem(GAME_EXE)
+        pm = procopen.open_game(GAME_EXE)
     except Exception as e:
         print(f"[!] 게임에 붙지 못했습니다: {e}")
         print(f"    {GAME_EXE} 가 실행 중인지 확인하세요.")

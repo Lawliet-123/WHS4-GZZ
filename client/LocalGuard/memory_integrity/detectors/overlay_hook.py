@@ -61,6 +61,7 @@ import pymem.exception
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+from core import procopen
 from core.result import DetectorResult, Evidence
 from core.signature import verify  # Authenticode 검증 재사용
 
@@ -196,7 +197,7 @@ def scan():
     t0 = time.time()
 
     try:
-        pm = pymem.Pymem(GAME_EXE)
+        pm = procopen.open_game(GAME_EXE)
     except pymem.exception.ProcessNotFound:
         return r.unavailable("게임이 실행 중이 아닙니다")
     except Exception as e:
