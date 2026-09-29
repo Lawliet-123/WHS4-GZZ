@@ -23,6 +23,7 @@
 
 import ctypes
 import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -309,17 +310,14 @@ class ProcessManager:
         return sum(1 for s in self.states.values() if s.status == RUNNING)
 
     # ── 종료 ───────────────────────────────────────────────────────────
-    def stop_all(self, grace_s: float = 5.0) -> None:
-        """전부 끝낸다.
+    def stop_all(self, grace_s: float = 10.0) -> None:
+        """stopping 을 설정하고 모듈이 전송 큐 등을 정리할 시간을 준 뒤 종료한다.
 
         **stopping 을 먼저 켠다.** 안 그러면 모듈을 끄는 사이 워치독이 "죽었다" 며
         되살린다. 그 뒤 우리가 띄운 것, 이어받은 것, 등록부에 적힌 것을 모두 끈다.
 
-        주기 검사 도중에 끊어도 그때까지 끝난 탐지기 결과는 이미 파일에 있다
-        (run_session 이 탐지기 하나 끝날 때마다 쓴다).
-
-        주의: Windows 의 terminate() 는 강제 종료(TerminateProcess)라 모듈의
-        finally/atexit 정리 코드가 돌지 않는다.
+        자식은 별도 콘솔 프로세스 그룹으로 실행한다. CTRL_BREAK_EVENT 로 Python 의
+        KeyboardInterrupt/finally 경로를 먼저 실행하고, 제한 시간이 지나면 강제 종료한다.
         """
         try:
             registry.set_stopping()
@@ -339,10 +337,20 @@ class ProcessManager:
         for st in self.states.values():
             if st.proc is not None and st.proc.poll() is None:
                 try:
-                    st.proc.terminate()
+                    st.proc.send_signal(signal.CTRL_BREAK_EVENT)
                 except Exception:
-                    pass
+                    try:
+                        st.proc.terminate()
+                    except Exception:
+                        pass
+            if st.adopted_pid:
+                registry.request_stop(st.adopted_pid, st.adopted_ctime)
         deadline = time.time() + grace_s
+        while time.time() < deadline:
+            entries = registry.load().get("entries", {}).values()
+            if not any(registry.is_alive(e.get("pid"), e.get("create_time", 0)) for e in entries):
+                break
+            time.sleep(0.1)
         for st in self.states.values():
             if st.proc is not None:
                 try:
@@ -355,7 +363,8 @@ class ProcessManager:
                         pass
                 st.proc = None
             if st.adopted_pid:
-                registry.kill(st.adopted_pid, st.adopted_ctime)
+                if registry.is_alive(st.adopted_pid, st.adopted_ctime):
+                    registry.kill(st.adopted_pid, st.adopted_ctime)
                 st.adopted_pid, st.adopted_ctime = None, 0
             if st.status in (RUNNING, RESTARTING):
                 st.status = STOPPED
