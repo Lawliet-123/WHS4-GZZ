@@ -1,8 +1,9 @@
 # Central receiver
 
-`server/receiver` is the first server-side step for every detector result.
-It validates a request sent to `POST /api/detection`, stores the validated
-JSON through the shared logger, then hands the same result to scoring.
+`server/receiver` is the first server-side step for every detector result. It
+implements **shared telemetry protocol v1**: validates `POST /api/detection`,
+stores the validated JSON through the shared logger, then hands the same event
+and transmission ID to scoring.
 
 ## Accepted result format
 
@@ -20,14 +21,35 @@ Every request must contain these fields.
 }
 ```
 
-`session_id`, `player_id`, and `module` must be non-empty text.
-`timestamp_ms` and `raw_score` must be non-negative numbers. `evidence` must
-be an object and `reasons` must be a list of non-empty text. Extra fields are
-kept with the stored event so individual detectors can retain useful metadata.
+The body has **only these seven fields**. `window_id`, `sample_id`, `status`
+and transmission metadata cannot be added at the root. `session_id`,
+`player_id`, and `module` use the safe identifier rules in `shared/schema.py`.
+`timestamp_ms` is an unchanged, non-negative integer elapsed from session
+start; `raw_score` is an unchanged finite non-negative number. `reasons` may
+be empty because a 0-point result is still a valid event.
 
-Invalid input receives FastAPI's `422` response. A successful request receives
-`202 Accepted`; this means the receiver validated and recorded the event. It is
-not a cheat verdict.
+The request also needs these headers:
+
+```text
+Authorization: Bearer <client-token>
+Idempotency-Key: <canonical lowercase UUID>
+X-GZZ-Protocol-Version: 1
+```
+
+On a durable write, the receiver returns HTTP `200` and one of these exact
+response bodies:
+
+```json
+{"event_id":"same UUID sent by client","status":"stored"}
+```
+
+```json
+{"event_id":"same UUID sent by client","status":"duplicate"}
+```
+
+It returns `422` for invalid Event data, `401` for a bad token, `409` when one
+ID is reused with different content, and `503` when durable storage or scoring
+is temporarily unavailable.
 
 ## Integration point for B and C
 
@@ -35,20 +57,29 @@ The receiver does not import unfinished modules itself. C connects the agreed
 functions in `server/main.py`:
 
 ```python
+import os
+
 from fastapi import FastAPI
 
 from server.receiver import create_router
-from shared.logger import write_detection
-from server.scoring.main import ingest_detection
+from shared.config import WriterConfig
+from shared.logger import configure_writer, write_detection
+from server.receiver.router import bearer_token_verifier
+from server.scoring.main import process
 
 app = FastAPI()
-app.include_router(create_router(write_detection, ingest_detection))
+configure_writer(WriterConfig.from_env())
+app.include_router(create_router(
+    write_detection,
+    process,
+    verify_token=bearer_token_verifier(os.environ["GZZ_TELEMETRY_TOKEN"]),
+))
 ```
 
-- `shared.logger.write_detection(payload)` records validated JSONL under
-  `server/logs/detections/` and may return the written path.
-- `server.scoring.main.ingest_detection(payload)` receives that same validated
-  result and performs B's player/session score handling.
+- `shared.logger.write_detection(payload, event_id=...)` records JSONL and the
+  idempotency ledger under `server/logs/detections/`, then returns a receipt.
+- `server.scoring.main.process(payload, event_id=..., sequence=...)` is B's
+  adapter. B must use `event_id` to prevent a retry from adding score twice.
 
 This split lets A implement and test request validation before the shared
 logger and scoring module are completed.
