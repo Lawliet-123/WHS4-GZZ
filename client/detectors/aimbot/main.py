@@ -13,6 +13,7 @@ Sensor -> Detector -> 화면 출력까지 실제로 연결해서 돌리는 진�
 
 import argparse
 import json
+import signal
 import sys
 import time
 from pathlib import Path
@@ -54,6 +55,11 @@ def parse_args():
 
 
 def main():
+    # 런처는 끌 때 Ctrl+Break를 보낸다. 윈도 기본 처리는 즉시 종료라 아래 finally의
+    # flush/shutdown이 안 돈다. KeyboardInterrupt로 바꿔 둔다.
+    # 참고: client/Launcher/README.md "끌 때 정리 코드가 돌게 하려면 — 한 줄"
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     args = parse_args()
     print("=" * 50)
     print("MECCHA CHAMELEON - Aimbot Anti-Cheat")

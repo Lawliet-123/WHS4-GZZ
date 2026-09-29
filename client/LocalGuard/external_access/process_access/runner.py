@@ -1,6 +1,7 @@
 """외부 process handle 수집·판정·로컬 JSONL 기록을 연결하는 실행기."""
 
 import argparse
+import signal
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -185,6 +186,10 @@ def _elapsed_ms(started_at: float, now: float) -> int:
 
 
 def main() -> None:
+    # 런처는 끌 때 Ctrl+Break를 보낸다. KeyboardInterrupt로 바꿔야 아래 finally(전송 flush)가 돈다.
+    # (client/Launcher/README.md "끌 때 정리 코드가 돌게 하려면 — 한 줄")
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     parser = argparse.ArgumentParser(description="LocalGuard 외부 process handle 관찰기")
     parser.add_argument("--game-exe", required=True, help="예: PenguinHotel-Win64-Shipping.exe")
     parser.add_argument("--session-id", required=True)
@@ -225,6 +230,9 @@ def main() -> None:
             if args.once:
                 return
             time.sleep(max(0, args.interval_ms / 1000 - (time.monotonic() - started_at)))
+    except KeyboardInterrupt:
+        # 종료 요청은 정상 종료(0)로 끝낸다. 흘려보내면 0xC000013A라 런처가 "정리됐는지 모름"으로 본다.
+        pass
     finally:
         if shared_ready:
             _finish_shared_client()
