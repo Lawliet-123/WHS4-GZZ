@@ -1,4 +1,8 @@
-"""Validate export shape/timing, not the truth of a tester's normal/cheat labels."""
+"""생성된 세션의 Event 형식·시간 순서·manifest 집계를 검증한다.
+
+실험자가 붙인 normal/cheat 라벨이 사실인지 판단하는 도구는 아니다.
+검사 공백, 합성 fixture, 불완전한 ON/OFF 구간은 경고로 구분한다.
+"""
 import argparse
 import json
 import math
@@ -8,10 +12,12 @@ FIELDS = {'session_id','player_id','module','timestamp_ms','evidence','reasons',
 
 
 def require(condition, message):
+    """검증 조건 실패를 읽을 수 있는 오류 메시지로 바꾼다."""
     if not condition: raise ValueError(message)
 
 
 def validate(path):
+    """세션 폴더의 manifest/raw/Event를 교차 확인하고 오류·경고를 돌려준다."""
     path = Path(path)
     manifest = json.loads((path / 'manifest.json').read_text(encoding='utf-8-sig'))
     errors = []
@@ -22,6 +28,8 @@ def validate(path):
     duration = manifest.get('duration_ms')
     if type(duration) is not int or duration < 0: errors.append('Session is not finalized / invalid duration_ms')
     if not (path / 'raw').is_dir() or not any((path / 'raw').iterdir()): errors.append('Missing raw logs')
+    # 모듈·플레이어별 시간은 역행하면 안 된다. 서로 다른 구성 요소 사이의
+    # 기록 순서는 스레드 일정 때문에 동일하다고 가정하지 않는다.
     last = {}
     counts = {}
     with (path / 'events.jsonl').open(encoding='utf-8-sig') as stream:
@@ -48,6 +56,7 @@ def validate(path):
                 errors.append(f'line {line_no}: {exc}')
     if counts != manifest.get('event_counts'): errors.append('Event counts differ from manifest')
     previous = 0
+    # 실험자가 기록한 핵 ON/OFF 구간은 닫혀 있고 서로 겹치지 않아야 한다.
     for interval in manifest.get('cheat_intervals',[]):
         on = interval.get('on_ms'); off = interval.get('off_ms')
         if type(on) is not int or type(off) is not int or not 0 <= previous <= on < off <= (duration or 0):
@@ -66,6 +75,7 @@ def validate(path):
 
 
 def main():
+    """CLI에서 한 세션을 점검하고 형식 오류가 있으면 실패 코드로 종료한다."""
     parser = argparse.ArgumentParser()
     parser.add_argument('session',type=Path)
     args = parser.parse_args()

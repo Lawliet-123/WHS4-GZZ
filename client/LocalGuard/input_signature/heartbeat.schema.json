@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://meccha.local/schemas/heartbeat.schema.json",
   "title": "MECCHA Anti-Cheat Heartbeat",
+  "description": "탐지 점수와 별개인 구성 요소 생존·검사 신선도 형식. hwid는 임시 계약에 따라 네트워크 본문에만 선택적으로 포함된다.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,17 +19,18 @@
     "transport"
   ],
   "properties": {
-    "schema_version": { "const": "meccha-heartbeat-2" },
-    "message_type": { "const": "heartbeat" },
-    "session_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$" },
-    "player_id": { "type": "string", "minLength": 1, "maxLength": 100 },
-    "client_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$" },
-    "sequence": { "type": "integer", "minimum": 1 },
-    "timestamp_ms": { "type": "integer", "minimum": 0 },
-    "sent_at_utc": { "type": "string", "format": "date-time" },
-    "status": { "enum": ["starting", "healthy", "degraded", "stopped", "failed"] },
+    "schema_version": { "const": "meccha-heartbeat-2", "description": "하트비트 형식 버전" },
+    "message_type": { "const": "heartbeat", "description": "탐지 Event와 구분하는 메시지 종류" },
+    "session_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$", "description": "세션 식별자" },
+    "player_id": { "type": "string", "minLength": 1, "maxLength": 100, "description": "대상 식별자; 인증 수단이 아님" },
+    "client_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$", "description": "이번 하트비트 발신자의 식별자" },
+    "sequence": { "type": "integer", "minimum": 1, "description": "발신자 안에서 증가하는 순번; 확인 응답과 대조" },
+    "timestamp_ms": { "type": "integer", "minimum": 0, "description": "세션 시작 후 경과 밀리초" },
+    "sent_at_utc": { "type": "string", "format": "date-time", "description": "참고용 UTC 발신 시각; 서버 수신 시각을 대체하지 않음" },
+    "status": { "enum": ["starting", "healthy", "degraded", "stopped", "failed"], "description": "필수 구성 요소 상태를 합친 전체 생존 상태" },
     "components": {
       "type": "object",
+      "description": "구성 요소별 마지막 보고와 신선도; 오래된 필수 보고는 stale로 표시",
       "maxProperties": 64,
       "propertyNames": { "pattern": "^[a-z][a-z0-9_.-]{0,63}$" },
       "additionalProperties": {
@@ -36,28 +38,29 @@
         "additionalProperties": false,
         "required": ["status", "required", "pid", "updated_at_ms", "stale_after_ms", "age_ms", "details"],
         "properties": {
-          "status": { "enum": ["starting", "running", "degraded", "failed", "stopped", "unknown", "stale"] },
-          "required": { "type": "boolean" },
-          "pid": { "type": ["integer", "null"], "minimum": 1 },
-          "updated_at_ms": { "type": "integer", "minimum": 0 },
-          "stale_after_ms": { "type": "integer", "minimum": 1000 },
-          "age_ms": { "type": "integer", "minimum": 0 },
-          "details": { "type": "object" }
+          "status": { "enum": ["starting", "running", "degraded", "failed", "stopped", "unknown", "stale"], "description": "개별 구성 요소의 현재/계산된 상태" },
+          "required": { "type": "boolean", "description": "전체 healthy 계산에 이 항목을 반드시 포함할지 여부" },
+          "pid": { "type": ["integer", "null"], "minimum": 1, "description": "관찰된 프로세스 PID; 없으면 null" },
+          "updated_at_ms": { "type": "integer", "minimum": 0, "description": "마지막으로 상태가 보고된 세션 경과 시각" },
+          "stale_after_ms": { "type": "integer", "minimum": 1000, "description": "보고가 오래됐다고 판단하는 허용 시간" },
+          "age_ms": { "type": "integer", "minimum": 0, "description": "현재와 마지막 보고 사이의 경과 시간" },
+          "details": { "type": "object", "description": "비밀값을 제외한 제한된 상태 메타데이터" }
         }
       }
     },
     "transport": {
       "type": "object",
+      "description": "최근 네트워크 송신 상태; 탐지 결과 점수나 서버 가용성 전체를 뜻하지 않음",
       "additionalProperties": false,
       "required": ["configured", "hwid_included_on_wire", "consecutive_failures", "last_success_sequence", "last_error_type"],
       "properties": {
-        "configured": { "type": "boolean" },
-        "hwid_included_on_wire": { "type": "boolean" },
-        "consecutive_failures": { "type": "integer", "minimum": 0 },
-        "last_success_sequence": { "type": ["integer", "null"], "minimum": 1 },
-        "last_error_type": { "type": ["string", "null"] }
+        "configured": { "type": "boolean", "description": "하트비트 수신 URL이 설정됐는지 여부" },
+        "hwid_included_on_wire": { "type": "boolean", "description": "네트워크 본문에 HWID를 붙이도록 설정됐는지 여부" },
+        "consecutive_failures": { "type": "integer", "minimum": 0, "description": "연속 송신 실패 횟수" },
+        "last_success_sequence": { "type": ["integer", "null"], "minimum": 1, "description": "확인 응답을 받은 마지막 순번" },
+        "last_error_type": { "type": ["string", "null"], "description": "마지막 전송 오류의 종류; 비밀값·응답 본문은 저장하지 않음" }
       }
     },
-    "hwid": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    "hwid": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "임시 계약의 사전 계산된 식별값; 로컬 파일에는 기록하지 않음" }
   }
 }

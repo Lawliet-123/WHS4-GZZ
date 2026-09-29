@@ -1,4 +1,9 @@
-"""Periodic hash-blacklist worker independent of potentially slow YARA scans."""
+"""YARA 검사와 별개 스레드에서 실행 파일 해시를 주기적으로 확인한다.
+
+YARA 전체 메모리 검사가 오래 걸려도 파일 해시 검사는 자신의 주기를 유지한다.
+한 주기 결과는 상세 raw 로그에 기록하고, 판정 가능한 결과만 공통 Event로
+내보낸다. 생존 상태는 별도의 하트비트 구성 요소로 보고한다.
+"""
 import os
 from pathlib import Path
 import threading
@@ -10,8 +15,11 @@ from windows_process import process_session_id
 
 
 class HashMonitor:
+    """해시 검사 스레드의 시작·실패 전파·정지를 관리한다."""
+
     def __init__(self, *, catalogue, game_process, session, heartbeat,
                  interval_seconds=5.0):
+        """카탈로그, 게임 식별자, 기록 세션을 공유하되 검사 스레드는 따로 둔다."""
         if not 5 <= float(interval_seconds) <= 60:
             raise ValueError('hash interval must be 5..60 seconds')
         self.catalogue = catalogue
@@ -23,9 +31,12 @@ class HashMonitor:
         self.thread = None
         self.failure = None
         self.raw = None
+        # 검사 지연 여유를 포함한 신선도 한도. 보고가 끊겼는데도 계속
+        # 'running'으로 보이지 않도록 HeartbeatClient가 이 값을 사용한다.
         self.stale_after_ms = max(15000, int((self.interval_seconds * 3 + 20) * 1000))
 
     def _run_once(self):
+        """한 시점의 프로세스 목록을 조사하고 raw/Event/하트비트를 갱신한다."""
         start = self.session.elapsed()
         self.game_process.check()
         result = scan_running_executable_hashes(
@@ -34,6 +45,8 @@ class HashMonitor:
         self.game_process.check()
         end = self.session.elapsed()
         matches = result['matches']
+        # raw 로그에는 검증용 상세 경로가 남지만 서버 공통 Event에는 경로를 빼고
+        # 규칙 ID와 해시 등 필요한 최소 정보만 담는다.
         public_matches = [{key: item[key] for key in
                            ('pid', 'image_name', 'sha256', 'catalogue_ids')}
                           for item in matches]
@@ -52,6 +65,8 @@ class HashMonitor:
         })
         if not result['complete']:
             self.session.error('executable_hash_scan_incomplete')
+        # 부분 검사에서 일치가 없으면 '정상 0점'을 만들 근거가 없다.
+        # 반대로 일치가 실제로 확인됐다면 다른 PID가 누락됐어도 그 증거는 남긴다.
         if matches or result['complete']:
             self.session.emit(
                 'localguard_executable_hash', self.session.manifest['player_id'],
@@ -76,6 +91,7 @@ class HashMonitor:
                      'matched_process_count': len(matches)})
 
     def _run(self):
+        """종료 신호까지 반복하며 회복 가능한 한 주기 오류는 다음 주기에 재시도한다."""
         try:
             with (self.session.raw / 'executable_hashes.jsonl').open('x', encoding='utf-8') as raw:
                 self.raw = raw
@@ -96,12 +112,14 @@ class HashMonitor:
                             stale_after_ms=self.stale_after_ms,
                             details={'scanner': 'sha256_running_executable_images',
                                      'error_type': type(exc).__name__})
+                    # 검사 소요 시간을 제외한 나머지만 기다려 시작 간격을 맞춘다.
                     remaining = self.interval_seconds - (time.monotonic() - began)
                     self.stop_event.wait(max(0, remaining))
         except Exception as exc:
             self.failure = type(exc).__name__
 
     def start(self):
+        """백그라운드 검사기를 한 번만 시작한다."""
         if self.thread is not None:
             raise RuntimeError('hash monitor already started')
         self.thread = threading.Thread(target=self._run,
@@ -109,12 +127,14 @@ class HashMonitor:
         self.thread.start()
 
     def check_background(self):
+        """백그라운드 스레드의 치명적 오류를 메인 루프에 알린다."""
         if self.failure:
             raise RuntimeError('hash_monitor_background_failure:' + self.failure)
         if self.thread and not self.thread.is_alive() and not self.stop_event.is_set():
             raise RuntimeError('hash_monitor_stopped_unexpectedly')
 
     def stop(self):
+        """종료를 요청하고 최대 30초 기다린 뒤 미종료를 오류로 처리한다."""
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=30)

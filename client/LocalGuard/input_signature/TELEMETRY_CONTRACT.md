@@ -49,7 +49,7 @@ LocalGuard에 `--hwid-file <경로>` 또는 `MECCHA_HWID_FILE`을 지정한다. 
 
 서버는 인증된 발신자와 `(session_id, client_id)`별 마지막 **서버 수신 시각** 및 증가하는 시퀀스를 관리한다. 재전송·중복·역순 요청 처리 정책을 합의해야 하며, 클라이언트가 주장한 시각·PID·HWID만으로 인증하거나 핵 사용을 확정해서는 안 된다. 합의한 전송 간격은 5~10초이고, 오프라인 운영 경보는 예를 들어 3회 연속 미수신처럼 별도의 임계값으로 만든다. Heartbeat 누락은 탐지 공백이지 자동 밴 근거가 아니다.
 
-Heartbeat는 생존·검사 신선도만 전송한다. 해시/YARA의 규칙 일치, `raw_score`, 중앙 scoring을 위한 탐지 Event는 이 API에 포함되지 않는다. 현재 공통 `events.jsonl`에 저장되지만 **6번 서버로 전송하는 `/events` 계약과 업로더는 아직 없다**. 대시보드·서버 scoring을 완성하려면 6번이 이벤트 API/인증/재시도/중복 제거 정책을 먼저 확정해야 한다.
+Heartbeat는 생존·검사 신선도만 전송한다. 해시/YARA의 규칙 일치, `raw_score`, 중앙 scoring을 위한 탐지 Event는 이 API에 포함되지 않는다. 탐지 Event는 별도로 `events.jsonl`에 남고, `GZZ_TELEMETRY_URL`과 `GZZ_TELEMETRY_TOKEN`이 설정되면 `shared.logger`를 통해 `POST /api/detection`의 전송 대기열에 넣는다. 해당 receiver 라우터는 구현돼 있지만, 이 문서의 임시 하트비트 API와 혼동해서는 안 된다. 중앙 scoring 연결과 실제 서버 배포에서의 종단 검증은 별도로 필요하다.
 
 ## Launcher 통합 경계
 

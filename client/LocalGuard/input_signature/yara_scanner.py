@@ -1,4 +1,10 @@
-"""Read-only YARA scans of the game and bounded external candidates."""
+"""게임 메모리와 제한된 외부 후보를 읽기 전용 YARA 규칙으로 검사한다.
+
+먼저 알려진 Auto Paint bridge DLL의 매핑 메모리를 확인하고, 기본 모드에서는
+일치가 없을 때 게임 프로세스 전체 검사로 넘어간다. 선택 옵션으로 같은
+Windows 세션의 Python 후보도 검사한다. 규칙 일치는 *코드 존재의 단서*이지
+핵 기능 사용 확정이 아니며, 검사 실패를 정상 0점으로 바꾸지 않는다.
+"""
 import argparse
 import hashlib
 import json
@@ -19,11 +25,20 @@ from windows_process import (ProcessIdentity, find_processes, list_processes,
                              read_process_module)
 
 ROOT = Path(__file__).resolve().parent
+# 스크립트 직접 실행 시 sys.path[0]은 이 폴더다. 저장소 루트의 shared 패키지를
+# import하려면 루트 경로를 명시해야 하며, 런처 코드 자체는 수정하지 않는다.
+REPO_ROOT = ROOT.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.config import ClientConfig
+from shared.logger import configure_client, send_detection, flush_client, shutdown_client
+
 GAME = 'PenguinHotel-Win64-Shipping.exe'
 EXTERNAL_PYTHON_NAMES = frozenset(('python.exe', 'pythonw.exe'))
 
-# Only these already-public, fixed rule literals may be printed. Never print
-# arbitrary matched_data from a game process (or custom YARA rule).
+# 출력 가능한 문자열은 이미 알려진 규칙의 고정 리터럴만 허용한다. 메모리에서
+# 우연히 일치한 바이트나 사용자가 추가한 규칙의 원시 내용을 그대로 출력하지 않는다.
 DISPLAY_LITERALS = {
     'MECCHA_Repo_AutoPaint_Bridge': {
         '$dispatcher': ('mesh-first paint requires the async queued dispatcher', 'ascii'),
@@ -39,8 +54,72 @@ DISPLAY_LITERALS = {
 }
 
 
+def configure_detection_forwarding(session):
+    """세션 Event를 shared 전송 대기열에 연결한다.
+
+    URL/토큰이 모두 없으면 오프라인 로컬 검사로 유지한다. 설정이 일부만
+    있거나 잘못됐으면 오류를 알리되 탐지와 로컬 기록은 계속한다.
+    ``configure_client``는 시작 시 한 번만 호출하고 Event마다 재생성하지 않는다.
+    """
+    if not any(name in os.environ for name in
+               ('GZZ_TELEMETRY_URL', 'GZZ_TELEMETRY_TOKEN')):
+        return False
+
+    # outbox는 프로세스별 단일 송신자가 사용한다. 런처가 별도 경로를 지정하지
+    # 않았을 때 다른 탐지기와 같은 DB를 열지 않도록 모듈 전용 기본값을 둔다.
+    os.environ.setdefault('GZZ_TELEMETRY_OUTBOX',
+                          str(ROOT / 'telemetry-outbox' / 'client.sqlite3'))
+    try:
+        configure_client(ClientConfig.from_env())
+    except Exception as exc:
+        print('[중앙 전송 설정 실패]', type(exc).__name__,
+              '— 탐지 결과는 로컬 events.jsonl에 계속 기록합니다.',
+              file=sys.stderr, flush=True)
+        return False
+
+    def forward(event):
+        """로컬 저장이 끝난 7필드 Event를 대기열에 넣고 실패를 진단한다."""
+        try:
+            send_detection(event)
+        except Exception as exc:
+            # 이미 저장된 증거·점수는 전송 대기열 오류 때문에 덮어쓰지 않는다.
+            print('[중앙 전송 대기열 오류]', type(exc).__name__,
+                  '— 로컬 events.jsonl은 유지됩니다.',
+                  file=sys.stderr, flush=True)
+
+    session.event_sink = forward
+    return True
+
+
+def stop_detection_forwarding(active):
+    """종료 시 미전송 항목을 잠시 기다리고 송신 스레드를 정리한다.
+
+    ``flush_client``가 False여도 대기 데이터는 지우지 않는다. 실패는 stderr
+    (런처 실행 시 모듈 로그)에 알리고 검사의 점수·로컬 파일은 그대로 둔다.
+    """
+    if not active:
+        return
+    try:
+        if not flush_client(timeout=3):
+            print('[중앙 전송 미완료] 미전송·실패 항목이 대기열에 남아 있습니다.',
+                  file=sys.stderr, flush=True)
+    except Exception as exc:
+        print('[중앙 전송 정리 오류]', type(exc).__name__, file=sys.stderr, flush=True)
+    finally:
+        try:
+            if not shutdown_client(timeout=5):
+                print('[중앙 전송 종료 지연] 전송 작업이 아직 진행 중입니다.',
+                      file=sys.stderr, flush=True)
+        except Exception as exc:
+            print('[중앙 전송 종료 오류]', type(exc).__name__, file=sys.stderr, flush=True)
+
+
 def scanner_stale_window_ms(scan_interval, scan_timeout, heartbeat_interval):
-    """Allow one scheduled full-memory scan, including its bounded runtime."""
+    """긴 YARA 검사 한 번의 주기·제한 시간을 포함하는 신선도 한도를 계산한다.
+
+    하트비트 주기보다 YARA가 오래 걸릴 수 있으므로 즉시 stale로 잘못
+    표시하지 않되, 검사가 영원히 멈춰도 healthy로 남지 않게 한다.
+    """
     return max(
         int(heartbeat_interval * 3000),
         int((scan_interval + scan_timeout + heartbeat_interval) * 1000),
@@ -49,10 +128,11 @@ def scanner_stale_window_ms(scan_interval, scan_timeout, heartbeat_interval):
 
 def select_external_python_candidates(rows, *, game_pid, game_session_id,
                                       scanner_pid, session_lookup):
-    """Select only Python processes in the game's Windows login session.
+    """게임과 같은 Windows 세션의 Python 실행 프로세스 후보만 고른다.
 
-    A filename or command line is never treated as proof of cheating. The
-    selection is deliberately broad enough to survive renaming esp.py.
+    스캐너 자신·런처 부모·게임 PID는 제외한다. 후보 선정은 검사 범위 결정일
+    뿐, python.exe라는 이름이나 명령줄만으로 핵이라고 판정하지 않는다.
+    같은 Python 실행기 안의 스크립트 이름이 달라져도 후보가 될 수 있다.
     """
     candidates = []
     skipped = []
@@ -79,7 +159,7 @@ def select_external_python_candidates(rows, *, game_pid, game_session_id,
 
 
 def candidate_batch(candidates, cursor, limit):
-    """Round-robin bounded scanning across a stable candidate set."""
+    """후보가 많아도 주기당 상한만 검사하고 다음 주기에는 이어서 고른다."""
     if not candidates: return [], cursor
     count = min(len(candidates), limit)
     start = cursor % len(candidates)
@@ -88,6 +168,11 @@ def candidate_batch(candidates, cursor, limit):
 
 
 def load_rules(paths):
+    """신뢰하는 로컬 .yar 파일을 크기 제한 후 컴파일하고 규칙 정보를 남긴다.
+
+    include를 금지해 기록된 파일 밖의 규칙이 끼어들지 않게 한다. 규칙별 점수
+    범위를 검증하며, 경고를 성공으로 무시하지 않는다.
+    """
     import yara
     records = []
     sources = {}
@@ -97,7 +182,7 @@ def load_rules(paths):
         if len(data) > 1024 * 1024: raise ValueError('rule_file_too_large')
         records.append({'file': path.name, 'sha256': hashlib.sha256(data).hexdigest()})
         sources['rules_' + str(i)] = data.decode('utf-8-sig')
-    # Includes are disabled: the recorded sources completely specify the rule set.
+    # 파일 목록과 해시가 실제 사용 규칙 전체를 설명하도록 include를 막는다.
     rules = yara.compile(sources=sources, includes=False, error_on_warning=True)
     exported = list(rules)
     if not exported: raise ValueError('empty_yara_rules')
@@ -111,9 +196,14 @@ def load_rules(paths):
 
 
 def _hits_from_matches(matches):
+    """YARA 결과에서 규칙 ID·점수·허용된 문자열 설명만 추출한다.
+
+    ``matched_data``는 게임이나 외부 프로세스의 메모리일 수 있다. 고정된
+    허용 목록과 바이트가 정확히 같을 때만 사람이 읽는 문자열로 변환한다.
+    """
     hits = []
     for match in matches:
-        # Matched bytes are checked against known literals but never logged.
+        # 실제 매칭 바이트는 비교에만 사용하고 결과 로그에는 보관하지 않는다.
         matched_strings = []
         known = DISPLAY_LITERALS.get(match.rule, {})
         for pattern in match.strings:
@@ -135,7 +225,7 @@ def _hits_from_matches(matches):
 
 
 def format_matched_strings(hits):
-    """Human-readable details for explicitly allowlisted literal matches only."""
+    """허용된 고정 리터럴만 콘솔 출력용 문장으로 만든다."""
     return [f"[문자열] {hit['rule']}: " + ', '.join(
                 f"{item['identifier']}=\"{item['text']}\" ({item['encoding']})"
                 for item in hit['matched_strings'])
@@ -145,8 +235,13 @@ def format_matched_strings(hits):
 def _emit_scan_result(process, session, raw_stream, start, hits, *, scope,
                       coverage, module=None, zero_means=None, scan_method=None,
                       module_inventory_count=None, selection=None):
+    """성공한 검사 한 건을 상세 raw 로그와 7필드 공통 Event로 기록한다.
+
+    여러 규칙이 같은 도구를 가리켜 점수가 중복 가산되지 않도록 최고 점수만
+    사용한다. ``scope``와 ``zero_means``는 0점의 검사 범위를 명확히 한다.
+    """
     end = session.elapsed()
-    score = max((h['score'] for h in hits), default=0)  # Avoid duplicate-rule inflation.
+    score = max((h['score'] for h in hits), default=0)  # 같은 코드의 다중 규칙 중복 가산 방지.
     record = {'type': 'scan_result', 'timestamp_ms': end, 'scan_start_ms': start,
               'scan_duration_ms': end - start, 'pid': process.pid, 'matches': hits,
               'score_evaluated': True, 'raw_score': score, 'scope': scope}
@@ -178,24 +273,26 @@ def _emit_scan_result(process, session, raw_stream, start, hits, *, scope,
     event = session.emit('localguard_yara', session.manifest['player_id'], evidence,
                          ['YARA Rule Matched: ' + h['rule'] for h in hits], score,
                          timestamp_ms=end)
-    # Keep display-only details out of the common event sent to the receiver.
+    # 서버로 보낼 7필드 Event가 먼저 완성·전달된다. 그 후 콘솔 전용 필드를
+    # 반환 객체에만 붙여 중앙 스키마를 변경하지 않는다.
     event['_matched_strings_for_console'] = format_matched_strings(hits)
     return event
 
 
 def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
                                       timeout=45, bridge_only=False):
-    """Scan mapped bridge bytes; optionally report a narrow bridge-only zero.
+    """이름이 알려진 Auto Paint bridge의 *매핑된 메모리*를 검사한다.
 
-    In default mode a missing module/no-hit defers to a full-process scan.
-    Bridge-only mode makes the module inventory scope explicit: zero never means
-    no cheat elsewhere in the process, and an incomplete scan never scores zero.
+    기본 모드는 모듈 부재·불일치 시 전체 프로세스 검사로 넘어가도록 None을
+    반환한다. bridge-only 모드의 0점은 알려진 이름의 DLL 범위에 한정된다.
+    읽기 실패나 모듈 언로드는 검사 실패로 남고 0점이 되지 않는다.
     """
     start = session.elapsed()
     try:
         import yara
         process.check()
         inventory = list_process_modules(process.pid)
+        # 모듈명만으로 치트 판정을 내리지 않고 해당 매핑 메모리를 YARA로 검사한다.
         modules = [module for module in inventory
                    if module['name'].casefold() == 'runtime-bridge.dll' or
                    module['name'].casefold().startswith('meccha-direct-bridge-v1-')]
@@ -211,6 +308,7 @@ def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
         if len(modules) > 8: raise RuntimeError('too_many_autopaint_bridge_modules')
         for module in modules:
             data = read_process_module(process.pid, module)
+            # YARA 경고는 부분 검사 가능성을 뜻하므로 정상 결과로 채택하지 않는다.
             warnings = []
             def warning_callback(kind, message):
                 warnings.append(str(kind))
@@ -221,6 +319,8 @@ def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
             if bridge_only:
                 matches = [match for match in matches if match.rule in DISPLAY_LITERALS]
             process.check()
+            # 스캔 도중 언로드·재로드된 다른 DLL을 같은 대상으로 착각하지 않도록
+            # 주소·크기·경로를 다시 대조한다.
             still_loaded = any(m['base_address'] == module['base_address'] and
                                m['size'] == module['size'] and m['path'] == module['path']
                                for m in list_process_modules(process.pid))
@@ -246,13 +346,19 @@ def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
                                'pid': process.pid, 'error_type': type(exc).__name__,
                                'error': str(exc), 'score_evaluated': False,
                                'fallback': 'none' if bridge_only else 'full_process_scan'})
+        # 기본 모드에서는 후속 전체 프로세스 검사가 성공할 수 있으므로
+        # 여기서 세션 전체 실패로 확정하지 않는다.
         if bridge_only: session.error('yara_scan_failed')
     return None
 
 
 def scan_once(rules, process, session, raw_stream, *, timeout=45,
               scope='selected_local_process_memory', selection=None):
-    """Every successful full-process evaluation emits an event, including score 0."""
+    """선택한 PID의 읽을 수 있는 메모리를 YARA로 검사한다.
+
+    완전하게 끝난 관측은 일치가 없어도 범위가 명시된 0점 Event를 남긴다.
+    접근 거부·타임아웃·YARA 경고·PID 변경은 오류만 남기고 0점은 내지 않는다.
+    """
     start = session.elapsed()
     try:
         import yara
@@ -271,7 +377,7 @@ def scan_once(rules, process, session, raw_stream, *, timeout=45,
                   'score_evaluated': False}
         json_line(raw_stream, record)
         session.error('yara_scan_failed')
-        # Deliberately no common zero-score event for an incomplete scan.
+        # 검사 공백을 '정상'이라고 오인하지 않도록 공통 0점 Event를 만들지 않는다.
         return None
     return _emit_scan_result(
         process, session, raw_stream, start, hits,
@@ -282,7 +388,11 @@ def scan_once(rules, process, session, raw_stream, *, timeout=45,
 
 def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
                                     timeout, max_targets, cursor, scanned_pids=None):
-    """Discover and scan a bounded batch of same-session Python processes."""
+    """같은 Windows 세션의 Python 후보를 제한된 수만큼 찾아 검사한다.
+
+    발견한 전체/이번 주기/다음 주기 PID를 raw 로그에 기록한다. 후보 부재는
+    외부 핵이 없다는 증명이 아니며 접근 실패는 정상 0점으로 치지 않는다.
+    """
     try:
         game_process.check()
         game_session_id = process_session_id(game_process.pid)
@@ -298,6 +408,7 @@ def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
         session.error('external_candidate_discovery_failed')
         print('[외부후보] 탐색 실패: 정상 0점으로 기록하지 않았습니다.')
         return cursor, 1
+    # 한 주기에 모든 Python 프로세스를 무제한 스캔하지 않도록 순환 선택한다.
     selected, cursor = candidate_batch(candidates, cursor, max_targets)
     candidate_pids = [item['pid'] for item in candidates]
     selected_pids = [item['pid'] for item in selected]
@@ -323,7 +434,7 @@ def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
     for item in selected:
         pid = item['pid']
         try:
-            # Recheck after the snapshot: a PID can exit or be reused.
+            # 스냅샷 이후 PID가 종료·재사용될 수 있어 실제 검사 직전에 재확인한다.
             if process_session_id(pid) != game_session_id:
                 raise RuntimeError('candidate_session_changed')
             with ProcessIdentity(pid) as candidate:
@@ -358,7 +469,14 @@ def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
 
 
 def main(argv=None):
+    """CLI 진입점: 세션 준비 → 상태·전송 시작 → 반복 검사 → 안전한 종료.
+
+    YARA·파일 해시 결과는 각각 공통 Event를 만들고, 하트비트는 생존 상태만
+    전한다. 서버 설정이 없으면 검사는 로컬 기록만으로도 실행 가능하다.
+    """
     parser = argparse.ArgumentParser(description='LocalGuard: read-only YARA process-memory scan / ReplayAnalyzer export')
+    # 검사 범위: 명시 PID 또는 게임 자동 탐색, 알려진 DLL 우선 검사,
+    # 선택적으로 같은 세션 Python 후보까지 확인한다.
     parser.add_argument('--pid', type=int, help='Explicit local process PID; default selects exactly one MECCHA process')
     parser.add_argument('--rules', type=Path, action='append', help='Trusted .yar file; repeat to add files')
     parser.add_argument('--scan-mode', choices=['auto', 'autopaint-bridge'], default='auto',
@@ -376,10 +494,14 @@ def main(argv=None):
                         help='Seconds between running-EXE hash scans (5..60)')
     parser.add_argument('--no-executable-hash', action='store_true',
                         help='Disable the running-EXE SHA-256 monitor')
+    # 검사 소요·종료 조건. seconds=0이면 사용자가 중단하거나 게임이 끝날 때까지
+    # 반복하며, 한 주기 안의 실패와 부분 검사는 0점으로 채우지 않는다.
     parser.add_argument('--interval', type=float, default=60, help='Minimum seconds between scan starts')
     parser.add_argument('--timeout', type=int, default=45, help='YARA timeout for each scan, seconds')
     parser.add_argument('--seconds', type=float, default=0, help='0 until Ctrl+C; elapsed session duration')
     parser.add_argument('--log-root', type=Path, default=ROOT / 'sessions')
+    # 하트비트 설정은 탐지 Event용 GZZ_TELEMETRY_* 설정과 독립이다.
+    # 실제 /api/heartbeat 수신 계약과 HWID 생산 형식은 아직 임시다.
     parser.add_argument('--heartbeat-url',
                         default=os.environ.get('MECCHA_TELEMETRY_HEARTBEAT_URL'),
                         help='Central receiver URL; can also use MECCHA_TELEMETRY_HEARTBEAT_URL')
@@ -392,6 +514,7 @@ def main(argv=None):
                         help='Network POST timeout in seconds; must be shorter than heartbeat interval')
     session_args(parser)
     args = parser.parse_args(argv)
+    # 잘못된 설정은 세션이나 대상 핸들을 만들기 전에 거부한다.
     check_session_args(parser, args)
     if not .1 <= args.interval <= 3600: parser.error('--interval must be 0.1..3600')
     if not 1 <= args.timeout <= 120: parser.error('--timeout must be 1..120')
@@ -424,8 +547,9 @@ def main(argv=None):
     hash_game_monitor = None
     hash_monitor = None
     exit_code = 0
-    # A successful full-process scan can take longer than several heartbeat ticks.
-    # Freshness therefore follows the scan schedule, not just the POST cadence.
+    detection_forwarding_active = False
+    # 전체 메모리 검사와 외부 후보 검사는 하트비트 주기보다 오래 걸릴 수 있다.
+    # 실제 검사 일정에 맞춰 신선도 한도를 계산한다.
     scanner_stale_ms = scanner_stale_window_ms(
         args.interval,
         (min(args.timeout, 10) if args.scan_mode == 'autopaint-bridge' else args.timeout)
@@ -443,7 +567,10 @@ def main(argv=None):
     else:
         print('종료 기준: Ctrl+C (게임 종료 또는 반복 검사 실패 시 오류 종료)')
     try:
+        # Event 전송은 로컬 세션이 만들어진 뒤 한 번만 설정한다.
+        detection_forwarding_active = configure_detection_forwarding(session)
         hwid = load_hwid_file(args.hwid_file) if args.hwid_file else None
+        # 하트비트는 탐지 점수가 아니라 스캐너·해시 검사·게임의 생존을 보고한다.
         heartbeat = HeartbeatClient(
             session_id=session.manifest['session_id'],
             player_id=session.manifest['player_id'],
@@ -476,6 +603,8 @@ def main(argv=None):
             files=dict(session.manifest['files'], heartbeat='raw/heartbeat.jsonl',
                        **({} if args.no_executable_hash else
                           {'executable_hashes': 'raw/executable_hashes.jsonl'})))
+        # 실제 사용한 규칙 파일의 해시와 엔진 버전을 manifest에 남겨 재현성을
+        # 확보한다. 규칙을 읽지 못하면 정상 0점이 아닌 실행 실패다.
         rules, rule_manifest = load_rules(args.rules or [ROOT / 'rules' / 'repository_cheats.yar'])
         hash_catalogue = (None if args.no_executable_hash else
                           load_blacklist(args.hash_blacklist))
@@ -512,12 +641,15 @@ def main(argv=None):
                                            if args.scan_mode == 'autopaint-bridge' else None),
                        detection_target='known_code_presence_not_feature_activity',
                        ground_truth_warning='Manual ON/OFF describes feature use; DLL code can remain resident after OFF.')
+        # 정확히 한 게임 프로세스를 선택해야 검사 결과가 어느 대상의 것인지
+        # 모호해지지 않는다. 명시 PID를 줬더라도 실제 이미지와 생성 시각을 본다.
         pids = [args.pid] if args.pid else find_processes(GAME)
         if len(pids) != 1:
             heartbeat.update_component('game', 'failed',
                                        details={'matching_process_count': len(pids)})
             raise RuntimeError('게임을 실행하거나 --pid로 검사할 내 PC 프로세스 하나를 지정하세요.')
         with ProcessIdentity(pids[0]) as process:
+            # YARA, 해시, 하트비트가 같은 게임 프로세스를 보고 있는지 확인한다.
             game_monitor = ProcessIdentity(pids[0])
             if game_monitor.initial != process.initial:
                 raise RuntimeError('game_identity_changed_during_monitor_setup')
@@ -538,6 +670,7 @@ def main(argv=None):
             session.update(process=process.initial, data_origin='live_game' if is_game else 'local_process_test')
             print(f'[게임] 검사 대상 PID={process.pid}')
             if hash_catalogue is not None:
+                # 파일 해시 검사는 별도 스레드이므로 느린 YARA 주기에도 독립적이다.
                 hash_game_monitor = ProcessIdentity(process.pid)
                 if hash_game_monitor.initial != process.initial:
                     raise RuntimeError('game_identity_changed_during_hash_setup')
@@ -552,6 +685,7 @@ def main(argv=None):
             failed = 0
             external_cursor = 0
             while not args.seconds or session.elapsed() < args.seconds * 1000:
+                # 백그라운드 검사기의 치명적 오류를 먼저 확인하고 이번 주기 시작.
                 heartbeat.check_background()
                 if hash_monitor: hash_monitor.check_background()
                 markers.check()
@@ -560,9 +694,13 @@ def main(argv=None):
                 event = scan_loaded_autopaint_bridge_once(
                     rules, process, session, raw, timeout=args.timeout,
                     bridge_only=args.scan_mode == 'autopaint-bridge')
+                # 기본 모드에서 bridge가 없거나 일치하지 않으면 게임 전체의
+                # 읽을 수 있는 메모리로 범위를 넓힌다.
                 if event is None and args.scan_mode == 'auto':
                     event = scan_once(rules, process, session, raw, timeout=args.timeout)
                 if event is None:
+                    # 실패한 평가에는 공통 정상 0점을 만들지 않는다. 반복 실패는
+                    # 관측 불가 상태로 종료해 운영자가 알아볼 수 있게 한다.
                     failed += 1
                     heartbeat.update_component(
                         'localguard_input_signature', 'degraded', pid=os.getpid(),
@@ -589,6 +727,8 @@ def main(argv=None):
                     for line in event.get('_matched_strings_for_console', ()):
                         print(line)
                 if args.auto_external_python:
+                    # 외부 도구를 자동으로 찾는 옵션은 Python 실행기 후보에만
+                    # 적용된다. 후보 이름이나 존재 자체를 치트 판정으로 쓰지 않는다.
                     external_cursor, external_failures = scan_external_python_candidates(
                         rules, process, session, raw, timeout=args.external_timeout,
                         max_targets=args.external_max_targets, cursor=external_cursor,
@@ -630,6 +770,8 @@ def main(argv=None):
         print('검사 불가:', exc)
         print('보안 프로그램을 끄지 마세요. 접근 불가는 검사 실패로 남습니다.')
     finally:
+        # 종료 순서: 입력 표식·해시 워커 중지 → 최종 하트비트 → 중앙 Event
+        # 대기열 정리 → 로컬 파일·manifest 닫기. 미전송 데이터는 삭제하지 않는다.
         markers.stop()
         if markers.failure:
             exit_code = 1; session.error('marker_failed')
@@ -665,6 +807,7 @@ def main(argv=None):
         if game_monitor and (not heartbeat or not heartbeat.thread or
                              not heartbeat.thread.is_alive()):
             game_monitor.close()
+        stop_detection_forwarding(detection_forwarding_active)
         raw.close()
         session.finish(exit_code)
     print('결과 폴더:', session.path)

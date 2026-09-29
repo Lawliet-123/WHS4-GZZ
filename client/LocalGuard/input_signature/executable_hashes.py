@@ -1,7 +1,8 @@
-"""Read-only SHA-256 checks of on-disk images backing running local EXEs.
+"""실행 중인 프로세스의 디스크 EXE를 읽기 전용으로 해시 대조한다.
 
-Exact hashes are strong evidence for one known build, not a generic cheat
-detector. A failed inspection is never converted to a clean result.
+블랙리스트의 SHA-256과 크기가 모두 같은 *알려진 빌드*만 찾는다. 이름을 바꾼
+EXE도 찾을 수 있지만, 재빌드·수정된 파일이나 DLL/스크립트까지 찾는 검사는
+아니다. 프로세스에 접근하지 못한 경우는 정상 0점이 아닌 검사 공백으로 남긴다.
 """
 import hashlib
 import json
@@ -13,6 +14,8 @@ from windows_process import ProcessIdentity, list_processes, process_session_sna
 
 
 SCHEMA_VERSION = 'meccha-known-executable-hashes-1'
+# 카탈로그는 신뢰할 수 있는 로컬 파일이어야 한다. 크기·형식을 제한해 오입력이나
+# 지나치게 큰 파일 때문에 검사기가 멈추는 일을 줄인다.
 _ID = re.compile(r'[a-z][a-z0-9_]{0,79}\Z')
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 MAX_CATALOGUE_BYTES = 1024 * 1024
@@ -20,7 +23,12 @@ MAX_IMAGE_BYTES = 256 * 1024 * 1024
 
 
 def load_blacklist(path):
-    """Load a trusted local catalogue; no network lookup or dynamic code."""
+    """로컬 JSON 카탈로그를 검증하고 검색용 색인을 만든다.
+
+    반환값의 ``sizes``는 해시 계산 전의 빠른 후보 필터이고, ``by_digest``는
+    (파일 크기, SHA-256)으로 규칙 ID를 찾는 표다. 네트워크 조회나 동적 코드
+    실행은 하지 않는다. 형식이 잘못되면 조용히 빈 목록으로 처리하지 않는다.
+    """
     path = Path(path).resolve()
     if path.stat().st_size > MAX_CATALOGUE_BYTES:
         raise ValueError('hash_catalogue_too_large')
@@ -34,6 +42,7 @@ def load_blacklist(path):
             not isinstance(data['entries'], list) or not data['entries'] or
             len(data['entries']) > 1024):
         raise ValueError('invalid_hash_catalogue')
+    # ID 중복을 금지해야 한 빌드의 결과가 여러 규칙으로 잘못 집계되지 않는다.
     by_digest = {}
     ids = set()
     for item in data['entries']:
@@ -59,7 +68,11 @@ def load_blacklist(path):
 
 
 def hash_stable_image(path, expected_size, *, stop_event=None):
-    """Hash an EXE file handle and reject obvious replacement during reading."""
+    """파일 핸들에서 SHA-256을 계산하며 읽는 도중 교체·변경을 확인한다.
+
+    해시 전후의 핸들 정보와 현재 경로 정보를 비교한다. 서로 다르면 계산한
+    해시를 판정에 쓰지 않는다. ``stop_event``는 종료 요청에 빠르게 응답한다.
+    """
     digest = hashlib.sha256()
     with open(path, 'rb') as stream:
         before = os.fstat(stream.fileno())
@@ -73,6 +86,7 @@ def hash_stable_image(path, expected_size, *, stop_event=None):
                 break
             digest.update(chunk)
         after = os.fstat(stream.fileno())
+    # 열린 핸들은 옛 파일을 가리킬 수 있으므로 경로도 다시 조회한다.
     path_after = os.stat(path)
     identity_fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns')
     if (any(getattr(before, key) != getattr(after, key) for key in identity_fields) or
@@ -84,10 +98,12 @@ def hash_stable_image(path, expected_size, *, stop_event=None):
 def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=None,
                                    process_rows=None, session_lookup=None,
                                    identity_factory=ProcessIdentity):
-    """Inspect running same-session EXEs, filtering by known sizes before hashing.
+    """게임과 같은 Windows 세션의 실행 중 EXE만 한 번 조사한다.
 
-    `complete` refers to this one snapshot only. Even a complete snapshot can
-    miss a process that started and exited between polling intervals.
+    먼저 파일 크기로 후보를 좁히고 SHA-256을 계산한다. 프로세스 식별자를
+    검사 전후에 확인해 PID 재사용을 피한다. ``complete``는 *이번 스냅샷*에서
+    건너뛴 대상이 없다는 뜻이지, 주기 사이에 떴다 사라진 프로세스까지
+    모두 확인했다는 뜻은 아니다.
     """
     rows = list_processes() if process_rows is None else process_rows
     if session_lookup is None:
@@ -101,6 +117,8 @@ def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=Non
     hashed = 0
     skipped = []
     matches = []
+    # 같은 이미지 파일을 여러 프로세스가 실행할 수 있어 한 주기 안에서만
+    # 해시를 재사용한다. 다음 주기에는 파일 변경 가능성을 고려해 다시 계산한다.
     cache = {}
     for row in rows:
         if stop_event is not None and stop_event.is_set():
@@ -112,6 +130,7 @@ def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=Non
             if session_lookup(pid) != game_session_id:
                 continue
         except (OSError, LookupError) as exc:
+            # 세션을 모르는 PID를 임의로 대상에서 제외하면 거짓 정상 결과가 된다.
             skipped.append({'pid': pid, 'reason': 'session_unavailable',
                             'error_type': type(exc).__name__})
             continue
@@ -140,6 +159,7 @@ def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=Non
         except InterruptedError:
             raise
         except Exception as exc:
+            # 접근 거부·종료·PID 재사용 등은 모두 skipped에 남겨 complete=False로 만든다.
             skipped.append({'pid': pid, 'reason': 'image_inspection_failed',
                             'error_type': type(exc).__name__})
     matches.sort(key=lambda item: item['pid'])
