@@ -33,6 +33,7 @@ import inspect
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -71,6 +72,9 @@ DETECTORS = [
     ("injection",    "detectors.injection",    "주입·후킹 범용 (핵 종류 무관)"),
     ("value_tamper", "detectors.value_tamper", "값 변조 (CDO·아키타입 대조)"),
     ("overlay_hook", "detectors.overlay_hook", "인라인·렌더링 후킹 (익스포트 프롤로그)"),
+    ("godmode_runtime", "detectors.godmode_runtime", "GodMode runtime memory evidence"),
+    ("noclip_runtime", "detectors.noclip_runtime", "Noclip runtime memory evidence"),
+    ("aimbot_runtime", "detectors.aimbot_runtime", "Aimbot ControlRotation pattern evidence"),
 ]
 
 
@@ -339,6 +343,14 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
         watching = _begin_watch(picked, log_dir if log_name else None, stem)
         try:
             one_round(window)
+        except KeyboardInterrupt:
+            # 런처가 끄는 중이다. 이미 큐에 넣은 전송은 짧게 비우고 나간다.
+            # 못 보낸 것은 outbox 에 남아 다음 실행 때 같이 나간다.
+            try:
+                tele.finish(timeout=2.0)
+            except Exception:
+                pass
+            raise
         finally:
             _end_watch(watching)
         rounds = 1
@@ -450,7 +462,7 @@ def _end_watch(mods):
 
 
 def exit_code(events):
-    """0 정상 / 1 의심 이상 / 2 검사 실패가 하나라도 있음.
+    """0 정상 / 1 의심 이상 / 2 검사 실패가 하나라도 있음. (3 은 run_cli 가 낸다)
 
     **실패가 의심보다 강하다.** 검사를 못 한 세션을 '깨끗함'으로 넘기지
     않기 위해서다. 측정할 때 이 세션은 집계에서 빼야 한다.
@@ -529,7 +541,7 @@ def render(summary):
     print("    " + "-" * 68)
     for ev in summary["events"]:
         reason = ", ".join(ev["reasons"]) or ev["evidence"].get("detail", "") \
-            or ev["evidence"].get("error", "").splitlines()[0]
+            or next(iter(ev["evidence"].get("error", "").splitlines()), "")
         if len(reason) > 44:
             reason = reason[:43] + "…"
         print(f" {MARK.get(ev['status'], '  ')} {ev['module']:<14} "
@@ -618,5 +630,41 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
     return code
 
 
+def run_cli(entry):
+    """러너의 `if __name__` 에서 `sys.exit(entry())` 대신 쓴다.
+
+    예외가 그대로 파이썬까지 올라가면 종료코드가 **1** 이 된다. 그런데 1 은
+    우리 규칙에서 '의심' 이다. 탐지기가 터진 것을 탐지로 집계하면 없는 핵을
+    만들어내는 셈이고, 런처는 30초마다 다시 부르므로 한 번 터지면 세션 내내
+    의심이 찍힌다. 그래서 크래시를 3 으로 따로 뺀다. (재민님 제안, 9/29)
+
+        0 정상 / 1 의심 / 2 검사 실패 / 3 크래시·내부 예외
+
+    Ctrl+C 는 3 이 아니라 2 다. 코드가 터진 게 아니라 검사를 끝까지 못 한
+    것이고, 집계에서 빼야 하는 건 같다.
+
+    런처는 끌 때 Ctrl+Break 를 보낸다(모듈마다 프로세스 그룹이 따로라 Ctrl+C 는
+    못 보낸다). 그걸 KeyboardInterrupt 로 바꿔 두어야 아래 경로와 각 finally
+    (_end_watch 기준점 저장, 전송 flush)가 돈다. 안 바꾸면 윈도 기본 처리로 즉시
+    끝나서 강제 종료와 같아진다.
+    """
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, signal.default_int_handler)
+        except (ValueError, OSError):
+            pass
+    try:
+        code = entry()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("  중단했습니다. 이 세션은 검사 실패(2)로 남깁니다.", file=sys.stderr)
+        sys.exit(2)
+    except BaseException:
+        traceback.print_exc()
+        sys.exit(3)
+    sys.exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    run_cli(main)

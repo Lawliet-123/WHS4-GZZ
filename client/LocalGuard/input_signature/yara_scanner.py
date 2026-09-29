@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 import traceback
@@ -474,6 +475,10 @@ def main(argv=None):
     YARA·파일 해시 결과는 각각 공통 Event를 만들고, 하트비트는 생존 상태만
     전한다. 서버 설정이 없으면 검사는 로컬 기록만으로도 실행 가능하다.
     """
+    # 런처의 Ctrl+Break 종료 요청을 KeyboardInterrupt로 받아 아래 finally에서
+    # 전송 대기열과 manifest를 정리한다. Windows 이외 환경에는 SIGBREAK가 없다.
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     parser = argparse.ArgumentParser(description='LocalGuard: read-only YARA process-memory scan / ReplayAnalyzer export')
     # 검사 범위: 명시 PID 또는 게임 자동 탐색, 알려진 DLL 우선 검사,
     # 선택적으로 같은 세션 Python 후보까지 확인한다.

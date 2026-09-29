@@ -150,6 +150,10 @@ class AimbotDetector:
 
         reasons: List[str] = []
         evidence: Dict[str, object] = {
+            # 공통 timestamp_ms는 런처 세션 기준이다. 원본 UE 시계와 시간원도
+            # evidence로 보존해 나중에 원시 로그와 대조할 수 있게 한다.
+            "source_timestamp_ms": latest.source_timestamp_ms,
+            "timestamp_source": latest.timestamp_source,
             # 결과 품질 지표다. 단독으로 에임봇 점수에는 반영하지 않는다.
             "shot_attempt_count": attempts,
             "confirmed_outcome_count": outcomes,

@@ -2,12 +2,26 @@ local UEHelpers = require("UEHelpers")
 local GetKismetSystemLibrary = UEHelpers.GetKismetSystemLibrary
 local GetGameplayStatics = UEHelpers.GetGameplayStatics
 
--- 팀원 PC마다 Steam 설치 위치가 다르면 이 경로만 바꾸면 됨
-local LOG_PATH = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\MECCHA CHAMELEON\\Chameleon\\Binaries\\Win64\\ue4ss\\Mods\\DamageLogger\\meccha_aim_telemetry.jsonl"
+-- Steam 설치 드라이브를 가정하지 않는다. 현재 실행 중인 이 스크립트의 위치
+-- (...\\ue4ss\\Mods\\DamageLogger\\Scripts\\main.lua)에서 DamageLogger 모드 폴더를
+-- 계산해 JSONL을 기록한다.
+local function ResolveLogPath()
+    local source = debug.getinfo(1, "S").source
+    if type(source) == "string" and source:sub(1, 1) == "@" then
+        local script_path = source:sub(2):gsub("/", "\\")
+        local mod_dir = script_path:match("^(.*)\\Scripts\\[^\\]+$")
+        if mod_dir and mod_dir ~= "" then
+            return mod_dir .. "\\meccha_aim_telemetry.jsonl"
+        end
+    end
 
--- aimbot_detector.py의 MecchaAimTelemetrySensor가 읽는 파일명과 맞춰둠.
--- (Python 쪽 LOG_PATH = Path("logs/meccha_aim_telemetry.jsonl")와 실제로는
---  두 프로그램이 같은 파일을 봐야 하니, 나중에 팀 공유 시 경로를 통일해야 함)
+    -- UE4SS가 스크립트 원본 경로를 제공하지 않는 특수 환경의 최후 대안이다.
+    -- 이 경우에도 Steam 절대 경로가 아니라 현재 작업 디렉터리에 기록한다.
+    print("[DamageLogger] WARNING: script path unavailable; using relative telemetry path")
+    return "meccha_aim_telemetry.jsonl"
+end
+
+local LOG_PATH = ResolveLogPath()
 
 local SESSION_ID = "session_" .. os.date("%Y%m%d_%H%M%S")
 -- os.clock()은 실제 경과시간이 아니라 프로세스 CPU 시간이므로 명중 간격 측정에
@@ -83,6 +97,29 @@ local function SafeGetName(actor)
     local ok, n = pcall(function() return actor:GetFullName() end)
     if ok and n then return n end
     return "unknown"
+end
+
+-- SpawnShotEffect(Local)의 호출 범위만 믿지 않고, 훅 Context에서 받은
+-- Hunter가 이 클라이언트 PlayerController의 Pawn과 같은지 명시적으로
+-- 확인한다. false 이벤트는 Python Sensor가 제외하며, null은 확인 실패다.
+local function IsLocalPawn(actor)
+    if not actor or not actor:IsValid() then
+        return nil
+    end
+    local controller = UEHelpers.GetPlayerController()
+    if not controller or not controller:IsValid() then
+        return nil
+    end
+    local ok, localPawn = pcall(function() return controller:GetPawn() end)
+    -- 현재 Object Dump에는 APlayerController.AcknowledgedPawn도 확인된다.
+    -- GetPawn UFunction이 이 게임 빌드에서 노출되지 않는 경우의 폴백이다.
+    if not ok or not localPawn or not localPawn:IsValid() then
+        ok, localPawn = pcall(function() return controller.AcknowledgedPawn end)
+    end
+    if not ok or not localPawn or not localPawn:IsValid() then
+        return nil
+    end
+    return SafeGetName(localPawn) == SafeGetName(actor)
 end
 
 -- JSON 문자열 안에 들어갈 값에서 최소한의 위험 문자만 제거
@@ -592,6 +629,7 @@ end
 -- IsHit은 빈 공간 발사에서도 true가 될 수 있어 JSON이나 판정에는 사용하지 않는다.
 local function WriteShotAttemptJsonl(attacker)
     local attackerId = SafeGetName(attacker)
+    local isLocal = IsLocalPawn(attacker)
     local ax, ay, az = SafeGetLocation(attacker)
     local timestampMs, usedTimestampSource = GetTimestampMs()
     local roundId = GetRoundId()
@@ -609,13 +647,20 @@ local function WriteShotAttemptJsonl(attacker)
         end
     end
 
-    local roundIdJson = '"' .. JsonSafeString(roundId) .. '"'
+    local roundIdJson = "null"
+    if roundId ~= nil then
+        roundIdJson = '"' .. JsonSafeString(roundId) .. '"'
+    end
+    local isLocalJson = "null"
+    if isLocal ~= nil then
+        isLocalJson = isLocal and "true" or "false"
+    end
     local line = string.format(
         '{"event_type":"shot_attempt","session_id":"%s","round_id":%s,"timestamp_ms":%d,"timestamp_source":"%s","attacker_id":"%s",' ..
-        '"attacker_pos":[%.2f,%.2f,%.2f],"aimed_candidate_id":%s,"aimed_candidate_error_deg":%s,' ..
+        '"is_local":%s,"attacker_pos":[%.2f,%.2f,%.2f],"aimed_candidate_id":%s,"aimed_candidate_error_deg":%s,' ..
         '"aimed_candidate_los_clear":%s,"aim_trace":%s}',
         SESSION_ID, roundIdJson,
-        timestampMs, JsonSafeString(usedTimestampSource), JsonSafeString(attackerId),
+        timestampMs, JsonSafeString(usedTimestampSource), JsonSafeString(attackerId), isLocalJson,
         ax, ay, az, aimedCandidateIdJson, aimedCandidateErrorJson, aimedCandidateLosJson, aimTraceJson
     )
     AppendJsonl(line)
@@ -633,6 +678,7 @@ end
 local function WriteConfirmedOutcomeJsonl(attacker, victim, eventSource)
     eventSource = eventSource or "unknown"
     local attackerId = SafeGetName(attacker)
+    local isLocal = IsLocalPawn(attacker)
     local victimId = SafeGetName(victim)
     local attackerLoc = SafeGetLocationRaw(attacker)
     local victimLoc = SafeGetLocationRaw(victim)
@@ -664,14 +710,21 @@ local function WriteConfirmedOutcomeJsonl(attacker, victim, eventSource)
     local timestampMs, usedTimestampSource = GetTimestampMs()
     local roundId = GetRoundId()
 
-    local roundIdJson = '"' .. JsonSafeString(roundId) .. '"'
+    local roundIdJson = "null"
+    if roundId ~= nil then
+        roundIdJson = '"' .. JsonSafeString(roundId) .. '"'
+    end
+    local isLocalJson = "null"
+    if isLocal ~= nil then
+        isLocalJson = isLocal and "true" or "false"
+    end
     local line = string.format(
         '{"event_type":"confirmed_outcome","session_id":"%s","round_id":%s,"timestamp_ms":%d,"timestamp_source":"%s","attacker_id":"%s","victim_id":"%s","event_source":"%s",' ..
-        '"attacker_pos":[%.2f,%.2f,%.2f],"victim_pos":[%.2f,%.2f,%.2f],' ..
+        '"is_local":%s,"attacker_pos":[%.2f,%.2f,%.2f],"victim_pos":[%.2f,%.2f,%.2f],' ..
         '"los_clear":%s,"other_candidates":%s}',
         SESSION_ID, roundIdJson,
         timestampMs, JsonSafeString(usedTimestampSource),
-        JsonSafeString(attackerId), JsonSafeString(victimId), JsonSafeString(eventSource),
+        JsonSafeString(attackerId), JsonSafeString(victimId), JsonSafeString(eventSource), isLocalJson,
         ax, ay, az,
         vx, vy, vz,
         losClearJson,

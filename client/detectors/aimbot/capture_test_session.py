@@ -44,7 +44,7 @@ def load_raw_events(raw_log_path: Path):
     return list(MecchaAimTelemetrySensor(raw_log_path).read_events())
 
 
-def build_events_jsonl(raw_events, out_path: Path, test_id: str):
+def build_events_jsonl(raw_events, out_path: Path, test_id: str, player_id: str | None = None):
     detector = AimbotDetector()
     with out_path.open("w", encoding="utf-8") as f:
         for event in raw_events:
@@ -55,6 +55,12 @@ def build_events_jsonl(raw_events, out_path: Path, test_id: str):
             # Event에는 팀이 정한 테스트 단위 ID(normal_001, aimbot_001)를 넣어
             # ReplayAnalyzer/Dashboard가 한 번의 실험을 바로 구분할 수 있게 한다.
             record["session_id"] = test_id
+            # UE 액터 경로는 공통 player_id 규칙을 통과하지 못한다. 테스트 PC의
+            # 짧은 식별자를 받은 경우에만 최상위 값을 교체하고 원본은 evidence에
+            # 보존한다. 미지정은 기존 리플레이 데이터 호환성을 위해 유지한다.
+            if player_id:
+                record["evidence"]["source_attacker_id"] = record["player_id"]
+                record["player_id"] = player_id
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return detector
 
@@ -75,6 +81,10 @@ def main():
     parser.add_argument("--label", required=True, choices=["normal", "cheat"])
     parser.add_argument("--raw-log", required=True, type=Path, help="main.lua가 남긴 원본 JSONL 경로")
     parser.add_argument("--out-dir", type=Path, default=Path("test_sessions"))
+    parser.add_argument(
+        "--player-id",
+        help="공통 규칙의 짧은 PC 식별자. 지정하면 UE 액터 경로는 evidence.source_attacker_id로 이동한다.",
+    )
     parser.add_argument(
         "--cheat-window",
         nargs=2,
@@ -98,7 +108,7 @@ def main():
         print(f"[WARNING] {args.raw_log}에 이벤트가 하나도 없음 — 빈 events.jsonl이 만들어짐")
 
     events_path = session_dir / "events.jsonl"
-    build_events_jsonl(raw_events, events_path, args.test_id)
+    build_events_jsonl(raw_events, events_path, args.test_id, args.player_id)
 
     raw_copy_path = raw_dir / args.raw_log.name
     # 이미 패키지 안 raw/의 파일을 다시 패키징할 때는 source와 destination이

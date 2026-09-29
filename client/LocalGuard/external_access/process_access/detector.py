@@ -23,7 +23,9 @@ SUSPICIOUS_PATH_WEIGHT = 1
 class ProcessAccessDetector:
     """관찰된 위험 핸들을 raw_score와 설명 가능한 evidence로 바꾼다."""
 
-    module_name = "localguard"
+    # LocalGuard는 상위 아키텍처 이름이다. 중앙 서버가 모듈별 점수를
+    # 구분할 수 있도록 이 탐지기의 고유 이름은 런처 등록명과 맞춘다.
+    module_name = "external_access"
     submodule_name = "external_process"
 
     def __init__(self, environment: Optional[Mapping[str, str]] = None) -> None:

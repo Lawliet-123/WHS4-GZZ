@@ -26,7 +26,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
-# 게임 설치 위치. 사람마다 다를 수 있어 없으면 런처가 직접 찾는다.
+# 게임 설치 위치의 **마지막 기본값**. 실제 탐색은 game_launcher.find_game_dir()
+# 이 한다 (환경변수 -> 떠 있는 프로세스 -> 스팀 라이브러리 -> 이 값).
+# 여기를 직접 쓰면 이 경로가 아닌 PC 에서 게임 폴더를 못 찾는다.
 GAME_DIR = (r"C:\Program Files (x86)\Steam\steamapps\common"
             r"\MECCHA CHAMELEON\Chameleon\Binaries\Win64")
 
@@ -39,7 +41,7 @@ CONTINUOUS = "continuous"  # 자기가 알아서 계속 돈다
 class Module:
     name: str
     owner: str                      # 누구 담당인지. 안 붙을 때 물어볼 사람
-    argv: List[str]                 # {session} {player} 자리표시자를 쓸 수 있다
+    argv: List[str]                 # {session} {player} {t0} {window} {game_bin} 을 쓸 수 있다
     mode: str = CONTINUOUS
     cwd: Optional[str] = None       # None 이면 레포 루트
     needs_game: bool = True         # 게임이 떠 있어야 의미가 있는가
@@ -48,6 +50,10 @@ class Module:
     # CONTINUOUS 가 죽으면 되살릴지. 런처와 워치독이 둘 다 되살린다(registry.py).
     # 되살리면 안 되는 모듈(예: 한 번 적재하고 끝나야 하는 드라이버)이면 False.
     restart: bool = True
+    # 끌 때 종료 요청 뒤 스스로 끝나기를 기다리는 시간(초). None 이면 런처 기본값
+    # (process_manager.stop_all 의 grace_s, 10초). 정리 전에 끝나지 않는 긴 작업
+    # (예: 끊을 수 없는 한 번의 YARA 검사)이 있는 모듈만 늘린다.
+    stop_grace_s: Optional[float] = None
     # 이 모듈이 세션 로그(<세션>.jsonl)를 쓰는 폴더. 런처가 시작 전에
     # "그 세션 이름이 이미 있는지" 를 보려고 쓴다. 레포 루트 기준 상대경로.
     session_log_dir: str = ""
@@ -79,6 +85,12 @@ class Module:
 
 
 PY = sys.executable
+
+# input_signature 의 YARA 검사 한 번 제한(초). 종료 요청은 진행 중인 검사가 끝나야
+# 처리되므로(rules.match 는 중간에 못 끊는다) 끌 때 기다리는 시간도 이 값에 맞춘다.
+# 동효님 실측: 평가 한 번에 20초~1분(9/30). 둘을 따로 바꾸면 검사 도중 강제 종료돼
+# manifest 가 running 으로 남는다. 그래서 한 곳에서 같이 정한다.
+YARA_TIMEOUT_S = 45
 
 MODULES: List[Module] = [
     # ── 게임과 무관하게 먼저 뜨는 것 ────────────────────────────────────
@@ -112,8 +124,22 @@ MODULES: List[Module] = [
     Module(
         name="input_signature",
         owner="3번 (동효)",
-        argv=[PY, "client/LocalGuard/input_signature/main.py"],
-        note="Raw Input 대조·YARA·해시. 아직 폴더가 비어 있다",
+        argv=[PY, "client/LocalGuard/input_signature/yara_scanner.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--timeout", str(YARA_TIMEOUT_S)],
+        # 검사 한 번 + manifest 마무리(하트비트 전송 제한 3초 등) 여유.
+        stop_grace_s=YARA_TIMEOUT_S + 10,
+        # --t0 는 아직 안 넘긴다. yara_scanner 가 받게 되면(동효님 9/30 답변 5번) 붙인다.
+        # 지금 넘기면 argparse 가 unrecognized 로 죽인다.
+        # 세션 폴더를 exist_ok=False 로 만든다(replay_events.py ReplaySession).
+        # 같은 --session-id 로 되살리면 반드시 FileExistsError 로 다시 죽어서,
+        # 되살릴수록 재시작 예산만 태운다. 경로 설계가 바뀌면 True 로 되돌린다.
+        restart=False,
+        session_log_dir="client/LocalGuard/input_signature/sessions",
+        # --auto-external-python 은 일부러 안 넘긴다. 그 옵션은 같은 세션의
+        # python.exe 를 후보로 삼고 게임·자기자신·자기 부모만 빼기 때문에,
+        # 런처가 띄운 다른 파이썬 탐지기를 검사 대상으로 잡는다(자기탐지).
+        note="Raw Input 대조·YARA·해시. --seconds 기본 0 이라 끝까지 돈다",
     ),
     Module(
         name="memory_integrity",
@@ -140,9 +166,41 @@ MODULES: List[Module] = [
     Module(
         name="aimbot",
         owner="에임봇 (은지)",
-        argv=[PY, "client/detectors/aimbot/main.py"],
+        argv=[PY, "client/detectors/aimbot/main.py",
+              "--session-id", "{session}", "--player-id", "{player}", "--from-end",
+              "--t0", "{t0}",
+              # 기본값이 C:\Program Files (x86)\... 고정이라 게임이 다른 곳에 있으면
+              # 영영 기다린다. 런처가 찾은 게임 폴더로 준다. (DamageLogger Lua 쪽도
+              # 같은 고정 경로에 써서, 그쪽이 고쳐져야 다른 PC 에서 데이터가 생긴다)
+              "--log-path", r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"],
         mode=CONTINUOUS,
-        note="UE4SS DamageLogger 가 남기는 텔레메트리를 읽는다",
+        # 결과의 session_id/player_id 를 이 값으로 바꾸고 UE 값은 evidence 로 옮긴다.
+        # 안 넘기면 UE 액터 경로가 player_id 에 들어가 중앙 전송이 로컬에서 거절된다.
+        # --from-end: 텔레메트리 파일은 모드가 로드될 때만 비워져서 이전 게임 기록이
+        # 남아 있을 수 있다. 처음부터 읽으면 그 기록이 지금 세션 이름으로 나가고,
+        # 되살릴 때마다 같은 결과를 새 event_id 로 또 보낸다.
+        note="UE4SS DamageLogger 텔레메트리",
+    ),
+    Module(
+        name="noclip",
+        owner="Noclip (송희)",
+        argv=[PY, "client/detectors/noclip/main.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              # 팀 UE4SS 배치(ue4ss\Mods\<모드>\) 기준. NoclipLogger Lua 는 지금
+              # "Mods\NoclipLogger\noclip_log.csv" 를 게임 작업 폴더(Win64, 9/30 실측)
+              # 기준으로 열어서 이 배치에선 폴더가 없어 CSV 를 못 만든다. Lua 가 자기
+              # 스크립트 위치 기준으로 쓰게 바뀌면(성민님 PaintObserver 방식) 이 경로와 맞는다.
+              "--log-file", r"{game_bin}\ue4ss\Mods\NoclipLogger\noclip_log.csv",
+              # 기본값이 실행 위치 기준이라 그대로면 레포 루트에 생긴다. 세션마다 따로 둔다.
+              "--event-file", "client/Launcher/logs/noclip/{session}/events.jsonl",
+              "--result-file", "client/Launcher/logs/noclip/{session}/detection_results.csv"],
+        mode=CONTINUOUS,
+        # 시작할 때 events.jsonl 을 비우고 CSV 를 첫 줄부터 다시 읽는다. 되살리면 로컬
+        # 기록이 지워지고 같은 결과가 새 event_id 로 또 나간다. 송희님이 이어 읽기를
+        # 넣으면 True 로 되돌린다.
+        restart=False,
+        session_log_dir="client/Launcher/logs/noclip",
+        note="UE4SS NoclipLogger CSV 를 읽어 점수로 판정",
     ),
 ]
 

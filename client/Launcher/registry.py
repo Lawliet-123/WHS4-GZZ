@@ -103,6 +103,8 @@ _k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FI
 _k32.GetProcessTimes.restype = wintypes.BOOL
 _k32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
 _k32.TerminateProcess.restype = wintypes.BOOL
+_k32.GenerateConsoleCtrlEvent.argtypes = (wintypes.DWORD, wintypes.DWORD)
+_k32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
 
 SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -110,6 +112,7 @@ PROCESS_TERMINATE = 0x0001
 WAIT_TIMEOUT = 0x102
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87       # 그런 PID 가 없을 때 나온다
+CTRL_BREAK_EVENT = 1
 
 
 def _open(pid, access):
@@ -185,6 +188,28 @@ def kill(pid, ctime: Optional[int] = None) -> bool:
         return bool(_k32.TerminateProcess(h, 1))
     finally:
         _k32.CloseHandle(h)
+
+
+def request_stop(pid, ctime: Optional[int] = None) -> bool:
+    """그때 그 프로세스 그룹에 CTRL_BREAK_EVENT를 보내 정상 종료를 요청한다.
+
+    **요청이지 강제가 아니다. 받는 쪽이 처리해야 정리 코드가 돈다.** 파이썬은
+    Ctrl+Break(SIGBREAK)를 기본으로 KeyboardInterrupt 로 바꾸지 않는다 — 기본 처리는
+    그 자리에서 프로세스를 끝내고(종료 코드 0xC000013A) finally·atexit 이 안 돈다.
+    실제로 재 봤다(9/30, 한 줄 없는 모듈은 finally 가 안 돌았다). 그래서 모듈은
+    시작부에 이 한 줄이 있어야 한다.
+
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+
+    이 줄이 없으면 예전 강제 종료와 같다. 나빠지는 모듈은 없지만 좋아지지도 않는다.
+
+    못 보내는 경우(False): 이미 죽었거나 PID 가 재사용됐을 때(ctime 불일치), 런처가
+    콘솔 없이 떠 있거나(pythonw, 창 모드 exe) 대상이 다른 콘솔에 붙어 있을 때.
+    """
+    if not pid or (ctime is not None and not is_alive(pid, ctime)):
+        return False
+    # spawn() creates a new console process group whose ID is the leader PID.
+    return bool(_k32.GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, int(pid)))
 
 
 # ── 잠금 ────────────────────────────────────────────────────────────────
@@ -354,16 +379,42 @@ def end_session() -> None:
 # ── 띄우기·등록 ─────────────────────────────────────────────────────────
 
 def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Popen:
-    """모듈을 띄운다. 출력은 모듈 로그 파일에 이어 쓴다. 런처가 쓰던 방식 그대로다."""
+    """모듈을 띄운다. 출력은 모듈 로그 파일에 이어 쓴다.
+
+    **모듈마다 프로세스 그룹을 따로 만든다(CREATE_NEW_PROCESS_GROUP).** 그래야
+    끌 때 모듈 하나만 골라 종료 신호(Ctrl+Break)를 보낼 수 있다. 같은 그룹에 두면
+    신호가 런처를 포함한 전부에게 한꺼번에 간다.
+
+    덤으로 사용자가 런처 창에서 누른 Ctrl+C 가 모듈에 바로 가지 않는다. 예전에는
+    Ctrl+C 한 번에 모두가 동시에 정리를 시작했고, 사용자가 한 번 더 누르면 모듈의
+    finally 가 중간에 끊겼다. 이제 런처가 받아서 순서대로 끈다.
+    """
     os.makedirs(os.path.dirname(log) or ".", exist_ok=True)
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    # 중앙 전송 대기열(shared outbox)은 모듈마다 따로 준다. 안 주면 모듈들이
+    # ClientConfig 기본값인 cwd(=레포 루트)/telemetry-outbox/ 하나를 같이 쓰는데,
+    # shared 는 한 대기열에 보내는 프로세스 하나만 허용해서(잠금 timeout=0) 나중에
+    # 뜬 모듈은 중앙 전송만 조용히 꺼진 채 돈다. 레포 안에 파일이 생기는 것도 막는다.
+    # 전역으로 설정돼 있어도 덮어쓴다 — 전역 하나를 나눠 쓰면 같은 문제다.
+    # 같은 모듈을 되살리면 같은 경로라 못 보낸 건이 이어서 나간다(잠금은 OS 가
+    # 프로세스가 죽을 때 푼다).
+    name = os.path.splitext(os.path.basename(log))[0]
+    env["GZZ_TELEMETRY_OUTBOX"] = os.path.join(
+        os.path.dirname(os.path.abspath(log)), "outbox", name, "client.sqlite3")
     with open(log, "a", encoding="utf-8") as f:
         f.write(f"\n{'=' * 70}\n[{note or 'start'}] {time.strftime('%H:%M:%S')}\n"
                 f"[cmd] {' '.join(argv)}\n{'=' * 70}\n")
         f.flush()
         # 자식이 핸들을 물려받으므로 여기서 닫아도 자식 출력은 계속 파일로 간다.
-        return subprocess.Popen(argv, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, env=env)
+        return subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
 
 
 def register(name: str, proc: subprocess.Popen, *, by: str, restartable: bool,
