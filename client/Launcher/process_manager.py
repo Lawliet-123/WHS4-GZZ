@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import registry
-from modules import CONTINUOUS, ONESHOT, REPO, Module
+from modules import CONTINUOUS, GAME_DIR, ONESHOT, REPO, Module
 
 LOG_DIR = registry.LOG_DIR
 
@@ -145,6 +145,9 @@ class ProcessManager:
         argv = st.module.resolved({
             "session": self.session, "player": self.player,
             "t0": f"{self.t0:.3f}", "window": st.runs,
+            # 런처가 찾은 게임 실행 폴더(main.publish_game_dir 가 채운다). UE4SS 모드
+            # 로그처럼 게임 폴더 아래 파일을 읽는 모듈에 넘긴다. 못 찾았으면 기본값.
+            "game_bin": os.environ.get("GZZ_GAME_BIN") or GAME_DIR,
         })
         cwd = st.module.cwd or REPO
         try:
@@ -334,10 +337,12 @@ class ProcessManager:
              무리마다: 종료 요청(Ctrl+Break) -> grace_s 까지 기다림 -> 남은 것만 강제
           4. 등록부에 남은 것 정리      워치독이 stopping 직전에 띄운 것
 
-        grace_s 는 무리마다다. 10초인 이유: 에임봇·external_access 가 끝날 때 중앙
-        전송을 flush(3초) + shutdown(5초) 한다. 서버가 죽어 있으면 8초를 다 쓴다.
-        그보다 짧으면 비우는 도중에 강제로 끊게 된다. 보통은 1초 안에 끝나므로
-        이 시간을 다 기다리는 건 정리가 걸린 모듈이 있을 때뿐이다.
+        grace_s 는 모듈 하나를 기다리는 기본 시간이다. 10초인 이유: 에임봇·
+        external_access 가 끝날 때 중앙 전송을 flush(3초) + shutdown(5초) 한다. 서버가
+        죽어 있으면 8초를 다 쓴다. 그보다 짧으면 비우는 도중에 강제로 끊게 된다.
+        모듈이 Module.stop_grace_s 를 주면 그 값을 쓴다(input_signature 는 끊을 수 없는
+        YARA 검사 한 번 때문에 더 길다). 각자 자기 시한이 오면 그 모듈만 강제로 끈다.
+        보통은 1초 안에 끝나므로 이 시간을 다 기다리는 건 정리가 걸린 모듈이 있을 때뿐이다.
 
         종료하는 동안 런처는 Ctrl+C 를 무시한다. 급해서 한 번 더 누르면 기다리던
         중에 빠져나가 모듈이 고아로 남는다.
@@ -420,40 +425,59 @@ class ProcessManager:
         sent = {st.name: registry.request_stop(
                     st.pid, None if st.proc is not None else st.adopted_ctime)
                 for st in live}
-        deadline = time.time() + grace_s
-        waiting = [st for st in live if sent[st.name]]
-        while waiting and time.time() < deadline:
-            waiting = [st for st in waiting if self._alive(st)]
-            if waiting:
+        # 모듈마다 기다리는 시간이 다를 수 있다(Module.stop_grace_s). 한 모듈이 길다고
+        # 다른 모듈의 강제 종료까지 미루지 않는다 — 각자 자기 시한이 오면 그때 끈다.
+        # 요청을 못 보낸 모듈은 기다릴 이유가 없으니 바로 강제 종료 쪽으로 간다.
+        start = time.time()
+        allowed = {st.name: (st.module.stop_grace_s or grace_s) if sent[st.name] else 0.0
+                   for st in live}
+        pending = list(live)
+        while pending:
+            elapsed = time.time() - start
+            still = []
+            for st in pending:
+                if not self._alive(st):
+                    self._record_exit(st, out)
+                elif elapsed >= allowed[st.name]:
+                    self._force(st, sent[st.name], allowed[st.name], out)
+                else:
+                    still.append(st)
+            pending = still
+            if pending:
                 time.sleep(0.1)
 
-        for st in live:
-            if not self._alive(st):
-                code = st.proc.returncode if st.proc is not None else None
-                st.last_code = code
-                if code is not None and (code & 0xFFFFFFFF) == STATUS_CONTROL_C_EXIT:
-                    # 윈도 기본 처리로 끝났다. 한 줄이 없는 모듈이 이렇게 끝나는데,
-                    # 한 줄은 있지만 KeyboardInterrupt 를 안 잡은 모듈도 코드가 같다.
-                    # 그래서 "정리가 안 돌았다" 고 단정하지 않고 모른다고 적는다.
-                    st.detail = "요청 후 종료 (기본 처리 — 정리 코드가 돌았는지 모름)"
-                    out.setdefault("defaulted", []).append(st.name)
-                else:
-                    st.detail = "요청 후 종료" + (f" (code {code})" if code is not None else "")
-                out["graceful"].append(st.name)
-            else:
-                # 여기까지 와야 강제로 끈다. 정리 코드는 안 돈다.
-                if st.proc is not None:
-                    registry._kill_proc(st.proc)
-                elif st.adopted_pid:
-                    registry.kill(st.adopted_pid, st.adopted_ctime)
-                if sent[st.name]:
-                    st.detail = f"강제 종료 — 요청 후 {grace_s:g}초 안에 안 끝남"
-                    out["forced"].append(st.name)
-                else:
-                    st.detail = "강제 종료 — 종료 요청을 보내지 못함"
-                    out["unsignaled"].append(st.name)
-                self.say(f"  - {st.name} {st.detail}")
-            st.proc = None
-            st.adopted_pid, st.adopted_ctime = None, 0
-            if st.status in (RUNNING, RESTARTING):
-                st.status = STOPPED
+    def _finish(self, st: ModuleState) -> None:
+        st.proc = None
+        st.adopted_pid, st.adopted_ctime = None, 0
+        if st.status in (RUNNING, RESTARTING):
+            st.status = STOPPED
+
+    def _record_exit(self, st: ModuleState, out: Dict[str, List[str]]) -> None:
+        code = st.proc.returncode if st.proc is not None else None
+        st.last_code = code
+        if code is not None and (code & 0xFFFFFFFF) == STATUS_CONTROL_C_EXIT:
+            # 윈도 기본 처리로 끝났다. 한 줄이 없는 모듈이 이렇게 끝나는데,
+            # 한 줄은 있지만 KeyboardInterrupt 를 안 잡은 모듈도 코드가 같다.
+            # 그래서 "정리가 안 돌았다" 고 단정하지 않고 모른다고 적는다.
+            st.detail = "요청 후 종료 (기본 처리 — 정리 코드가 돌았는지 모름)"
+            out.setdefault("defaulted", []).append(st.name)
+        else:
+            st.detail = "요청 후 종료" + (f" (code {code})" if code is not None else "")
+        out["graceful"].append(st.name)
+        self._finish(st)
+
+    def _force(self, st: ModuleState, was_sent: bool, waited: float,
+               out: Dict[str, List[str]]) -> None:
+        # 여기까지 와야 강제로 끈다. 정리 코드는 안 돈다.
+        if st.proc is not None:
+            registry._kill_proc(st.proc)
+        elif st.adopted_pid:
+            registry.kill(st.adopted_pid, st.adopted_ctime)
+        if was_sent:
+            st.detail = f"강제 종료 — 요청 후 {waited:g}초 안에 안 끝남"
+            out["forced"].append(st.name)
+        else:
+            st.detail = "강제 종료 — 종료 요청을 보내지 못함"
+            out["unsignaled"].append(st.name)
+        self.say(f"  - {st.name} {st.detail}")
+        self._finish(st)

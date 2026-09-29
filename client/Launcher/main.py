@@ -45,7 +45,7 @@ import game_launcher                                          # noqa: E402
 import registry                                               # noqa: E402
 import ui                                                     # noqa: E402
 from modules import MODULES, REPO                              # noqa: E402
-from process_manager import MISSING, ProcessManager, SKIPPED, is_admin  # noqa: E402
+from process_manager import MISSING, RUNNING, ProcessManager, SKIPPED, is_admin  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLAYER_FILE = os.path.join(HERE, "player_id.txt")
@@ -313,7 +313,16 @@ def main(argv=None):
         ui.line("")
         ui.line("  중단합니다.")
     finally:
-        ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (최대 십여 초).")
+        # 이 안내 문구 때문에 정리가 막히면 안 된다. 여기서 예외가 나면 아래 stop_all 이
+        # 안 불려 모듈이 전부 고아로 남는다(9/30 에 실제로 그렇게 됐다).
+        try:
+            # 게임 관련 무리를 다 끈 뒤에 나머지를 끄므로, 최악은 두 무리 최댓값의 합이다.
+            running = [s for s in pm.states.values() if s.status == RUNNING]
+            longest = sum(max([s.module.stop_grace_s or 10.0 for s in running
+                               if s.module.needs_game == g] or [0.0]) for g in (True, False))
+            ui.line(f"  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (길면 {longest:.0f}초쯤).")
+        except Exception:
+            ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요.")
         ended = pm.stop_all()
         ui.render(pm.snapshot(), ctx)
         ui.line("")
