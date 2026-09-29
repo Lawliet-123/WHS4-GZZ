@@ -26,7 +26,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
-# 게임 설치 위치. 사람마다 다를 수 있어 없으면 런처가 직접 찾는다.
+# 게임 설치 위치의 **마지막 기본값**. 실제 탐색은 game_launcher.find_game_dir()
+# 이 한다 (환경변수 -> 떠 있는 프로세스 -> 스팀 라이브러리 -> 이 값).
+# 여기를 직접 쓰면 이 경로가 아닌 PC 에서 게임 폴더를 못 찾는다.
 GAME_DIR = (r"C:\Program Files (x86)\Steam\steamapps\common"
             r"\MECCHA CHAMELEON\Chameleon\Binaries\Win64")
 

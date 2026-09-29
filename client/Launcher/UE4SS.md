@@ -79,8 +79,20 @@ UE4SS 런타임, `UE4SS_Signatures`, `UEHelpers`, `GZZPaintObserver` 는 없다.
 Steam 설치 위치를 찾고, 못 찾으면 **사용자에게 한 번 물어서 저장**한다.
 `C:\Program Files (x86)\...` 를 모든 PC 에 고정하면 안 된다(은지·성민님 둘 다).
 
-> `modules.py` 의 `GAME_DIR` 이 지금 그 고정 경로다. 찾기에 실패했을 때만 쓰는 값이라
-> 당장 깨지진 않지만, 이 작업에서 같이 정리하면 좋다.
+> **해결됨 (9/29).** 처음에 여기 "`GAME_DIR` 은 찾기에 실패했을 때만 쓰는 값이라 당장
+> 깨지진 않는다" 고 적었는데 **틀렸다.** 코드는 그 고정 경로를 *먼저* 썼고, 경로를
+> 탐색하는 코드는 아예 없었다. 다른 PC 에서 바로 문제가 되는 값이었다.
+>
+> 지금은 `game_launcher.find_game_root()` / `find_game_dir()` 가 찾는다.
+> 환경변수 `GZZ_GAME_DIR` → 떠 있는 게임 프로세스 → 스팀 라이브러리
+> (레지스트리 + `libraryfolders.vdf` + `appmanifest_4704690.acf`) → `GAME_DIR` 순서다.
+> 찾은 값은 자식 모듈에 환경변수로 내려간다. **두 층을 따로 준다** — 층을 한 이름으로
+> 부르면 받는 쪽마다 다른 걸 가리킨다.
+>
+>     GZZ_GAME_ROOT   ...\MECCHA CHAMELEON                  filesystem 이 훑는 층
+>     GZZ_GAME_BIN    ...\Chameleon\Binaries\Win64          exe·UE4SS 가 있는 층
+>
+> 동효님이 `game_launcher.py` 를 다시 쓰시면 이 두 함수만 남겨 주시면 됩니다.
 
 게임 버전도 확인한다. **현재 테스트 기준은 4.0.2** 다. 다른 버전에서 모은 로그와 섞이면 안 된다.
 

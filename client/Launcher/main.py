@@ -136,6 +136,35 @@ def preflight(pm, only):
             ui.line(f"    - {s.name:<18} {s.detail}")
     if only:
         ui.line(f"  --only: {', '.join(only)}")
+    root = publish_game_dir()
+    if root:
+        ui.line(f"  게임 폴더: {root}")
+    else:
+        ui.line("  ! 게임 폴더를 못 찾았습니다. 스팀으로 띄우고, 게임이 뜨면 다시 봅니다.")
+        ui.line("    직접 지정하려면 GZZ_GAME_DIR 환경변수를 쓰세요.")
+
+
+def publish_game_dir(refresh=False):
+    """찾은 게임 폴더를 자식 모듈들에게 환경변수로 알려준다.
+
+    탐지기마다 게임 폴더를 따로 추측하고 있다 — filesystem 은 하드코딩 3줄,
+    런처는 또 다른 한 줄이었다. 서로 다른 값을 쓰면 한쪽은 훑고 한쪽은 못 훑는다.
+    런처가 이미 알고 있으니 알려주고, 자식은 환경을 물려받는다.
+
+    게임이 뜬 뒤에 `refresh=True` 로 다시 부르면 프로세스에서 얻은 확실한
+    경로로 갱신된다. 스팀 라이브러리 추정보다 그쪽이 정확하다.
+
+    두 층을 다 내보낸다. 이름을 하나로 쓰면 받는 쪽마다 다른 층을 뜻하게 된다.
+        GZZ_GAME_ROOT  ...\\MECCHA CHAMELEON                 (filesystem 이 훑는 층)
+        GZZ_GAME_BIN   ...\\Chameleon\\Binaries\\Win64        (exe·UE4SS 가 있는 층)
+    """
+    if refresh:
+        game_launcher._cache.clear()
+    root = game_launcher.find_game_root()
+    if root:
+        os.environ["GZZ_GAME_ROOT"] = root
+        os.environ["GZZ_GAME_BIN"] = game_launcher.find_game_dir()
+    return root
 
 
 def main(argv=None):
@@ -226,6 +255,11 @@ def main(argv=None):
             ui.line("  게임이 뜨지 않아 종료합니다. 게임을 켜고 다시 실행해 주세요.")
             return 2
         ctx["game_pid"] = pid
+        # 게임이 떴으니 이제 추정이 아니라 프로세스에서 경로를 얻을 수 있다.
+        # 게임 관련 모듈을 띄우기 **전에** 갱신해야 그 값을 물려받는다.
+        found = publish_game_dir(refresh=True)
+        if found:
+            ui.line(f"      게임 폴더: {found}")
 
         ui.line("  [4/4] 게임 관련 모듈 시작")
         pm.start_group(needs_game=True)

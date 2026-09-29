@@ -58,6 +58,11 @@ _PROXY_NAMES = {
 def find_game_dir(explicit=None):
     if explicit and os.path.isdir(explicit):
         return explicit
+    # 런처가 찾아서 알려준 값. 아래 하드코딩 목록보다 먼저 본다 — 런처는
+    # 스팀 라이브러리와 떠 있는 프로세스까지 보고 정한다(game_launcher.py).
+    env = (os.environ.get("GZZ_GAME_ROOT") or "").strip()
+    if env and os.path.isdir(env):
+        return env
     for p in _STEAM_HINTS:
         if os.path.isdir(p):
             return p
