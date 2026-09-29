@@ -213,18 +213,18 @@ MODULES: List[Module] = [
         owner="Noclip (송희)",
         argv=[PY, "client/detectors/noclip/main.py",
               "--session-id", "{session}", "--player-id", "{player}",
-              # 팀 UE4SS 배치(ue4ss\Mods\<모드>\) 기준. NoclipLogger Lua 는 지금
-              # "Mods\NoclipLogger\noclip_log.csv" 를 게임 작업 폴더(Win64, 9/30 실측)
-              # 기준으로 열어서 이 배치에선 폴더가 없어 CSV 를 못 만든다. Lua 가 자기
-              # 스크립트 위치 기준으로 쓰게 바뀌면(성민님 PaintObserver 방식) 이 경로와 맞는다.
+              # 송희님 #46: 시작 전에 있던 CSV 행은 건너뛰고(이전 게임 기록 재방출 방지),
+              # 시간은 런처 세션 기준으로 맞춘다.
+              "--from-end", "--t0", "{t0}",
+              # NoclipLogger Lua 가 #46 부터 스크립트 위치 기준으로
+              # <game_bin>\ue4ss\Mods\NoclipLogger\noclip_log.csv 에 써서 이 경로와 같다.
               "--log-file", r"{game_bin}\ue4ss\Mods\NoclipLogger\noclip_log.csv",
               # 기본값이 실행 위치 기준이라 그대로면 레포 루트에 생긴다. 세션마다 따로 둔다.
               "--event-file", "client/Launcher/logs/noclip/{session}/events.jsonl",
               "--result-file", "client/Launcher/logs/noclip/{session}/detection_results.csv"],
         mode=CONTINUOUS,
-        # 시작할 때 events.jsonl 을 비우고 CSV 를 첫 줄부터 다시 읽는다. 되살리면 로컬
-        # 기록이 지워지고 같은 결과가 새 event_id 로 또 나간다. 송희님이 이어 읽기를
-        # 넣으면 True 로 되돌린다.
+        # --from-end 로 재방출은 막혔지만, 시작할 때 events.jsonl 을 여전히 비운다.
+        # 되살리면 그 세션 로컬 기록이 지워진다. 이어쓰기로 바뀌면 True 로 되돌린다.
         restart=False,
         session_log_dir="client/Launcher/logs/noclip",
         note="UE4SS NoclipLogger CSV 를 읽어 점수로 판정",
