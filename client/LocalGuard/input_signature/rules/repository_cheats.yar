@@ -1,7 +1,10 @@
-// Repository-scoped presence signatures for WHS4-GZZ.
-// Source revision: a345530fe50a3f63499029cb17c7887626b288ba
-// A match is evidence that known code/text is present, not that a feature is active.
+// WHS4-GZZ 저장소의 알려진 핵 빌드에 맞춘 '코드 존재' 시그니처다.
+// 기준 소스 revision: a345530fe50a3f63499029cb17c7887626b288ba
+// 규칙 일치는 해당 문자열 조합이 파일/메모리에 있다는 단서일 뿐 기능 ON,
+// 플레이어 부정행위, 차단 근거를 단독으로 확정하지 않는다.
+// 여러 문자열을 함께 요구해 흔한 API 이름 하나만으로 매치되지 않게 한다.
 
+// 게임 안에 로드되는 첫 Auto Paint bridge의 진단 문구 조합.
 rule MECCHA_Repo_AutoPaint_Bridge
 {
     meta:
@@ -19,9 +22,10 @@ rule MECCHA_Repo_AutoPaint_Bridge
     condition:
         all of them
 }
-// Build-specific companion rule for WHS4-GZZ-auto-paint-module-PR-ready.zip.
-// These strings were verified in Scripts/native/runtime-bridge.dll from the
-// archive with SHA-256 8d4dbb71cbf676de21e0a3de1fe5fc9b77aab150fe23c5e6efbe792fafd1ad7b.
+// PR-ready Auto Paint 묶음의 특정 DLL 빌드를 위한 보조 규칙.
+// 아카이브 SHA-256 8d4dbb71cbf676de21e0a3de1fe5fc9b77aab150fe23c5e6efbe792fafd1ad7b
+// 안의 Scripts/native/runtime-bridge.dll에서 문자열을 확인했다.
+// ascii와 UTF-16LE(wide)로 저장된 문자열을 모두 요구한다.
 rule MECCHA_PRReady_AutoPaint_Bridge
 {
     meta:
@@ -43,6 +47,8 @@ rule MECCHA_PRReady_AutoPaint_Bridge
         all of them
 }
 
+// 게임 외부의 직접 인젝터 실행 파일/프로세스를 검사할 때 쓰는 규칙.
+// 게임 프로세스만 스캔한다면 이 규칙이 안 잡혀도 인젝터 부재를 뜻하지 않는다.
 rule MECCHA_Repo_AutoPaint_Direct_Injector
 {
     meta:
@@ -62,6 +68,7 @@ rule MECCHA_Repo_AutoPaint_Direct_Injector
         all of them
 }
 
+// Auto Paint v2/GodMode에서 사용한 간단한 LoadLibrary 인젝터의 문구 조합.
 rule MECCHA_Repo_Simple_LoadLibrary_Injector
 {
     meta:
@@ -80,6 +87,8 @@ rule MECCHA_Repo_Simple_LoadLibrary_Injector
         all of them
 }
 
+// 외부 Python 컨트롤러에 남는 고유 앱 이름과 bridge 경로를 함께 확인한다.
+// Python 후보 자동 검사를 켠 경우에도 다른 언어·이름의 프로세스는 검사 범위 밖이다.
 rule MECCHA_Repo_AutoPaint_Controller
 {
     meta:
@@ -102,6 +111,7 @@ rule MECCHA_Repo_AutoPaint_Controller
         (($app_v1 and $direct_bridge) or ($runtime_v2 and $instance_v2))
 }
 
+// 게임 프로세스에 로드되는 GodMode 네이티브 모듈의 고유 진단 문자열.
 rule MECCHA_Repo_GodMode_Host_DLL
 {
     meta:
@@ -121,6 +131,7 @@ rule MECCHA_Repo_GodMode_Host_DLL
         all of them
 }
 
+// UE4SS Lua 스크립트 형태의 GodMode가 메모리/파일에 남긴 메시지 조합.
 rule MECCHA_Repo_GodMode_UE4SS_Lua
 {
     meta:
@@ -140,6 +151,7 @@ rule MECCHA_Repo_GodMode_UE4SS_Lua
         all of them
 }
 
+// NoClip Lua 스크립트의 로드 알림과 제어 명령을 함께 요구한다.
 rule MECCHA_Repo_NoClip_UE4SS_Lua
 {
     meta:
@@ -159,6 +171,7 @@ rule MECCHA_Repo_NoClip_UE4SS_Lua
         all of them
 }
 
+// 휘파람 변조 DLL의 로그 식별자·경로·대체 에셋 조합.
 rule MECCHA_Repo_Whistle_Spoofing_DLL
 {
     meta:
@@ -177,6 +190,8 @@ rule MECCHA_Repo_Whistle_Spoofing_DLL
         all of them
 }
 
+// 바이너리 샘플이 없는 Hide Anywhere는 소스/디버그 흔적에만 적용 가능하다.
+// 실게임 메모리에서 이 규칙이 안 잡힌다고 기능 부재를 주장하면 안 된다.
 rule MECCHA_Repo_Hide_Anywhere_Source
 {
     meta:
@@ -196,6 +211,7 @@ rule MECCHA_Repo_Hide_Anywhere_Source
         all of them
 }
 
+// 게임 메모리 밖에서 실행하는 Python 에임봇의 UI·추적 스키마 문구.
 rule MECCHA_Repo_Aimbot_Python
 {
     meta:
@@ -215,6 +231,7 @@ rule MECCHA_Repo_Aimbot_Python
         all of them
 }
 
+// 외부 Python ESP의 화면 문구·워커 이름을 함께 확인하는 규칙.
 rule MECCHA_Repo_ESP_Python
 {
     meta:

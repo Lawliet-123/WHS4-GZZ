@@ -1,4 +1,8 @@
-"""Actual YARA against a harmless child, NOT real-game normal/cheat capture."""
+"""무해한 자식 프로세스로 YARA ON/OFF 기록을 재현하는 테스트 도구.
+
+실제 게임이나 핵을 실행하지 않는다. 메모리에 넣는 고정 marker와 수동 표식
+시각을 비교해 검사기·세션 출력 형식을 검증할 뿐 실전 탐지율을 뜻하지 않는다.
+"""
 import argparse
 import json
 from pathlib import Path
@@ -18,7 +22,9 @@ MARKER = b'LOCALGUARD_TEST_ONLY_7837A742_7C05_46AB_9E2B'
 
 
 class ControlledTarget:
+    """표식 버퍼를 가진 자식 프로세스를 띄우고 명령·응답으로 제어한다."""
     def __enter__(self):
+        """자식이 보고한 실제 PID를 열어 fixture 준비 완료를 확인한다."""
         self.child = subprocess.Popen([sys.executable, '-u', str(ROOT/'tests/fixtures/memory_target.py')],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       text=True, encoding='utf-8',
@@ -39,10 +45,12 @@ class ControlledTarget:
             self.__exit__(None,None,None); raise
 
     def receive(self):
+        """자식의 JSON 응답을 제한 시간 안에 받아 무한 대기를 피한다."""
         try: return json.loads(self.messages.get(timeout=5))
         except queue.Empty: raise RuntimeError('fixture response timeout') from None
 
     def command(self, action, marker=MARKER):
+        """ON이면 marker 바이트를 쓰고 OFF면 지우도록 자식에게 요청한다."""
         item = {'action':action}
         if action == 'on':
             if len(marker) > 4096: raise ValueError('fixture marker too large')
@@ -52,6 +60,7 @@ class ControlledTarget:
         if reply.get('ack') != action: raise RuntimeError('unexpected fixture response')
 
     def __exit__(self, *args):
+        """우리가 만든 자식만 종료하고 읽기 스레드·프로세스 핸들을 정리한다."""
         if hasattr(self,'process'): self.process.close()
         if self.child.poll() is None:
             self.child.stdin.write('{"action":"stop"}\n'); self.child.stdin.flush()
@@ -64,6 +73,7 @@ class ControlledTarget:
 
 
 def generate(root):
+    """정상 marker 없음/양성 marker 있음 세션을 만들고 출력 형식을 검증한다."""
     rules, info = load_rules([ROOT/'tests/fixtures/marker.yar'])
     results = []
     for positive in (False,True):
@@ -85,6 +95,8 @@ def generate(root):
                         json_line(raw,{'type':'fixture_marker','timestamp_ms':stamp,'action':action})
                     event = scan_once(rules,target.process,session,raw,timeout=3)
                     if event is None: raise RuntimeError('fixture scan failed; see raw log')
+                    # marker를 켠 3~6번째 평가만 양성이어야 한다. OFF 이후
+                    # 재검사가 0점으로 돌아오는지도 확인한다.
                     expected = 3 if positive and 3 <= index < 7 else 0
                     if event['raw_score'] != expected:
                         raise RuntimeError(f'fixture unexpected score: {event["raw_score"]} != {expected}')

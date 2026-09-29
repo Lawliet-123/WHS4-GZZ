@@ -1,16 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LocalGuard common ReplayAnalyzer Event",
+  "description": "검사 결과 한 건의 공통 7필드 형식. 탐지 점수는 원시 신호이며 하트비트나 최종 밴 판정이 아니다.",
   "type": "object",
   "additionalProperties": false,
   "required": ["session_id", "player_id", "module", "timestamp_ms", "evidence", "reasons", "raw_score"],
   "properties": {
-    "session_id": {"type": "string", "minLength": 1},
-    "player_id": {"type": "string", "minLength": 1},
-    "module": {"type": "string", "minLength": 1},
-    "timestamp_ms": {"type": "integer", "minimum": 0},
-    "evidence": {"type": "object"},
-    "reasons": {"type": "array", "items": {"type": "string"}},
-    "raw_score": {"type": "number", "minimum": 0}
+    "session_id": {"type": "string", "minLength": 1, "description": "런처와 탐지기가 공유하는 세션 식별자"},
+    "player_id": {"type": "string", "minLength": 1, "description": "세션의 대상 식별자; 이 값만으로 인증된 신원은 아니다"},
+    "module": {"type": "string", "minLength": 1, "description": "결과를 만든 검사 모듈 이름"},
+    "timestamp_ms": {"type": "integer", "minimum": 0, "description": "세션 시작 이후의 경과 밀리초"},
+    "evidence": {"type": "object", "description": "원시 메모리 바이트가 아닌 검사 범위·일치 규칙 등의 메타데이터"},
+    "reasons": {"type": "array", "items": {"type": "string"}, "description": "탐지 근거 설명; 일치가 없으면 빈 배열 가능"},
+    "raw_score": {"type": "number", "minimum": 0, "description": "검사기가 출력한 비음수 원시 점수; 서버의 최종 판정 점수가 아님"}
   }
 }

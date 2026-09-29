@@ -1,3 +1,8 @@
+"""실행 중 EXE의 정확한 SHA-256 대조와 부분 검사 처리 테스트.
+
+대부분 임시 파일/가짜 프로세스 지문으로 검증한다. 네이티브 검사는 현재
+Windows에서 접근 가능한 자기 프로세스와 통제된 자식만 사용한다.
+"""
 import hashlib
 import io
 import json
@@ -24,6 +29,7 @@ from yara_scanner import main as yara_main
 
 
 class Identity:
+    """PID 재사용·이미지 경로를 제어하기 위한 가짜 ProcessIdentity."""
     def __init__(self, pid, path, *, fail_check=False):
         self.pid = pid
         self.initial = {'image_path': str(path), 'creation_time_100ns': 123}
@@ -35,13 +41,16 @@ class Identity:
 
 
 class HeartbeatRecorder:
+    """해시 검사기의 상태 보고를 네트워크 없이 수집한다."""
     def __init__(self): self.calls = []
     def update_component(self, name, status, **kwargs):
         self.calls.append((name, status, kwargs))
 
 
 class Tests(unittest.TestCase):
+    """일치·불일치·접근 실패가 서로 다른 결과를 내는지 확인한다."""
     def setUp(self):
+        """매 테스트마다 독립적인 가짜 EXE와 정확한 카탈로그를 만든다."""
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.image = self.root / 'renamed_tool.exe'
@@ -59,6 +68,7 @@ class Tests(unittest.TestCase):
     def tearDown(self): self.temp.cleanup()
 
     def scan(self, *, factory=None):
+        """게임과 같은 세션의 단일 PID를 모의해 해시 검사를 수행한다."""
         return scan_running_executable_hashes(
             self.catalogue, game_session_id=1,
             process_rows=[{'pid': 123, 'name': 'anything.exe', 'parent_pid': 1}],
@@ -66,12 +76,14 @@ class Tests(unittest.TestCase):
             identity_factory=factory or (lambda pid: Identity(pid, self.image)))
 
     def test_exact_hash_matches_renamed_running_image(self):
+        """파일명 변경과 무관하게 동일 바이트의 알려진 빌드가 일치한다."""
         result = self.scan()
         self.assertTrue(result['complete'])
         self.assertEqual(result['matches'][0]['catalogue_ids'], ['test_exe'])
         self.assertEqual(result['matches'][0]['sha256'], self.digest)
 
     def test_changed_content_same_size_does_not_match(self):
+        """크기가 같아도 내용이 달라지면 SHA-256 불일치로 처리한다."""
         self.image.write_bytes(b'X' * self.image.stat().st_size)
         result = self.scan()
         self.assertTrue(result['complete'])
@@ -79,6 +91,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(result['hashed_process_count'], 1)
 
     def test_unreadable_or_reused_process_is_incomplete_not_clean(self):
+        """읽기 실패·PID 재사용은 complete=False이며 정상 판정이 아니다."""
         denied = self.scan(factory=lambda pid: (_ for _ in ()).throw(PermissionError()))
         self.assertFalse(denied['complete'])
         self.assertEqual(denied['matches'], [])
@@ -87,6 +100,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(reused['matches'], [])
 
     def test_nonmatching_size_avoids_file_hash(self):
+        """카탈로그에 없는 크기의 이미지는 불필요한 해시 계산을 건너뛴다."""
         self.image.write_bytes(b'tiny')
         with patch('executable_hashes.hash_stable_image') as hash_file:
             result = self.scan()
@@ -95,12 +109,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(result['size_candidate_count'], 0)
 
     def test_invalid_catalogue_fails_closed(self):
+        """오염된 카탈로그를 빈 규칙 목록처럼 취급하지 않고 거부한다."""
         data = json.loads(self.catalogue_path.read_text(encoding='utf-8'))
         data['entries'][0]['sha256'] = 'not-a-hash'
         self.catalogue_path.write_text(json.dumps(data), encoding='utf-8')
         with self.assertRaises(ValueError): load_blacklist(self.catalogue_path)
 
     def test_hash_monitor_emits_positive_and_redacts_path_from_common_event(self):
+        """양성은 Event로 내보내되 개인 PC 경로는 공통 Event에서 제외한다."""
         session = ReplaySession(self.root, 'hash_positive',
                                 data_origin='controlled_fixture',
                                 modules=['localguard_executable_hash'])
@@ -124,6 +140,7 @@ class Tests(unittest.TestCase):
         self.assertTrue(validate(session.path)['valid_format'])
 
     def test_hash_monitor_partial_no_hit_emits_no_zero(self):
+        """부분 검사에 일치가 없으면 정상 0점 Event를 내보내지 않는다."""
         session = ReplaySession(self.root, 'hash_partial',
                                 data_origin='controlled_fixture',
                                 modules=['localguard_executable_hash'])
@@ -145,6 +162,7 @@ class Tests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows native-process test')
     def test_live_non_python_exe_hash_match(self):
+        """실제 통제된 네이티브 EXE도 Python 외부 후보로 해시 대조한다."""
         compiler = shutil.which('gcc.exe')
         if not compiler:
             self.skipTest('C compiler unavailable')
@@ -186,11 +204,13 @@ class Tests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows process-session test')
     def test_native_process_session_snapshot_includes_current_process(self):
+        """Windows 세션 스냅샷이 현재 PID를 포함하는지 확인한다."""
         self.assertEqual(process_session_snapshot()[os.getpid()],
                          process_session_id(os.getpid()))
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows scanner integration test')
     def test_yara_runner_starts_hash_worker_and_heartbeat(self):
+        """YARA 실행기가 해시 워커와 구성 요소 하트비트를 함께 시작한다."""
         with redirect_stdout(io.StringIO()):
             code = yara_main([
                 '--pid', str(os.getpid()), '--scan-mode', 'autopaint-bridge',
