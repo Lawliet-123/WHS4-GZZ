@@ -2,12 +2,26 @@ local UEHelpers = require("UEHelpers")
 local GetKismetSystemLibrary = UEHelpers.GetKismetSystemLibrary
 local GetGameplayStatics = UEHelpers.GetGameplayStatics
 
--- 팀원 PC마다 Steam 설치 위치가 다르면 이 경로만 바꾸면 됨
-local LOG_PATH = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\MECCHA CHAMELEON\\Chameleon\\Binaries\\Win64\\ue4ss\\Mods\\DamageLogger\\meccha_aim_telemetry.jsonl"
+-- Steam 설치 드라이브를 가정하지 않는다. 현재 실행 중인 이 스크립트의 위치
+-- (...\\ue4ss\\Mods\\DamageLogger\\Scripts\\main.lua)에서 DamageLogger 모드 폴더를
+-- 계산해 JSONL을 기록한다.
+local function ResolveLogPath()
+    local source = debug.getinfo(1, "S").source
+    if type(source) == "string" and source:sub(1, 1) == "@" then
+        local script_path = source:sub(2):gsub("/", "\\")
+        local mod_dir = script_path:match("^(.*)\\Scripts\\[^\\]+$")
+        if mod_dir and mod_dir ~= "" then
+            return mod_dir .. "\\meccha_aim_telemetry.jsonl"
+        end
+    end
 
--- aimbot_detector.py의 MecchaAimTelemetrySensor가 읽는 파일명과 맞춰둠.
--- (Python 쪽 LOG_PATH = Path("logs/meccha_aim_telemetry.jsonl")와 실제로는
---  두 프로그램이 같은 파일을 봐야 하니, 나중에 팀 공유 시 경로를 통일해야 함)
+    -- UE4SS가 스크립트 원본 경로를 제공하지 않는 특수 환경의 최후 대안이다.
+    -- 이 경우에도 Steam 절대 경로가 아니라 현재 작업 디렉터리에 기록한다.
+    print("[DamageLogger] WARNING: script path unavailable; using relative telemetry path")
+    return "meccha_aim_telemetry.jsonl"
+end
+
+local LOG_PATH = ResolveLogPath()
 
 local SESSION_ID = "session_" .. os.date("%Y%m%d_%H%M%S")
 -- os.clock()은 실제 경과시간이 아니라 프로세스 CPU 시간이므로 명중 간격 측정에
