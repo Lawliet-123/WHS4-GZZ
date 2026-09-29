@@ -51,3 +51,31 @@ python -m unittest discover -q
 
 Runtime telemetry, backups, and captured test sessions are intentionally
 ignored by Git because they may be large or machine-specific.
+
+## Shared telemetry status
+
+`main.py` keeps printing the detector's existing seven-field result and also
+passes that result to `shared.logger.send_detection()`. The shared client is
+configured once at startup from `GZZ_TELEMETRY_URL` and
+`GZZ_TELEMETRY_TOKEN`; shutdown calls `flush_client()` and
+`shutdown_client()`. The UE4SS raw telemetry JSONL and detector scoring are
+not modified by this forwarding step.
+
+This integration is **not yet confirmed to reach the central server**:
+
+- The current detector uses the UE actor path from `GetFullName()` as the
+  result's top-level `player_id`. The shared schema permits only a short safe
+  identifier, so `send_detection()` rejects this result locally before it is
+  put into the outbox. The team has not yet agreed on the stable player ID
+  mapping. Do not mistake this local validation warning for a server response.
+- The launcher currently does not pass a chosen `player_id` to the aimbot
+  detector. Once the team agrees on a stable ID, wire it through the launcher
+  and use it in the outbound event, preserving the original UE actor path under
+  `evidence.source_attacker_id` if it is needed for debugging.
+- A `queued` receipt only means the shared client accepted the event into its
+  local outbox; it is not proof that the receiver stored it. The `/api/detection`
+  end-to-end delivery and durable-storage response still need testing after the
+  server endpoint is integrated and credentials are configured.
+
+For the shared-client API and environment settings, see
+[`shared/README.md`](../../../shared/README.md).
