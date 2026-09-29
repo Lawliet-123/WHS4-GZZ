@@ -1,7 +1,8 @@
 # LocalGuard external_access
 
 외부 프로세스 접근 분석과 게임 내부 모듈 무결성 탐지기가 함께 쓰는 공통 기반이다.
-현재는 중앙 서버 전송 없이 탐지 결과를 로컬 JSONL에만 기록한다.
+외부 프로세스 접근 탐지 결과는 로컬 JSONL에 기록하고, shared client가 설정돼 있으면
+같은 7필드 결과를 중앙 전송 대기열에도 넣는다.
 
 ```text
 external_access/
@@ -56,8 +57,14 @@ py -3 -m client.LocalGuard.external_access.process_access.runner --game-exe Peng
 ```
 
 반복 관찰은 `--once`를 빼고 실행한다. 위험 권한이 발견됐을 때만 기본 경로
-`logs/external_access.jsonl`에 결과 한 줄이 기록된다. 이 모듈은 차단·종료·전송을
-하지 않는다.
+`logs/external_access.jsonl`에 결과 한 줄이 기록된다. shared client는 `GZZ_TELEMETRY_URL`과
+`GZZ_TELEMETRY_TOKEN` 환경 변수가 유효하면 같은 결과를 별도 outbox에 넣어 전송한다.
+`queued`는 로컬 outbox 저장을 뜻하며 서버 저장 성공을 뜻하지 않는다. 중앙 수신 성공은
+receiver가 준비된 뒤 `/api/detection` 종단 테스트로 확인해야 한다.
+
+기존 7개 최상위 필드와 로컬 JSONL 기록은 유지한다. 결과를 JSONL에 기록한 다음
+`send_detection()`을 호출하며, 모듈 종료 시 `flush_client()`와 `shutdown_client()`를
+호출한다. 서버 전송은 차단·종료 결정을 하지 않는다.
 
 초기 점수 정책은 `PROCESS_VM_WRITE=2`, `PROCESS_VM_OPERATION=2`,
 `PROCESS_CREATE_THREAD=3`이다. 미서명 또는 조회 불가 서명은 위험 handle과 결합할

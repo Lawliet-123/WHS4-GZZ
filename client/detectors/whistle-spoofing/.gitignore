@@ -25,3 +25,8 @@ logs/detection/*
 
 __pycache__/
 *.pyc
+
+# 중앙 전송 대기열 — 러너마다 따로 생긴다. 보낼 결과를 담고 있을 뿐이라 커밋하지 않는다.
+logs/outbox/
+# 반복 관측 기준점 — 다음 실행이 이어 읽으려고 쓰는 런타임 파일이다.
+logs/detection/*.watch.json

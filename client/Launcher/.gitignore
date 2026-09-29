@@ -2,3 +2,6 @@
 logs/
 __pycache__/
 *.pyc
+
+# 이 PC 의 player_id. 사람마다 다르고 커밋하면 안 된다.
+player_id.txt

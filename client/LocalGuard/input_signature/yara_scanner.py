@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 import traceback
@@ -358,6 +359,9 @@ def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
 
 
 def main(argv=None):
+    # The launcher stops us with Ctrl+Break; as KeyboardInterrupt the finally below closes the
+    # manifest instead of leaving it 'running'. client/Launcher/README.md "끌 때 정리 코드가 돌게 하려면 — 한 줄"
+    if hasattr(signal, 'SIGBREAK'): signal.signal(signal.SIGBREAK, signal.default_int_handler)
     parser = argparse.ArgumentParser(description='LocalGuard: read-only YARA process-memory scan / ReplayAnalyzer export')
     parser.add_argument('--pid', type=int, help='Explicit local process PID; default selects exactly one MECCHA process')
     parser.add_argument('--rules', type=Path, action='append', help='Trusted .yar file; repeat to add files')

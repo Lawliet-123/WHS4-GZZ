@@ -1,10 +1,28 @@
 """외부 process handle 수집·판정·로컬 JSONL 기록을 연결하는 실행기."""
 
 import argparse
+import signal
+import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+
+# The shared package is versioned under shared/GZZ-Shared-0.1.0 rather than
+# installed as a top-level dependency. Put that package root first so
+# ``import shared`` resolves to the team's shared client.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+VERSIONED_SHARED_ROOT = REPOSITORY_ROOT / "shared" / "GZZ-Shared-0.1.0"
+SHARED_PACKAGE_ROOT = (
+    VERSIONED_SHARED_ROOT if (VERSIONED_SHARED_ROOT / "shared").is_dir()
+    else REPOSITORY_ROOT
+)
+if str(SHARED_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SHARED_PACKAGE_ROOT))
+
+from shared.config import ClientConfig
+from shared.errors import SharedError
+from shared.logger import configure_client, flush_client, send_detection, shutdown_client
 
 from ..common import (
     ArtifactCache,
@@ -18,6 +36,43 @@ from .handle_sensor import ExternalHandleSensor, HandleSensorUnavailable
 from .models import ExternalHandleObservation, ScanContext
 
 Writer = Callable[[Path, Dict[str, Any]], None]
+
+
+def _configure_shared_client() -> bool:
+    """Configure the shared sender once; local detection can still run offline."""
+    try:
+        configure_client(ClientConfig.from_env())
+    except SharedError as error:
+        # Do not print config values: they may contain the bearer token.
+        print(f"[shared] client unavailable: {type(error).__name__}")
+        return False
+    return True
+
+
+def _write_local_and_send(path: Path, result: Dict[str, Any]) -> None:
+    """Keep the existing JSONL record, then enqueue the same 7-field result."""
+    append_detection_jsonl(path, result)
+    try:
+        receipt = send_detection(result)
+    except SharedError as error:
+        print(f"[shared] detection not queued: {type(error).__name__}")
+        return
+    # A queued receipt means durable local outbox acceptance, not server delivery.
+    print(f"[shared] detection {receipt.status}: {receipt.event_id}")
+
+
+def _finish_shared_client() -> None:
+    """Give queued detections a bounded chance to send, then close the worker."""
+    try:
+        delivered = flush_client(timeout=3)
+        print(f"[shared] flush delivered={delivered}")
+    except SharedError as error:
+        print(f"[shared] flush failed: {type(error).__name__}")
+    try:
+        stopped = shutdown_client(timeout=5)
+        print(f"[shared] shutdown complete={stopped}")
+    except SharedError as error:
+        print(f"[shared] shutdown failed: {type(error).__name__}")
 
 
 @dataclass(frozen=True)
@@ -79,12 +134,7 @@ class ProcessAccessRunner:
         except HandleSensorUnavailable as error:
             return ScanReport(True, 0, 0, 0, _elapsed_ms(scan_started, self._clock()), str(error))
 
-        # 런처가 준 t0가 있으면 다른 모듈과 공통인 세션 경과시간을 쓴다.
-        # 직접 실행/기존 테스트는 이전처럼 이 runner 시작 시각을 기준으로 둔다.
-        if self._session_t0 is None:
-            timestamp_ms = _elapsed_ms(self._started_at, self._clock())
-        else:
-            timestamp_ms = _elapsed_ms(self._session_t0, self._wall_clock())
+        timestamp_ms = self._timestamp_ms()
         context = ScanContext(self._session_id, self._player_id, timestamp_ms)
         emitted = 0
         allowed = 0
@@ -108,6 +158,12 @@ class ProcessAccessRunner:
             emitted_detections=emitted,
             duration_ms=_elapsed_ms(scan_started, self._clock()),
         )
+
+    def _timestamp_ms(self) -> int:
+        """런처의 세션 시작 epoch가 있으면 모든 모듈과 같은 시간축을 쓴다."""
+        if self._session_t0 is not None:
+            return max(0, round((self._wall_clock() - self._session_t0) * 1000))
+        return _elapsed_ms(self._started_at, self._clock())
 
     def _enrich_artifact(self, observation: ExternalHandleObservation) -> ExternalHandleObservation:
         if observation.source_path is None:
@@ -140,11 +196,19 @@ def _elapsed_ms(started_at: float, now: float) -> int:
 
 
 def main() -> None:
+    # 런처는 끌 때 Ctrl+Break를 보낸다. KeyboardInterrupt로 바꿔야 아래 finally(전송 flush)가 돈다.
+    # (client/Launcher/README.md "끌 때 정리 코드가 돌게 하려면 — 한 줄")
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     parser = argparse.ArgumentParser(description="LocalGuard 외부 process handle 관찰기")
     parser.add_argument("--game-exe", required=True, help="예: PenguinHotel-Win64-Shipping.exe")
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--player-id", required=True)
-    parser.add_argument("--t0", type=float, help="런처 세션 시작 Unix epoch(초)")
+    parser.add_argument(
+        "--t0",
+        type=float,
+        help="런처 세션 시작 Unix epoch(초). 지정하면 timestamp_ms를 공통 세션 기준으로 맞춘다.",
+    )
     parser.add_argument("--output", type=Path, default=Path("logs/external_access.jsonl"))
     parser.add_argument("--interval-ms", type=int, default=3000, help="반복 scan 주기 (기본 3000ms)")
     parser.add_argument(
@@ -159,26 +223,35 @@ def main() -> None:
     if args.interval_ms <= 0:
         raise SystemExit("--interval-ms는 0보다 커야 함")
 
-    runner = ProcessAccessRunner(
-        game_executable_name=args.game_exe,
-        session_id=args.session_id,
-        player_id=args.player_id,
-        output_path=args.output,
-        allowlist=ProcessAllowlist.from_json(args.allowlist),
-        session_t0=args.t0,
-    )
-    while True:
-        started_at = time.monotonic()
-        report = runner.scan_once()
-        print(
-            f"game_found={report.game_found} observed={report.observed_processes} "
-            f"allowed={report.allowed_processes} "
-            f"emitted={report.emitted_detections} duration_ms={report.duration_ms}"
-            + (f" error={report.error}" if report.error else "")
+    shared_ready = _configure_shared_client()
+    try:
+        runner = ProcessAccessRunner(
+            game_executable_name=args.game_exe,
+            session_id=args.session_id,
+            player_id=args.player_id,
+            output_path=args.output,
+            allowlist=ProcessAllowlist.from_json(args.allowlist),
+            writer=_write_local_and_send if shared_ready else append_detection_jsonl,
+            session_t0=args.t0,
         )
-        if args.once:
-            return
-        time.sleep(max(0, args.interval_ms / 1000 - (time.monotonic() - started_at)))
+        while True:
+            started_at = time.monotonic()
+            report = runner.scan_once()
+            print(
+                f"game_found={report.game_found} observed={report.observed_processes} "
+                f"allowed={report.allowed_processes} "
+                f"emitted={report.emitted_detections} duration_ms={report.duration_ms}"
+                + (f" error={report.error}" if report.error else "")
+            )
+            if args.once:
+                return
+            time.sleep(max(0, args.interval_ms / 1000 - (time.monotonic() - started_at)))
+    except KeyboardInterrupt:
+        # 종료 요청은 정상 종료(0)로 끝낸다. 흘려보내면 0xC000013A라 런처가 "정리됐는지 모름"으로 본다.
+        pass
+    finally:
+        if shared_ready:
+            _finish_shared_client()
 
 
 if __name__ == "__main__":
