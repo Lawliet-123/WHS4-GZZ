@@ -25,6 +25,36 @@ class MecchaAimTelemetrySensor(AimTelemetrySensor):
         self._offset = 0
         self._first_line = None
 
+    def skip_existing(self) -> int:
+        """지금 파일에 있는 내용은 건너뛰고, 이후에 붙는 줄만 읽게 한다. 건너뛴 바이트 수.
+
+        런처 아래에서 쓴다. 이 파일은 모드가 로드될 때만 비워지므로 이전 게임의
+        기록이 남아 있을 수 있다. 처음부터 읽으면 그 기록이 **지금 런처 세션과
+        이 PC 의 id 로** 나가고, 재시작할 때마다 같은 결과를 새 event_id 로 또 보낸다.
+
+        첫 줄은 기억해 둔다. 그래야 모드가 다시 로드돼 파일이 비워지면 read_events 의
+        '첫 줄이 바뀌면 처음부터' 규칙이 그대로 작동해 새 게임 기록을 놓치지 않는다.
+        아직 다 안 쓰인 마지막 줄은 건너뛰지 않는다(쓰이는 중인 지금 기록이다).
+        """
+        if not self.jsonl_path.exists():
+            return 0
+        with self.jsonl_path.open("rb") as f:
+            first_line = f.readline()
+            # 마지막 완성된 줄의 끝을 뒤에서부터 찾는다. 긴 세션 로그를 통째로 읽지 않는다.
+            pos = f.seek(0, 2)
+            end = 0
+            while pos > 0:
+                step = min(65536, pos)
+                pos -= step
+                f.seek(pos)
+                nl = f.read(step).rfind(b"\n")
+                if nl >= 0:
+                    end = pos + nl + 1
+                    break
+        self._offset = end
+        self._first_line = first_line if first_line.endswith(b"\n") else None
+        return end
+
     def read_events(self) -> Iterator[TelemetryEvent]:
         # Lua가 아직 로그를 만들지 않았다면 빈 파일을 대신 만들지 않는다. 경로가
         # 잘못됐는데도 연결된 것처럼 보이는 문제를 피하기 위함이다.

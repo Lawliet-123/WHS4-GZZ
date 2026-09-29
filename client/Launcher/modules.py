@@ -151,12 +151,15 @@ MODULES: List[Module] = [
     Module(
         name="aimbot",
         owner="에임봇 (은지)",
-        argv=[PY, "client/detectors/aimbot/main.py"],
+        argv=[PY, "client/detectors/aimbot/main.py",
+              "--session-id", "{session}", "--player-id", "{player}", "--from-end"],
         mode=CONTINUOUS,
-        # {session}/{player} 를 아직 안 넘긴다. main.py 가 --log-path 하나만 받아서
-        # 지금 넘기면 argparse 가 "unrecognized arguments" 로 죽는다. 은지님이
-        # 받도록 고치면 위 input_signature 처럼 두 줄만 붙이면 된다.
-        note="UE4SS DamageLogger 텔레메트리. 세션·플레이어 인자 대기 중(은지님)",
+        # 결과의 session_id/player_id 를 이 값으로 바꾸고 UE 값은 evidence 로 옮긴다.
+        # 안 넘기면 UE 액터 경로가 player_id 에 들어가 중앙 전송이 로컬에서 거절된다.
+        # --from-end: 텔레메트리 파일은 모드가 로드될 때만 비워져서 이전 게임 기록이
+        # 남아 있을 수 있다. 처음부터 읽으면 그 기록이 지금 세션 이름으로 나가고,
+        # 되살릴 때마다 같은 결과를 새 event_id 로 또 보낸다.
+        note="UE4SS DamageLogger 텔레메트리",
     ),
 ]
 

@@ -391,6 +391,16 @@ def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Pop
     """
     os.makedirs(os.path.dirname(log) or ".", exist_ok=True)
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    # 중앙 전송 대기열(shared outbox)은 모듈마다 따로 준다. 안 주면 모듈들이
+    # ClientConfig 기본값인 cwd(=레포 루트)/telemetry-outbox/ 하나를 같이 쓰는데,
+    # shared 는 한 대기열에 보내는 프로세스 하나만 허용해서(잠금 timeout=0) 나중에
+    # 뜬 모듈은 중앙 전송만 조용히 꺼진 채 돈다. 레포 안에 파일이 생기는 것도 막는다.
+    # 전역으로 설정돼 있어도 덮어쓴다 — 전역 하나를 나눠 쓰면 같은 문제다.
+    # 같은 모듈을 되살리면 같은 경로라 못 보낸 건이 이어서 나간다(잠금은 OS 가
+    # 프로세스가 죽을 때 푼다).
+    name = os.path.splitext(os.path.basename(log))[0]
+    env["GZZ_TELEMETRY_OUTBOX"] = os.path.join(
+        os.path.dirname(os.path.abspath(log)), "outbox", name, "client.sqlite3")
     with open(log, "a", encoding="utf-8") as f:
         f.write(f"\n{'=' * 70}\n[{note or 'start'}] {time.strftime('%H:%M:%S')}\n"
                 f"[cmd] {' '.join(argv)}\n{'=' * 70}\n")
