@@ -106,6 +106,8 @@ class ProcessAccessRunner:
         allowlist: Optional[ProcessAllowlist] = None,
         writer: Writer = append_detection_jsonl,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        session_t0: Optional[float] = None,
     ) -> None:
         self._locator = locator or ProcessLocator(game_executable_name)
         self._sensor = sensor or ExternalHandleSensor()
@@ -117,6 +119,8 @@ class ProcessAccessRunner:
         self._output_path = Path(output_path)
         self._writer = writer
         self._clock = clock
+        self._wall_clock = wall_clock
+        self._session_t0 = session_t0
         self._started_at = clock()
 
     def scan_once(self) -> ScanReport:
@@ -130,7 +134,7 @@ class ProcessAccessRunner:
         except HandleSensorUnavailable as error:
             return ScanReport(True, 0, 0, 0, _elapsed_ms(scan_started, self._clock()), str(error))
 
-        timestamp_ms = _elapsed_ms(self._started_at, self._clock())
+        timestamp_ms = self._timestamp_ms()
         context = ScanContext(self._session_id, self._player_id, timestamp_ms)
         emitted = 0
         allowed = 0
@@ -154,6 +158,12 @@ class ProcessAccessRunner:
             emitted_detections=emitted,
             duration_ms=_elapsed_ms(scan_started, self._clock()),
         )
+
+    def _timestamp_ms(self) -> int:
+        """런처의 세션 시작 epoch가 있으면 모든 모듈과 같은 시간축을 쓴다."""
+        if self._session_t0 is not None:
+            return max(0, round((self._wall_clock() - self._session_t0) * 1000))
+        return _elapsed_ms(self._started_at, self._clock())
 
     def _enrich_artifact(self, observation: ExternalHandleObservation) -> ExternalHandleObservation:
         if observation.source_path is None:
@@ -194,6 +204,11 @@ def main() -> None:
     parser.add_argument("--game-exe", required=True, help="예: PenguinHotel-Win64-Shipping.exe")
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--player-id", required=True)
+    parser.add_argument(
+        "--t0",
+        type=float,
+        help="런처 세션 시작 Unix epoch(초). 지정하면 timestamp_ms를 공통 세션 기준으로 맞춘다.",
+    )
     parser.add_argument("--output", type=Path, default=Path("logs/external_access.jsonl"))
     parser.add_argument("--interval-ms", type=int, default=3000, help="반복 scan 주기 (기본 3000ms)")
     parser.add_argument(
@@ -217,6 +232,7 @@ def main() -> None:
             output_path=args.output,
             allowlist=ProcessAllowlist.from_json(args.allowlist),
             writer=_write_local_and_send if shared_ready else append_detection_jsonl,
+            session_t0=args.t0,
         )
         while True:
             started_at = time.monotonic()

@@ -96,6 +96,17 @@ class MecchaAimTelemetrySensor(AimTelemetrySensor):
                 except json.JSONDecodeError:
                     continue
                 event_type = raw.get("event_type")
+                # 과거 Lua 버전은 JSON null 대신 문자열 "nil"을 기록했다.
+                # 새 로그는 Lua에서 null로 고쳤지만, 기존 리플레이도 라운드
+                # 미확정 상태에서 점수화되지 않도록 여기서 함께 정규화한다.
+                round_id = raw.get("round_id")
+                if round_id == "nil":
+                    round_id = None
+                # 함수명에 Local이 붙어도 멀티플레이에서 원격 Pawn이 들어올
+                # 가능성을 배제하지 않는다. Lua가 명시적으로 false로 남긴 것은
+                # 이 PC의 판정 표본에서 제외한다. 없는 구버전 필드는 유지한다.
+                if raw.get("is_local") is False:
+                    continue
                 if event_type == "shot_attempt":
                     yield ShotEvent(
                         session_id=raw["session_id"],
@@ -104,7 +115,8 @@ class MecchaAimTelemetrySensor(AimTelemetrySensor):
                         attacker_pos=tuple(raw["attacker_pos"]),
                         aim_trace=self._parse_aim_trace(raw.get("aim_trace", [])),
                         timestamp_source=raw.get("timestamp_source"),
-                        round_id=raw.get("round_id"),
+                        source_timestamp_ms=raw.get("timestamp_ms"),
+                        round_id=round_id,
                         aimed_candidate_id=raw.get("aimed_candidate_id"),
                         aimed_candidate_error_deg=(
                             float(raw["aimed_candidate_error_deg"])
@@ -130,7 +142,8 @@ class MecchaAimTelemetrySensor(AimTelemetrySensor):
                     },
                     los_clear=raw.get("los_clear"),
                     timestamp_source=raw.get("timestamp_source"),
-                    round_id=raw.get("round_id"),
+                    source_timestamp_ms=raw.get("timestamp_ms"),
+                    round_id=round_id,
                 )
 
     @staticmethod

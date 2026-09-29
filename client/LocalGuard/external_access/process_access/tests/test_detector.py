@@ -36,7 +36,7 @@ class ProcessAccessDetectorTests(unittest.TestCase):
 
         result = self.detector.evaluate(observation, self.context)
 
-        self.assertEqual(result["module"], "localguard")
+        self.assertEqual(result["module"], "external_access")
         self.assertEqual(result["raw_score"], 3)  # VM_WRITE 2 + unsigned 1
         self.assertEqual(result["evidence"]["submodule"], "external_process")
         self.assertEqual(result["evidence"]["access_rights"], ["PROCESS_VM_WRITE"])

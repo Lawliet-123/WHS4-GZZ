@@ -168,6 +168,7 @@ MODULES: List[Module] = [
         owner="에임봇 (은지)",
         argv=[PY, "client/detectors/aimbot/main.py",
               "--session-id", "{session}", "--player-id", "{player}", "--from-end",
+              "--t0", "{t0}",
               # 기본값이 C:\Program Files (x86)\... 고정이라 게임이 다른 곳에 있으면
               # 영영 기다린다. 런처가 찾은 게임 폴더로 준다. (DamageLogger Lua 쪽도
               # 같은 고정 경로에 써서, 그쪽이 고쳐져야 다른 PC 에서 데이터가 생긴다)

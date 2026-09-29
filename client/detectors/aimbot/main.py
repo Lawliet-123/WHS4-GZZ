@@ -40,7 +40,7 @@ DEFAULT_LOG_PATH = Path(
     r"\Chameleon\Binaries\Win64\ue4ss\Mods\DamageLogger"
     r"\meccha_aim_telemetry.jsonl"
 )
-POLL_SECONDS = 1.0
+POLL_SECONDS = 0.1
 
 
 def parse_args():
@@ -54,6 +54,11 @@ def parse_args():
     # 런처가 넘기는 세션·PC 식별자. 없으면(직접 실행) 예전처럼 UE 값 그대로 낸다.
     parser.add_argument("--session-id", help="런처 세션 id. 결과의 session_id 로 쓴다")
     parser.add_argument("--player-id", help="런처가 정한 이 PC 의 id. 결과의 player_id 로 쓴다")
+    parser.add_argument(
+        "--t0",
+        type=float,
+        help="런처 세션 시작 Unix epoch(초). 지정하면 출력 timestamp_ms를 이 시점 기준으로 맞춘다.",
+    )
     parser.add_argument(
         "--from-end",
         action="store_true",
@@ -102,6 +107,30 @@ def to_launcher_ids(result, session_id=None, player_id=None):
     return out
 
 
+class LauncherTimeline:
+    """UE 게임 시계를 런처 세션 시계로 평행이동한다.
+
+    첫 UE4SS 원본 이벤트가 실제로 관찰된 시각을 런처의 ``t0`` 기준으로
+    고정한다. 이후에는 UE 시계의 밀리초 간격을 그대로 보존한다.
+    """
+
+    def __init__(self, t0: float | None):
+        self.t0 = t0
+        self._offset_ms: int | None = None
+
+    def align(self, event) -> None:
+        if self.t0 is None:
+            return
+
+        source_ms = event.timestamp_ms
+        if self._offset_ms is None:
+            observed_ms = round((time.time() - self.t0) * 1000)
+            self._offset_ms = observed_ms - source_ms
+
+        event.source_timestamp_ms = source_ms
+        event.timestamp_ms = source_ms + self._offset_ms
+
+
 def main():
     # 런처는 끌 때 Ctrl+Break를 보낸다. 윈도 기본 처리는 즉시 종료라 아래 finally의
     # flush/shutdown이 안 돈다. KeyboardInterrupt로 바꿔 둔다.
@@ -117,6 +146,7 @@ def main():
 
     sensor = MecchaAimTelemetrySensor(args.log_path)
     detector = AimbotDetector()
+    timeline = LauncherTimeline(args.t0)
     if args.from_end:
         skipped = sensor.skip_existing()
         print(f"[INFO] Skipped {skipped} bytes already in the telemetry log (--from-end).")
@@ -140,6 +170,7 @@ def main():
     try:
         while True:
             for event in sensor.read_events():
+                timeline.align(event)
                 result = detector.ingest_event(event)
                 if result:
                     result = to_launcher_ids(result, args.session_id, args.player_id)

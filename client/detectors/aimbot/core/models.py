@@ -43,6 +43,9 @@ class ShotEvent:
     attacker_pos: Vec3
     aim_trace: List[AimSample] = field(default_factory=list)
     timestamp_source: Optional[str] = None
+    # 런처 실행 시 timestamp_ms는 공통 세션 기준으로 옮긴다. 원본 UE 게임
+    # 시계값은 evidence에 보존해 디버깅과 재생에 사용한다.
+    source_timestamp_ms: Optional[int] = None
     round_id: Optional[str] = None
     # 발사 순간 조준선에 가장 가까웠던 살아 있는 술래 후보 한 명의 정보.
     # Lua가 이 후보 하나에만 LineTrace를 수행해 벽 뒤 정밀 발사를 판정한다.
@@ -70,6 +73,7 @@ class HitEvent:
     # None = 게임 쪽에서 확인 못 함(구버전 로그거나 트레이스 에러) -> 판단 보류
     los_clear: Optional[bool] = None
     timestamp_source: Optional[str] = None
+    source_timestamp_ms: Optional[int] = None
     round_id: Optional[str] = None
 
 
