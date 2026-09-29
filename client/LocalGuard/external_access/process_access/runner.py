@@ -51,6 +51,8 @@ class ProcessAccessRunner:
         allowlist: Optional[ProcessAllowlist] = None,
         writer: Writer = append_detection_jsonl,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        session_t0: Optional[float] = None,
     ) -> None:
         self._locator = locator or ProcessLocator(game_executable_name)
         self._sensor = sensor or ExternalHandleSensor()
@@ -62,6 +64,8 @@ class ProcessAccessRunner:
         self._output_path = Path(output_path)
         self._writer = writer
         self._clock = clock
+        self._wall_clock = wall_clock
+        self._session_t0 = session_t0
         self._started_at = clock()
 
     def scan_once(self) -> ScanReport:
@@ -75,7 +79,12 @@ class ProcessAccessRunner:
         except HandleSensorUnavailable as error:
             return ScanReport(True, 0, 0, 0, _elapsed_ms(scan_started, self._clock()), str(error))
 
-        timestamp_ms = _elapsed_ms(self._started_at, self._clock())
+        # 런처가 준 t0가 있으면 다른 모듈과 공통인 세션 경과시간을 쓴다.
+        # 직접 실행/기존 테스트는 이전처럼 이 runner 시작 시각을 기준으로 둔다.
+        if self._session_t0 is None:
+            timestamp_ms = _elapsed_ms(self._started_at, self._clock())
+        else:
+            timestamp_ms = _elapsed_ms(self._session_t0, self._wall_clock())
         context = ScanContext(self._session_id, self._player_id, timestamp_ms)
         emitted = 0
         allowed = 0
@@ -135,6 +144,7 @@ def main() -> None:
     parser.add_argument("--game-exe", required=True, help="예: PenguinHotel-Win64-Shipping.exe")
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--player-id", required=True)
+    parser.add_argument("--t0", type=float, help="런처 세션 시작 Unix epoch(초)")
     parser.add_argument("--output", type=Path, default=Path("logs/external_access.jsonl"))
     parser.add_argument("--interval-ms", type=int, default=3000, help="반복 scan 주기 (기본 3000ms)")
     parser.add_argument(
@@ -155,6 +165,7 @@ def main() -> None:
         player_id=args.player_id,
         output_path=args.output,
         allowlist=ProcessAllowlist.from_json(args.allowlist),
+        session_t0=args.t0,
     )
     while True:
         started_at = time.monotonic()

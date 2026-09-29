@@ -102,6 +102,7 @@ MODULES: List[Module] = [
         argv=[PY, "-m", "client.LocalGuard.external_access.process_access.runner",
               "--game-exe", GAME_EXE,
               "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}",
               "--output", "client/LocalGuard/external_access/logs/external_access.jsonl"],
         mode=CONTINUOUS,
         note="위험 핸들 감시. 상대 import 라 -m 으로만 돈다",
@@ -137,7 +138,9 @@ MODULES: List[Module] = [
     Module(
         name="aimbot",
         owner="에임봇 (은지)",
-        argv=[PY, "client/detectors/aimbot/main.py"],
+        argv=[PY, "client/detectors/aimbot/main.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}"],
         mode=CONTINUOUS,
         note="UE4SS DamageLogger 가 남기는 텔레메트리를 읽는다",
     ),
