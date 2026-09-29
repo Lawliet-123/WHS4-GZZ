@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -108,6 +109,18 @@ def parse_args():
     parser.add_argument("--log-file", default=DEFAULT_LOG_FILE)
     parser.add_argument("--result-file", default=DEFAULT_RESULT_FILE)
     parser.add_argument("--event-file", default=DEFAULT_EVENT_FILE)
+    parser.add_argument(
+        "--from-end",
+        action="store_true",
+        help="시작 시 CSV에 이미 있는 완성된 행은 건너뛰고 이후 행만 읽는다(런처용)",
+    )
+    parser.add_argument(
+        "--t0",
+        type=float,
+        default=None,
+        metavar="EPOCH",
+        help="세션 기준 시각(epoch seconds). 런처의 다른 모듈과 timestamp_ms를 맞춘다",
+    )
     parser.add_argument("--poll-interval", type=float, default=0.2)
     return parser.parse_args()
 
@@ -165,9 +178,40 @@ def append_detection_event(result_file, event_id, event):
         )
 
 
-def stream_csv_rows(log_file, poll_interval):
-    """CSV에 이미 있는 행부터 읽고, 이후 새로 추가되는 행을 계속 yield한다."""
+def _last_complete_line_end(log_file):
+    """현재 파일에서 마지막으로 완전히 끝난 줄 바로 뒤의 byte offset을 돌려준다.
+
+    ``--from-end``에서 detector 시작 전에 이미 완성돼 있던 행만 건너뛰고,
+    쓰이는 중이던 마지막 행은 다음 poll에서 정상적으로 읽기 위해 사용한다.
+    """
     log_file = Path(log_file)
+    if not log_file.exists():
+        return None
+
+    try:
+        with log_file.open("rb") as file:
+            pos = file.seek(0, os.SEEK_END)
+            while pos > 0:
+                step = min(65536, pos)
+                pos -= step
+                file.seek(pos)
+                chunk = file.read(step)
+                newline = chunk.rfind(b"\n")
+                if newline >= 0:
+                    return pos + newline + 1
+            return 0
+    except OSError:
+        return None
+
+
+def stream_csv_rows(log_file, poll_interval, *, initial_skip_offset=None):
+    """CSV의 새 행을 계속 yield한다.
+
+    ``initial_skip_offset``가 있으면 detector 시작 전에 이미 완전히 기록돼 있던
+    바이트까지만 한 번 건너뛴다. 파일이 truncate/replace되면 새 파일은 처음부터 읽는다.
+    """
+    log_file = Path(log_file)
+    skip_offset = initial_skip_offset
 
     while True:
         if not log_file.exists() or log_file.stat().st_size == 0:
@@ -175,31 +219,56 @@ def stream_csv_rows(log_file, poll_interval):
             continue
 
         try:
-            with log_file.open("r", encoding="utf-8-sig", newline="") as file:
-                # DictReader는 내부 iterator를 한 번 거친 뒤 tell()과 섞어 쓰면
-                # "telling position disabled by next() call" 오류가 날 수 있다.
-                # 그래서 헤더와 데이터 행을 readline()으로 직접 읽는다.
-                header_line = file.readline()
+            with log_file.open("rb") as file:
+                header_raw = file.readline()
 
-                if not header_line:
+                # 헤더도 아직 쓰이는 중이면 다음 poll에서 다시 읽는다.
+                if not header_raw or not header_raw.endswith(b"\n"):
                     time.sleep(poll_interval)
                     continue
 
-                fieldnames = next(csv.reader([header_line]))
+                try:
+                    header_line = header_raw.decode("utf-8-sig").rstrip("\r\n")
+                    fieldnames = next(csv.reader([header_line]))
+                except (UnicodeError, csv.Error):
+                    time.sleep(poll_interval)
+                    continue
 
                 if not fieldnames:
                     time.sleep(poll_interval)
                     continue
 
+                if skip_offset is not None:
+                    # offset은 detector 시작 순간의 파일 끝이다. 그 뒤에 append된 새 행은
+                    # 그대로 읽고, 파일이 truncate됐다면 새 로그로 보고 처음부터 읽는다.
+                    current_size = os.fstat(file.fileno()).st_size
+                    if current_size >= skip_offset:
+                        file.seek(max(skip_offset, file.tell()))
+                        print(
+                            "[NoclipDetector] skipped existing CSV content "
+                            f"through byte {skip_offset} (--from-end)"
+                        )
+                    skip_offset = None
+
                 while True:
                     position = file.tell()
-                    line = file.readline()
+                    raw_line = file.readline()
 
-                    if line:
-                        if not line.strip():
+                    if raw_line:
+                        # Lua가 쓰는 중인 마지막 줄이면 offset을 진행시키지 않는다.
+                        if not raw_line.endswith(b"\n"):
+                            file.seek(position)
+                            time.sleep(poll_interval)
                             continue
 
-                        values = next(csv.reader([line]))
+                        try:
+                            line = raw_line.decode("utf-8").rstrip("\r\n")
+                            if not line.strip():
+                                continue
+                            values = next(csv.reader([line]))
+                        except (UnicodeError, csv.Error):
+                            print("[NoclipDetector] invalid CSV row skipped")
+                            continue
 
                         if len(values) != len(fieldnames):
                             print("[NoclipDetector] incomplete CSV row skipped")
@@ -227,7 +296,7 @@ def stream_csv_rows(log_file, poll_interval):
 
                     time.sleep(poll_interval)
 
-        except (OSError, UnicodeError, csv.Error) as exc:
+        except OSError as exc:
             print(f"[NoclipDetector] log read error: {exc}")
             time.sleep(poll_interval)
 
@@ -247,9 +316,15 @@ def configure_telemetry():
 
 
 def main():
+    # 런처는 Windows에서 Ctrl+Break로 정상 종료를 요청한다. 기본 SIGBREAK 처리는
+    # finally를 거치지 않고 끝날 수 있으므로 KeyboardInterrupt로 바꾼다.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+
     args = parse_args()
 
     log_file = Path(args.log_file)
+    initial_skip_offset = _last_complete_line_end(log_file) if args.from_end else None
     result_file = prepare_output_file(args.result_file)
     event_file = prepare_output_file(args.event_file)
 
@@ -260,6 +335,8 @@ def main():
     telemetry_enabled = configure_telemetry()
 
     session_start_ms = None
+    t0_source_anchor_ms = None
+    t0_session_anchor_ms = None
     active_event = None
     detection_event_id = 0
     total_samples = 0
@@ -270,10 +347,18 @@ def main():
     print(f"Log file   : {log_file}")
     print(f"Event file : {event_file}")
     print(f"Result file: {result_file}")
+    if args.t0 is not None:
+        print(f"Session t0  : {args.t0:.3f}")
+    if args.from_end:
+        print("Input mode  : new CSV rows only (--from-end)")
     print("Waiting for NoclipLogger samples...")
 
     try:
-        for row in stream_csv_rows(log_file, args.poll_interval):
+        for row in stream_csv_rows(
+            log_file,
+            args.poll_interval,
+            initial_skip_offset=initial_skip_offset,
+        ):
             try:
                 result = detect_noclip(row)
             except (KeyError, TypeError, ValueError) as exc:
@@ -283,11 +368,22 @@ def main():
             total_samples += 1
             current_time = result["time"]
 
-            # 기존 detector와 동일하게 첫 샘플을 세션 timestamp 0으로 사용한다.
-            if session_start_ms is None:
-                session_start_ms = current_time
-
-            timestamp_ms = current_time - session_start_ms
+            if args.t0 is None:
+                # 직접 실행할 때는 기존 동작을 유지한다: 첫 샘플을 timestamp 0으로 사용.
+                if session_start_ms is None:
+                    session_start_ms = current_time
+                timestamp_ms = current_time - session_start_ms
+            else:
+                # CSV elapsed_ms는 NoclipLogger 로드 시점 기준이라 launcher t0와 직접
+                # 뺄 수 없다. 첫 새 샘플을 현재 세션 경과 시각에 anchor하고 이후에는
+                # CSV의 상대 간격을 보존한다. (--from-end와 함께 쓰는 런처 경로)
+                if t0_source_anchor_ms is None:
+                    t0_source_anchor_ms = current_time
+                    t0_session_anchor_ms = max(0, int((time.time() - args.t0) * 1000))
+                timestamp_ms = max(
+                    0,
+                    t0_session_anchor_ms + (current_time - t0_source_anchor_ms),
+                )
 
             raw_reasons = [
                 reason
