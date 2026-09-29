@@ -297,6 +297,39 @@ def _evidence_dict(res):
 REQUIRED_KEYS = ("session_id", "player_id", "module", "timestamp_ms",
                  "window_id", "sample_id", "evidence", "reasons", "raw_score")
 
+# 중앙 서버(shared)가 받는 최상위 키. **정확히 이 7개여야 한다.**
+SHARED_KEYS = ("session_id", "player_id", "module", "timestamp_ms",
+               "evidence", "reasons", "raw_score")
+
+
+def to_shared_event(ev):
+    """`to_team_event()` 결과를 중앙 전송용 모양으로 바꾼다.
+
+    shared 0.1.0 은 최상위 키가 정확히 7개가 아니면 **조용히 버리지 않고 오류를 낸다**
+    (`shared/schema.py`). 우리 확장 키(status, severity, window_id, sample_id,
+    scan_start_ms, scan_end_ms)를 그냥 떼면 안 된다. 특히 `status` 가 없으면
+    서버는 "검사를 못 했다(ERROR/OFFLINE)" 와 "정상 0점" 을 구분할 수 없고,
+    그러면 후크가 안 붙은 세션이 깨끗한 세션으로 집계된다.
+
+    그래서 확장 키는 버리지 않고 `evidence` 안으로 옮긴다. 로컬 JSONL 과
+    `to_team_event()` 는 그대로다 — 7번 ReplayAnalyzer 가 그 형식을 쓴다.
+
+    탐지기가 우연히 같은 이름의 근거를 냈으면(`status` 라는 Evidence type 등)
+    덮어쓰지 않고 `status_2` 로 비켜 준다. 근거가 조용히 사라지면 안 된다.
+    """
+    out = {k: ev[k] for k in SHARED_KEYS if k in ev}
+    evd = dict(out.get("evidence") or {})
+    for k, v in ev.items():
+        if k in SHARED_KEYS:
+            continue
+        key, n = k, 2
+        while key in evd:
+            key = f"{k}_{n}"
+            n += 1
+        evd[key] = v
+    out["evidence"] = evd
+    return out
+
 
 def to_team_event(res, session_id, timestamp_ms=None,
                   player_id=None, window_id=0, sample_id=0):
@@ -397,6 +430,26 @@ def _selftest():
     # 확장 키를 지우면 ERROR 가 raw_score 0 인 정상 이벤트와 구분되지 않는다.
     assert to_team_event(bad, "t")["raw_score"] == 0
     assert to_team_event(bad, "t")["status"] == "ERROR", "0점 실패 ≠ 0점 정상"
+
+    # ── 중앙 전송 형식 ──────────────────────────────────────────────
+    # shared 는 최상위 키가 7개가 아니면 오류를 낸다. 한 글자만 어긋나도
+    # 우리 이벤트만 통째로 안 올라가는데, 그게 조용히 일어난다.
+    ev["scan_start_ms"], ev["scan_end_ms"] = 10, 20
+    sh = to_shared_event(ev)
+    assert tuple(sorted(sh)) == tuple(sorted(SHARED_KEYS)), \
+        f"최상위 키는 정확히 7개여야 한다: {sorted(sh)}"
+    for k in ("status", "severity", "window_id", "sample_id",
+              "scan_start_ms", "scan_end_ms"):
+        assert sh["evidence"][k] == ev[k], f"{k} 를 버리면 안 된다 (evidence 로 옮긴다)"
+    assert sh["raw_score"] == ev["raw_score"] and sh["module"] == ev["module"]
+    # 검사를 못 한 것과 정상 0점은 서버에서도 갈려야 한다.
+    off_sh = to_shared_event(to_team_event(off, "t"))
+    assert off_sh["evidence"]["status"] == "OFFLINE", "OFFLINE 이 서버까지 가야 한다"
+    # 근거 이름이 겹쳐도 덮어쓰지 않는다.
+    clash = to_team_event(DetectorResult("d").add("x", 1, "d", [Evidence("status", "v")]), "t")
+    cs = to_shared_event(clash)
+    assert cs["evidence"]["status"] == "v", "탐지기 근거가 살아 있어야 한다"
+    assert cs["evidence"]["status_2"] == clash["status"], "우리 status 는 비켜 앉는다"
 
 
 _selftest()

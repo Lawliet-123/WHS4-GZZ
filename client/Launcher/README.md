@@ -18,6 +18,9 @@ python client/Launcher/main.py
 
 커널 모듈을 쓰려면 **관리자 권한**으로 실행해야 한다. 아니면 그 모듈만 건너뛴다.
 
+에임봇·오토페인트 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고 확인할지는
+**[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
+
 ---
 
 ## 내 모듈을 붙이려면 — `modules.py` 에 한 줄
@@ -64,7 +67,8 @@ ReplayAnalyzer 에서 타임라인이 깨진다. 그래서 런처가 세션 전�
 | 파일 | 담당 | 하는 일 |
 |---|---|---|
 | `main.py` | 랑언 | 전체 순서 |
-| `process_manager.py` | 랑언 | 실행·생존 확인·종료 |
+| `process_manager.py` | 랑언 | 실행·생존 확인·재시작·종료 |
+| `registry.py` | 랑언 (워치독과 공용) | 등록부·잠금·재시작 규칙 |
 | `modules.py` | 공용 | 모듈 등록표 |
 | `ui.py` | **동효** | 상태 화면 (지금은 콘솔 표) |
 | `game_launcher.py` | **동효** | 게임 찾기·실행 (지금은 최소 동작) |
@@ -77,27 +81,62 @@ ReplayAnalyzer 에서 타임라인이 깨진다. 그래서 런처가 세션 전�
 
 ```python
 {"name": "memory_integrity", "owner": "2번 (재민·랑언)", "status": "RUNNING",
- "mode": "oneshot", "runs": 3, "last_code": 1, "uptime_s": 12.4,
+ "mode": "oneshot", "runs": 3, "restarts": 0, "started_by": "launcher",
+ "last_code": 1, "uptime_s": 12.4,
  "detail": "의심 발견", "log": "...logs/memory_integrity.log"}
 ```
 
-`status`: `MISSING` / `SKIPPED` / `PENDING` / `RUNNING` / `DONE` / `WARN` / `FAILED` / `STOPPED`
+`status`: `MISSING` / `SKIPPED` / `PENDING` / `RUNNING` / `DONE` / `WARN` / `RESTART` / `FAILED` / `STOPPED`
+(`RESTART` = 상주 모듈이 죽어서 되살리는 중)
 서버 연결 상태는 `ctx["server"]` 로 들어갑니다(하트비트 붙이면 그 값만 채우면 됩니다).
 
 ---
 
-## 워치독(4번)과 역할이 겹치지 않게
+## 재시작 — 런처와 워치독(4번)이 **둘 다** 한다
 
-둘 다 "모듈이 죽었는지" 를 보지만 하는 일이 다르다.
+2026-09-29 성민님 제안으로, 죽은 상주 모듈(`CONTINUOUS`)은 런처도 되살리고 워치독도
+되살린다. 따로 되살려도 충돌하지 않게 규칙은 전부 `registry.py` 한 곳에 있고,
+**둘이 같은 함수 `registry.restart_if_dead()` 를 부른다.**
 
-| | 하는 일 |
+| 막는 문제 | 방법 |
 |---|---|
-| **런처** | 실행하고, 상태를 보고, 끝낼 때 정리한다. **되살리지 않는다** |
-| **워치독** | 죽었는지 감지해서 보고하고, 필요하면 되살린다 |
+| 같은 모듈이 두 번 뜬다 | 모듈마다 잠금. 잡은 쪽만 띄우고, 잡은 뒤 다시 봐서 상대가 이미 띄웠으면 이어받는다 |
+| 워치독이 띄운 PID 를 아무도 모른다 | 누가 띄우든 `anticheat_pids.json` 에 적는다 |
+| 런처가 끄는 걸 워치독이 되살린다 | 끌 때 `stopping` 을 먼저 켠다 |
+| 런처가 비정상으로 죽어 `stopping` 을 못 켰다 | 등록부의 런처 PID 가 죽었으면 되살리지 않고 `orphaned` 를 돌려준다 |
+| 둘이 따로 세서 한도가 두 배가 된다 | 재시작 횟수를 등록부에서 같이 센다 (5분에 5번, 간격 0/2/4/8/16초) |
+| 띄운 뒤 등록을 못 하면 아무도 모르는 프로세스가 남는다 | 시도를 **띄우기 전에** 적고, 등록이 실패하면 방금 띄운 것을 끈다 |
+| 런처를 두 개 띄우면 서로의 모듈을 죽인다 | 두 번째 런처는 시작 단계에서 막는다 (`LauncherAlreadyRunning`) |
+| 런처가 강제 종료되면 그 세션 모듈이 영영 남는다 | 다음 런처가 시작할 때 지난 세션 모듈을 끄고 시작한다 |
+| 등록부를 그 순간 못 읽어 살아 있는 모듈을 버린다 | 읽기를 다시 시도하고, 한 번 못 봤다고 포기하지 않는다 (5회) |
+| 자기 보호를 거는 모듈을 죽은 줄 안다 | 핸들을 못 여는 이유가 **권한 없음이면 살아 있는 것으로 본다** |
 
-둘 다 재시작하면 같은 모듈을 두 번 띄우거나, 서로 죽인 것을 되살리려고 싸운다.
-그래서 `process_manager.py` 에는 재시작 코드가 없다. 주기 실행(`ONESHOT`)은
-"죽어서 되살리는 것"이 아니라 "원래 주기적으로 도는 검사"라서 다르다.
+잠금을 쥔 프로세스가 죽으면 OS 가 잠금을 풀어준다(msvcrt 바이트 잠금).
+
+**워치독에서 쓰는 법** — 이 파일 하나만 가져다 쓰면 된다(표준 라이브러리만 씀).
+
+```python
+sys.path.insert(0, r"<레포>/client/Launcher")
+import registry
+
+for name in registry.restartable_names():
+    status, pid, _ = registry.restart_if_dead(name, by="watchdog")
+    # status: alive / restarted / backoff / gave_up / stopping / orphaned / skip
+    # orphaned = 런처가 없다. 누가 런처를 죽였다면 그 자체가 보고할 거리다.
+```
+
+주기 실행(`ONESHOT`)은 끝나는 게 정상이라 워치독 대상이 아니다(`restartable=False`).
+다만 비정상 종료(종료코드 0/1/2 밖)하면 런처가 다음 주기에 다시 부르고, 같은
+한도를 넘으면 멈춘다. 되살리면 안 되는 상주 모듈은 `modules.py` 에서 `restart=False`.
+
+시험(2026-09-29): 런처와 워치독 프로세스를 동시에 돌리며 모듈을 8번 죽였다.
+런처 3번·워치독 5번 되살렸고, **두 개가 동시에 뜬 적은 한 번도 없었다.** 끈 뒤에는
+워치독이 되살리지 않았고, 런처를 강제 종료하자 워치독은 `orphaned` 를 받았다.
+실제 1번 `external_access` 를 게임 켠 상태에서 죽였을 때 런처가 되살렸다.
+
+그 뒤 이 코드를 깨뜨리려는 관점으로 따로 검토해 결함 16건을 찾았고, 위 표의 아래 다섯 줄이
+그때 나온 것이다. 등록부를 일부러 오래 붙잡고, 런처를 두 개 띄우고, 런처를 강제 종료하고,
+등록부 읽기를 실패시키고, 핸들 권한을 막는 상황을 각각 재현해서 고친 뒤 다시 확인했다.
 
 ---
 
@@ -110,8 +149,9 @@ ReplayAnalyzer 에서 타임라인이 깨진다. 그래서 런처가 세션 전�
 client/Launcher/logs/<모듈>.log
 ```
 
-실행할 때마다 헤더(`[launcher] 시각  run #N` + 실제 명령)를 남기므로, 안 붙을 때
-그 파일을 보면 무슨 명령이 어떻게 실패했는지 바로 나온다. 탐지 결과 자체는
+실행할 때마다 헤더(`[launcher run #N] 시각` + `[cmd] 실제 명령`)를 남기므로, 안 붙을 때
+그 파일을 보면 무슨 명령이 어떻게 실패했는지 바로 나온다. 되살렸을 때는
+`[launcher restart 2/5]` / `[watchdog restart 3/5]` 처럼 누가 몇 번째로 되살렸는지 남는다. 탐지 결과 자체는
 각 모듈이 원래 쓰던 자리(`logs/detection/` 등)에 그대로 쌓인다.
 
 ---
@@ -126,15 +166,20 @@ client/Launcher/logs/<모듈>.log
 
 ## 안티치트가 자기 자신을 신고하지 않게 — `logs/anticheat_pids.json`
 
-런처는 자기가 띄운 프로세스 PID 를 이 파일에 계속 갱신한다.
+런처와 워치독은 자기가 띄운 프로세스 PID 를 이 파일(등록부)에 계속 갱신한다.
 
 ```json
 {
-  "launcher_pid": 42680,
-  "session_id": "run_002",
-  "modules": {"memory_integrity": 34400, "external_access": 33640}
+  "launcher_pid": 42680, "launcher_create_time": 134051234567890123,
+  "session_id": "run_002", "stopping": false,
+  "modules": {"memory_integrity": 34400, "external_access": 33640},
+  "entries": {"external_access": {"pid": 33640, "create_time": 134051234599990000,
+              "started_by": "watchdog", "restartable": true, "restarts": [1790680000.1]}}
 }
 ```
+
+`modules` 는 예전 형식 그대로다(살아 있는 것만). 새로 쓰는 쪽은 `entries` 의
+`create_time` 까지 보면 PID 재사용을 가려낼 수 있다. 전체 모양은 `registry.py` 맨 위.
 
 **왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽으려고
 `PROCESS_VM_READ`/`VM_WRITE` 핸들을 연다. 밖에서 보면 Cheat Engine 과 구분되지 않는다.
