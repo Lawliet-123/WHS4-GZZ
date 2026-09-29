@@ -84,12 +84,12 @@ def to_launcher_ids(result, session_id=None, player_id=None):
       +3 은 조준 궤적도 확정 처치도 필요 없고 발사 3건이면 된다). 발사 기록은
       SpawnShotEffect(Local) 에서 오고, 조준 후보·시야 판정은 이 PC 의 로컬
       컨트롤러로 계산된다. 그래서 이 PC 의 결과로 본다.
-      **확인 안 된 가정이 하나 있다.** 그 Lua 훅은 쏜 사람이 이 PC 의 pawn 인지
-      비교하지 않는다. 멀티캐스트 SpawnShotEffect(Client) 가 다른 PC 에서 (Local)
-      을 부른다면, 원격 헌터의 발사가 이 PC 카메라 값으로 점수화돼 이 PC 로 붙는다.
-      지금 데이터(2인, 라운드당 헌터 1명)로는 가를 수 없다. 헌터가 여럿인 라운드를
-      실측하거나 Lua 가 로컬 여부를 기록해야 한다. 원래 액터 경로를
-      evidence.source_attacker_id 에 남기는 이유가 그것이다.
+      #43 부터 Lua 가 쏜 사람이 이 PC 의 pawn 인지(is_local) 기록하고, 센서가
+      is_local=false 를 뺀다. 남은 점: 로컬 컨트롤러를 UEHelpers.GetPlayerController
+      로 얻는데, 이 함수는 로컬 여부를 사실상 안 보고 첫 PlayerController 를 준다.
+      리슨서버 호스트에는 원격 클라이언트용 컨트롤러도 있어서, 호스트 PC 에서는
+      비교 기준이 틀어질 수 있다(9/30 코드 확인, 게임 안 실측 전). 원래 액터 경로를
+      evidence.source_attacker_id 에 남기는 것은 그런 경우를 나중에 가려내기 위해서다.
 
     탐지 로직·점수·reasons 는 건드리지 않는다. 원본 dict 도 바꾸지 않는다.
     """

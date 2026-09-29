@@ -117,6 +117,9 @@ MODULES: List[Module] = [
         argv=[PY, "-m", "client.LocalGuard.external_access.process_access.runner",
               "--game-exe", GAME_EXE,
               "--session-id", "{session}", "--player-id", "{player}",
+              # 은지님 #43 에서 받게 됐다. 안 넘기면 timestamp_ms 가 이 프로세스 시작
+              # 기준이라 다른 모듈과 시간축이 갈린다.
+              "--t0", "{t0}",
               "--output", "client/LocalGuard/external_access/logs/external_access.jsonl"],
         mode=CONTINUOUS,
         note="위험 핸들 감시. 상대 import 라 -m 으로만 돈다",
@@ -170,8 +173,9 @@ MODULES: List[Module] = [
               "--session-id", "{session}", "--player-id", "{player}", "--from-end",
               "--t0", "{t0}",
               # 기본값이 C:\Program Files (x86)\... 고정이라 게임이 다른 곳에 있으면
-              # 영영 기다린다. 런처가 찾은 게임 폴더로 준다. (DamageLogger Lua 쪽도
-              # 같은 고정 경로에 써서, 그쪽이 고쳐져야 다른 PC 에서 데이터가 생긴다)
+              # 영영 기다린다. 런처가 찾은 게임 폴더로 준다. DamageLogger Lua 는 #43 부터
+              # 스크립트 위치 기준으로 <game_bin>\ue4ss\Mods\DamageLogger\ 에 써서
+              # 이 경로와 파일 이름까지 같다.
               "--log-path", r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"],
         mode=CONTINUOUS,
         # 결과의 session_id/player_id 를 이 값으로 바꾸고 UE 값은 evidence 로 옮긴다.
@@ -180,6 +184,29 @@ MODULES: List[Module] = [
         # 남아 있을 수 있다. 처음부터 읽으면 그 기록이 지금 세션 이름으로 나가고,
         # 되살릴 때마다 같은 결과를 새 event_id 로 또 보낸다.
         note="UE4SS DamageLogger 텔레메트리",
+    ),
+    Module(
+        name="godmode",
+        owner="GodMode (재민)",
+        # 위치 인자로 넘긴다. main.py 가 argparse 없이 sys.argv[1], [2] 만 읽어서,
+        # --session-id 같은 이름 인자를 주면 세션 이름이 '--session-id' 로 조용히
+        # 나간다(shared 형식 검사도 통과한다, 9/30 실측). --t0 도 아직 못 받는다.
+        # 재민님이 argparse·--t0 을 넣으면 에임봇처럼 이름 인자로 바꾼다.
+        argv=[PY, "client/detectors/godmode/main.py", "{session}", "{player}"],
+        mode=CONTINUOUS,
+        # 텔레메트리 경로는 일부러 안 넘긴다. Lua 와 파이썬이 둘 다 기본값
+        # %LOCALAPPDATA%\MECCHA-GZZ-godmode-telemetry.jsonl 을 쓴다.
+        # GZZ_GODMODE_TELEMETRY_PATH 는 게임 프로세스 쪽 환경변수라 스팀으로 켰거나
+        # 이미 떠 있는 게임에는 안 간다 — 런처가 파이썬 쪽에만 주면 둘이 갈라진다.
+        # 시작할 때 파일 끝부터 읽어서(start_at_end) 이전 기록 재방출은 없다.
+        #
+        # 시작할 때 replay_exports/<세션>/ 의 events.jsonl·raw 를 비우고 시간도 0 부터
+        # 다시 센다. 되살리면 그 세션 로컬 기록이 지워진다(9/30 실측 3줄 -> 0줄).
+        restart=False,
+        # 결과 폴더는 main.py 위치 기준 replay_exports/<세션>/ (gitignore). 같은 세션
+        # 이름을 다시 쓰면 시작 전에 막는다.
+        session_log_dir="client/detectors/godmode/replay_exports",
+        note="UE4SS GodModeTelemetry JSONL 판정. 모드가 없어도 조용히 기다린다",
     ),
     Module(
         name="noclip",
