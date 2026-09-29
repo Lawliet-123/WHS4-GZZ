@@ -34,15 +34,34 @@
 
 ## 먼저 풀어야 할 것 — 우리 안티치트가 이 설치를 핵으로 잡는다
 
+> **해결됨 (9/29). 동효님이 하실 일이 한 줄 생겼습니다.**
+>
+> 탐지기 쪽은 `client/Launcher/logs/ue4ss_install.json` 을 보고 **해시가 맞는 파일만**
+> 점수에서 뺍니다. 그 파일은 런처가 설치하면서 남겨야 합니다. 설치가 끝난 직후
+> 한 번 부르시면 됩니다 — 해시는 안에서 뜹니다.
+>
+> ```python
+> import ue4ss_manifest
+> ue4ss_manifest.record(game_root, installed_paths,
+>                       bundle={"name": "UE4SS", "version": "...", "sha256": "..."},
+>                       mods=["DamageLogger", "GZZPaintObserver"])
+> ```
+>
+> 형식과 이유는 `client/Launcher/ue4ss_manifest.py` 독스트링에 있습니다.
+> **이 파일을 안 남기면 예전처럼 DETECTED 100 이 납니다** — 조용히 통과시키지
+> 않습니다. 반대로 등록부에 없는 프록시 DLL 이나 모드는 그대로 잡힙니다.
+
 **런처가 위 파일을 깔면 `filesystem` 탐지기(2번, 랑언)가 그 PC 를 DETECTED 100 으로 잡는다.**
 
 | 규칙 | 점수 | 무엇에 걸리나 |
 |---|---|---|
-| `proxy_dll_in_game_dir` | 45 | `dwmapi.dll` |
+| `proxy_dll_in_game_dir` | 45 | `dwmapi.dll`. 꺼둔 `dwmapi.dll.off` 는 30 이고, **둘 다 있으면 75** (매칭마다 더한다) |
 | `ue4ss_runtime` | 50 | `ue4ss/` 폴더와 `UE4SS-settings.ini` |
-| `third_party_lua_mod` | 45 | `mods.txt` 의 기본 동봉 외 활성 모드 = **우리 모드 2개** |
+| `third_party_lua_mod` | 45 | `mods.txt` 의 기본 동봉 외 활성 모드. **모드가 1개든 5개든 45 고정** |
 
-(`detectors/filesystem.py:103-149`. 합계가 100 을 넘어 상한 100 으로 잘린다.)
+(`client/LocalGuard/memory_integrity/detectors/filesystem.py:103-149`.
+합계가 100 을 넘어 상한 100 으로 잘린다. 랑언 PC 는 `dwmapi.dll` 과 `.off` 가 같이
+있어서 이 규칙 하나로 이미 75 다.)
 
 9/27 에 나온 "안티치트가 자기 자신을 신고한다" 의 세 번째 사례다. 앞의 두 번은 프로세스
 핸들과 주입 DLL 이었고, 이번엔 파일이다.
