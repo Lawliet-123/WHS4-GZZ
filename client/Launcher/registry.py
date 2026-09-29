@@ -103,6 +103,8 @@ _k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FI
 _k32.GetProcessTimes.restype = wintypes.BOOL
 _k32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
 _k32.TerminateProcess.restype = wintypes.BOOL
+_k32.GenerateConsoleCtrlEvent.argtypes = (wintypes.DWORD, wintypes.DWORD)
+_k32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
 
 SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -110,6 +112,7 @@ PROCESS_TERMINATE = 0x0001
 WAIT_TIMEOUT = 0x102
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87       # 그런 PID 가 없을 때 나온다
+CTRL_BREAK_EVENT = 1
 
 
 def _open(pid, access):
@@ -185,6 +188,14 @@ def kill(pid, ctime: Optional[int] = None) -> bool:
         return bool(_k32.TerminateProcess(h, 1))
     finally:
         _k32.CloseHandle(h)
+
+
+def request_stop(pid, ctime: Optional[int] = None) -> bool:
+    """그때 그 프로세스 그룹에 CTRL_BREAK_EVENT를 보내 정상 종료를 요청한다."""
+    if not pid or (ctime is not None and not is_alive(pid, ctime)):
+        return False
+    # spawn() creates a new console process group whose ID is the leader PID.
+    return bool(_k32.GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, int(pid)))
 
 
 # ── 잠금 ────────────────────────────────────────────────────────────────
@@ -362,8 +373,15 @@ def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Pop
                 f"[cmd] {' '.join(argv)}\n{'=' * 70}\n")
         f.flush()
         # 자식이 핸들을 물려받으므로 여기서 닫아도 자식 출력은 계속 파일로 간다.
-        return subprocess.Popen(argv, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, env=env)
+        return subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
 
 
 def register(name: str, proc: subprocess.Popen, *, by: str, restartable: bool,
