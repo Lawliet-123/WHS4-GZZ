@@ -51,7 +51,55 @@ def parse_args():
         default=DEFAULT_LOG_PATH,
         help="main.lua가 기록하는 meccha_aim_telemetry.jsonl 경로",
     )
+    # 런처가 넘기는 세션·PC 식별자. 없으면(직접 실행) 예전처럼 UE 값 그대로 낸다.
+    parser.add_argument("--session-id", help="런처 세션 id. 결과의 session_id 로 쓴다")
+    parser.add_argument("--player-id", help="런처가 정한 이 PC 의 id. 결과의 player_id 로 쓴다")
+    parser.add_argument(
+        "--from-end",
+        action="store_true",
+        help="시작할 때 파일에 이미 있는 기록은 건너뛴다(런처용). 이전 게임 기록이 "
+             "지금 세션 이름으로 나가지 않게 한다",
+    )
     return parser.parse_args()
+
+
+def to_launcher_ids(result, session_id=None, player_id=None):
+    """탐지 결과의 식별자를 런처 값으로 바꾸고, 원래 UE 값은 evidence 에 옮긴다.
+
+    탐지기는 player_id 에 UE 액터 전체 경로(GetFullName)를 넣는다. 180자 안팎에
+    공백·'/'·':' 이 들어가 shared 형식(짧은 안전 문자열, 128자까지)을 못 넘어서
+    send_detection() 이 로컬에서 거절한다. 게다가 라운드마다 캐릭터가 다시 생겨
+    한 세션 안에서도 값이 여러 개로 갈린다. 그래서 중앙에는 런처가 정한 PC id 를
+    쓰고, 액터 경로는 evidence.source_attacker_id 로 남긴다(추적용).
+    session_id 도 같다 — UE 쪽 세션 id 는 evidence.source_session_id 로 옮기고
+    런처 세션을 써야 다른 모듈 결과와 같은 세션으로 묶인다.
+
+    이 PC 의 것으로 보는 근거와 한계:
+      점수가 붙는 신호는 전부 발사 기록(shot_attempt)이 있어야 나온다(신호 12 의
+      +3 은 조준 궤적도 확정 처치도 필요 없고 발사 3건이면 된다). 발사 기록은
+      SpawnShotEffect(Local) 에서 오고, 조준 후보·시야 판정은 이 PC 의 로컬
+      컨트롤러로 계산된다. 그래서 이 PC 의 결과로 본다.
+      **확인 안 된 가정이 하나 있다.** 그 Lua 훅은 쏜 사람이 이 PC 의 pawn 인지
+      비교하지 않는다. 멀티캐스트 SpawnShotEffect(Client) 가 다른 PC 에서 (Local)
+      을 부른다면, 원격 헌터의 발사가 이 PC 카메라 값으로 점수화돼 이 PC 로 붙는다.
+      지금 데이터(2인, 라운드당 헌터 1명)로는 가를 수 없다. 헌터가 여럿인 라운드를
+      실측하거나 Lua 가 로컬 여부를 기록해야 한다. 원래 액터 경로를
+      evidence.source_attacker_id 에 남기는 이유가 그것이다.
+
+    탐지 로직·점수·reasons 는 건드리지 않는다. 원본 dict 도 바꾸지 않는다.
+    """
+    if not session_id and not player_id:
+        return result
+    out = dict(result)
+    evidence = dict(out.get("evidence") or {})
+    if player_id:
+        evidence.setdefault("source_attacker_id", out.get("player_id"))
+        out["player_id"] = player_id
+    if session_id:
+        evidence.setdefault("source_session_id", out.get("session_id"))
+        out["session_id"] = session_id
+    out["evidence"] = evidence
+    return out
 
 
 def main():
@@ -69,6 +117,9 @@ def main():
 
     sensor = MecchaAimTelemetrySensor(args.log_path)
     detector = AimbotDetector()
+    if args.from_end:
+        skipped = sensor.skip_existing()
+        print(f"[INFO] Skipped {skipped} bytes already in the telemetry log (--from-end).")
 
     client_configured = False
     try:
@@ -91,6 +142,7 @@ def main():
             for event in sensor.read_events():
                 result = detector.ingest_event(event)
                 if result:
+                    result = to_launcher_ids(result, args.session_id, args.player_id)
                     print("-" * 60)
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                     if client_configured:

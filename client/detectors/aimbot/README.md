@@ -63,15 +63,46 @@ not modified by this forwarding step.
 
 This integration is **not yet confirmed to reach the central server**:
 
-- The current detector uses the UE actor path from `GetFullName()` as the
-  result's top-level `player_id`. The shared schema permits only a short safe
-  identifier, so `send_detection()` rejects this result locally before it is
-  put into the outbox. The team has not yet agreed on the stable player ID
-  mapping. Do not mistake this local validation warning for a server response.
-- The launcher currently does not pass a chosen `player_id` to the aimbot
-  detector. Once the team agrees on a stable ID, wire it through the launcher
-  and use it in the outbound event, preserving the original UE actor path under
-  `evidence.source_attacker_id` if it is needed for debugging.
+- **Player/session IDs (9/30, wired through the launcher).** The detector
+  itself still uses the UE actor path from `GetFullName()` as `player_id`.
+  That value is ~180 chars with spaces, `/` and `:`, so the shared schema
+  rejects it locally, and it also changes every round because the Hunter actor
+  is respawned. The launcher now passes `--session-id` and `--player-id`;
+  `main.py`'s `to_launcher_ids()` puts those at the top level of the outbound
+  result and keeps the originals as `evidence.source_attacker_id` and
+  `evidence.source_session_id`. Detection logic, scores and reasons are
+  unchanged.
+- **Attribution assumption (unverified).** Every scored signal needs shot
+  records (signal 12's +3 needs only three shots, no aim trace and no
+  confirmed find). Shots come from `SpawnShotEffect(Local)`, and aimed
+  candidates / LOS are computed from this PC's local controller, so a result
+  is treated as this PC's. But that hook does not check that the shooter is the
+  local pawn. If the `SpawnShotEffect(Client)` multicast also calls `(Local)`
+  on other PCs, a remote Hunter's shots would be scored with this PC's camera
+  and attributed to this PC. The current recordings (two players, one Hunter
+  per round) cannot tell. A multi-Hunter round measurement, or recording an
+  `is_local` flag in the Lua collector, is needed. The original actor path is
+  kept in `evidence.source_attacker_id` so such cases can be separated later.
+- `KillPlayer` is a server RPC (SDK dump), so on the host it may also fire for
+  remote Hunters and on guests it may not fire at all. Outcome-only windows
+  score 0, but their evidence would carry the host PC's `player_id`.
+- **`--from-end` (launcher).** The telemetry log is only truncated when the mod
+  loads, so a previous game's records can still be in it. Reading from the start
+  would send them under the current launcher session and this PC's id, and a
+  restart would send them again with new event ids. With `--from-end` the
+  detector skips what is already in the file and keeps its first line, so a mod
+  reload that truncates the file is still detected and read from the start.
+- Run directly without those options and the old behavior remains (reads from
+  the start; UE values at the top level, so shared rejects them locally with a
+  warning). Existing `ReplayAnalyzer/replay-data/aimbot` events were not
+  rewritten.
+- The launcher gives each module its own shared outbox
+  (`client/Launcher/logs/outbox/<module>/`). Otherwise aimbot and
+  external_access would share `telemetry-outbox/` under the repo root, and
+  shared allows only one sender per outbox.
+- Known issue, not changed here: when `GetRoundId()` is nil the Lua writes the
+  string `"nil"`, which the Python side treats as a real round, so the
+  "don't score an unconfirmed round" gate does not apply.
 - A `queued` receipt only means the shared client accepted the event into its
   local outbox; it is not proof that the receiver stored it. The `/api/detection`
   end-to-end delivery and durable-storage response still need testing after the
