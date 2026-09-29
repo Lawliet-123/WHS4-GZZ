@@ -450,7 +450,7 @@ def _end_watch(mods):
 
 
 def exit_code(events):
-    """0 정상 / 1 의심 이상 / 2 검사 실패가 하나라도 있음.
+    """0 정상 / 1 의심 이상 / 2 검사 실패가 하나라도 있음. (3 은 run_cli 가 낸다)
 
     **실패가 의심보다 강하다.** 검사를 못 한 세션을 '깨끗함'으로 넘기지
     않기 위해서다. 측정할 때 이 세션은 집계에서 빼야 한다.
@@ -618,5 +618,31 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
     return code
 
 
+def run_cli(entry):
+    """러너의 `if __name__` 에서 `sys.exit(entry())` 대신 쓴다.
+
+    예외가 그대로 파이썬까지 올라가면 종료코드가 **1** 이 된다. 그런데 1 은
+    우리 규칙에서 '의심' 이다. 탐지기가 터진 것을 탐지로 집계하면 없는 핵을
+    만들어내는 셈이고, 런처는 30초마다 다시 부르므로 한 번 터지면 세션 내내
+    의심이 찍힌다. 그래서 크래시를 3 으로 따로 뺀다. (재민님 제안, 9/29)
+
+        0 정상 / 1 의심 / 2 검사 실패 / 3 크래시·내부 예외
+
+    Ctrl+C 는 3 이 아니라 2 다. 코드가 터진 게 아니라 검사를 끝까지 못 한
+    것이고, 집계에서 빼야 하는 건 같다.
+    """
+    try:
+        code = entry()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("  중단했습니다. 이 세션은 검사 실패(2)로 남깁니다.", file=sys.stderr)
+        sys.exit(2)
+    except BaseException:
+        traceback.print_exc()
+        sys.exit(3)
+    sys.exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    run_cli(main)
