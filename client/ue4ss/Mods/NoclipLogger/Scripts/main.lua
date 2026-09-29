@@ -3,7 +3,11 @@ local UEHelpers = require("UEHelpers")
 local GetPlayerController = UEHelpers.GetPlayerController
 local GetKismetSystemLibrary = UEHelpers.GetKismetSystemLibrary
 
-local LOG_PATH = "Mods\\NoclipLogger\\noclip_log.csv"
+-- UE4SS cwd is usually the game Binaries\\Win64 directory. Resolve from this script instead.
+local source = debug.getinfo(1, "S").source:gsub("^@", "")
+local scripts = source:match("^(.*[/\\])")
+assert(scripts, "NoclipLogger: cannot resolve Scripts directory")
+local LOG_PATH = scripts .. "../noclip_log.csv"
 local LOG_INTERVAL = 1000
 
 local elapsed_ms = 0
@@ -33,7 +37,7 @@ local function CreateLogFile()
 
     file:close()
 
-    print("[NoclipLogger] CSV created")
+    print("[NoclipLogger] CSV created: " .. LOG_PATH)
 end
 
 
