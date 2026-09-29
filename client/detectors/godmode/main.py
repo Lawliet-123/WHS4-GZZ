@@ -3,6 +3,24 @@ import sys
 import time
 from pathlib import Path
 
+# ---------------------------------------------------------
+# Repository root / shared package
+# ---------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.config import ClientConfig
+from shared.errors import SharedError
+from shared.logger import (
+    configure_client,
+    flush_client,
+    send_detection,
+    shutdown_client,
+)
+
 from detector.godmode_detector import GodModeDetector
 from sensors.meccha_telemetry_sensor import MecchaTelemetrySensor
 
@@ -32,11 +50,40 @@ def print_result(result):
         json.dumps(
             result.to_dict(),
             ensure_ascii=False,
-            indent=4
+            indent=4,
         )
     )
 
     print("-" * 60)
+
+
+def configure_telemetry():
+    """
+    shared client를 프로세스 시작 시 한 번 설정한다.
+
+    Shared 설정이 없거나 초기화에 실패하더라도
+    기존 GodMode 로컬 탐지는 계속 동작한다.
+    """
+
+    try:
+        configure_client(
+            ClientConfig.from_env()
+        )
+
+        print(
+            "[Telemetry] shared client configured"
+        )
+
+        return True
+
+    except SharedError as exc:
+        print(
+            "[Telemetry] shared client unavailable; "
+            "local detection continues "
+            f"({type(exc).__name__}: {exc})"
+        )
+
+        return False
 
 
 def get_session_info(session_id):
@@ -72,7 +119,7 @@ def get_session_info(session_id):
 
 def get_timestamp_ms(
     snapshot,
-    session_start_timestamp
+    session_start_timestamp,
 ):
     return int(
         round(
@@ -90,19 +137,24 @@ def build_common_event(
     player_id,
     snapshot,
     result,
-    session_start_timestamp
+    session_start_timestamp,
 ):
     """
-    ReplayAnalyzer / Dashboard 공통 Event.
+    ReplayAnalyzer / Dashboard / Shared 공통 Event.
+
+    기존 팀 공통 7필드 형식을 유지한다.
 
     중요:
     누적 reasons / score가 아니라
     이번 Snapshot에서 새로 발생한 탐지만 저장한다.
+
+    Shared 전송에서도 이 값을 수정하지 않고
+    그대로 send_detection()에 전달한다.
     """
 
     timestamp_ms = get_timestamp_ms(
         snapshot,
-        session_start_timestamp
+        session_start_timestamp,
     )
 
     return {
@@ -133,24 +185,24 @@ def build_common_event(
 
 def write_json(
     path,
-    data
+    data,
 ):
     with path.open(
         "w",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
 
         json.dump(
             data,
             file,
             ensure_ascii=False,
-            indent=2
+            indent=2,
         )
 
 
 def prepare_export(
     session_id,
-    player_id
+    player_id,
 ):
     """
     ReplayAnalyzer 전달용 세션 폴더를 만든다.
@@ -177,7 +229,7 @@ def prepare_export(
 
     raw_dir.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     raw_path = (
@@ -199,12 +251,12 @@ def prepare_export(
     # 이전 결과가 섞이지 않도록 초기화한다.
     raw_path.write_text(
         "",
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
     events_path.write_text(
         "",
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
     session_info = get_session_info(
@@ -232,7 +284,7 @@ def prepare_export(
 
     write_json(
         manifest_path,
-        manifest
+        manifest,
     )
 
     return {
@@ -245,7 +297,7 @@ def prepare_export(
 
 def append_raw(
     raw_path,
-    raw_line
+    raw_line,
 ):
     """
     Sensor가 읽은 원본 JSONL 한 줄을 그대로 저장한다.
@@ -256,7 +308,7 @@ def append_raw(
 
     with raw_path.open(
         "a",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
 
         file.write(
@@ -268,21 +320,63 @@ def append_raw(
 
 def append_event(
     events_path,
-    event
+    event,
 ):
+    """
+    기존 공통 7필드 Event를 로컬 JSONL에 저장한다.
+
+    Shared 연동 이후에도 기존 로컬 기록은
+    그대로 유지한다.
+    """
+
     with events_path.open(
         "a",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
 
         file.write(
             json.dumps(
                 event,
-                ensure_ascii=False
+                ensure_ascii=False,
             )
         )
 
         file.write("\n")
+
+
+def send_shared_event(
+    event,
+    telemetry_enabled,
+):
+    """
+    기존 공통 Event를 Shared 전송 큐에 등록한다.
+
+    send_detection() 성공은 서버 저장 완료가 아니라
+    로컬 outbox에 정상 등록되었다는 의미다.
+
+    Shared 전송 실패가 GodMode detector 자체를
+    종료시키지 않도록 예외를 처리한다.
+    """
+
+    if not telemetry_enabled:
+        return
+
+    try:
+        receipt = send_detection(
+            event
+        )
+
+        print(
+            "[Telemetry] queued "
+            f"event_id={receipt.event_id} "
+            f"status={receipt.status}"
+        )
+
+    except SharedError as exc:
+        print(
+            "[Telemetry] send failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
 
 
 def main():
@@ -296,6 +390,7 @@ def main():
 
         print()
         print("예:")
+
         print(
             "python main.py normal_001"
         )
@@ -316,7 +411,7 @@ def main():
 
     export = prepare_export(
         session_id=session_id,
-        player_id=player_id
+        player_id=player_id,
     )
 
     raw_path = export[
@@ -365,6 +460,18 @@ def main():
     print(
         manifest_path
     )
+
+    # -----------------------------------------------------
+    # Shared client
+    # -----------------------------------------------------
+
+    telemetry_enabled = (
+        configure_telemetry()
+    )
+
+    # -----------------------------------------------------
+    # GodMode Sensor / Detector
+    # -----------------------------------------------------
 
     sensor = MecchaTelemetrySensor(
         start_at_end=True
@@ -438,7 +545,7 @@ def main():
 
             append_raw(
                 raw_path,
-                raw_line
+                raw_line,
             )
 
             # -----------------------------
@@ -450,7 +557,7 @@ def main():
             )
 
             # -----------------------------
-            # 공통 Event
+            # 공통 7필드 Event
             # -----------------------------
 
             if result.new_reasons:
@@ -465,9 +572,10 @@ def main():
                     ),
                 )
 
+                # 기존 로컬 JSONL 기록 유지
                 append_event(
                     events_path,
-                    event
+                    event,
                 )
 
                 print()
@@ -479,8 +587,15 @@ def main():
                     json.dumps(
                         event,
                         ensure_ascii=False,
-                        indent=4
+                        indent=4,
                     )
+                )
+
+                # 같은 Event를 수정 없이
+                # Shared 중앙 전송 큐에 등록
+                send_shared_event(
+                    event,
+                    telemetry_enabled,
                 )
 
             # -----------------------------
@@ -490,7 +605,7 @@ def main():
             current_signature = (
                 result.status,
                 result.score,
-                tuple(result.reasons)
+                tuple(result.reasons),
             )
 
             if (
@@ -524,7 +639,46 @@ def main():
 
     finally:
 
+        # GodMode telemetry 파일 연결 종료
         sensor.disconnect()
+
+        # -------------------------------------------------
+        # Shared 전송 큐 정리
+        # -------------------------------------------------
+
+        if telemetry_enabled:
+
+            try:
+                delivered = flush_client(
+                    timeout=3
+                )
+
+                print(
+                    "[Telemetry] flush "
+                    f"delivered={delivered}"
+                )
+
+            except SharedError as exc:
+                print(
+                    "[Telemetry] flush failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+            try:
+                stopped = shutdown_client(
+                    timeout=5
+                )
+
+                print(
+                    "[Telemetry] shutdown "
+                    f"stopped={stopped}"
+                )
+
+            except SharedError as exc:
+                print(
+                    "[Telemetry] shutdown failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
 
 if __name__ == "__main__":
