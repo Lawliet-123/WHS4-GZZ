@@ -82,4 +82,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 크래시(3)를 의심(1)과 섞지 않는다. run_session.run_cli 주석 참고.
+    run_session.run_cli(main)

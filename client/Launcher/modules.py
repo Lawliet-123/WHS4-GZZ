@@ -45,6 +45,9 @@ class Module:
     needs_game: bool = True         # 게임이 떠 있어야 의미가 있는가
     needs_admin: bool = False       # 관리자 권한이 필요한가
     every_s: float = 0.0            # ONESHOT 을 몇 초마다 다시 부를지 (0 이면 한 번만)
+    # CONTINUOUS 가 죽으면 되살릴지. 런처와 워치독이 둘 다 되살린다(registry.py).
+    # 되살리면 안 되는 모듈(예: 한 번 적재하고 끝나야 하는 드라이버)이면 False.
+    restart: bool = True
     # 이 모듈이 세션 로그(<세션>.jsonl)를 쓰는 폴더. 런처가 시작 전에
     # "그 세션 이름이 이미 있는지" 를 보려고 쓴다. 레포 루트 기준 상대경로.
     session_log_dir: str = ""
@@ -84,7 +87,7 @@ MODULES: List[Module] = [
         owner="4번 (성민)",
         argv=[PY, "client/SelfDefense/main.py"],
         needs_game=False,
-        note="워치독·안티디버깅·자체 무결성. 아직 폴더가 비어 있다",
+        note="워치독·안티디버깅·자체 무결성. 진입점은 이 경로로 확정(2026-09-29 성민님)",
     ),
     Module(
         name="kernel_watcher",
@@ -109,8 +112,17 @@ MODULES: List[Module] = [
     Module(
         name="input_signature",
         owner="3번 (동효)",
-        argv=[PY, "client/LocalGuard/input_signature/main.py"],
-        note="Raw Input 대조·YARA·해시. 아직 폴더가 비어 있다",
+        argv=[PY, "client/LocalGuard/input_signature/yara_scanner.py",
+              "--session-id", "{session}", "--player-id", "{player}"],
+        # 세션 폴더를 exist_ok=False 로 만든다(replay_events.py ReplaySession).
+        # 같은 --session-id 로 되살리면 반드시 FileExistsError 로 다시 죽어서,
+        # 되살릴수록 재시작 예산만 태운다. 경로 설계가 바뀌면 True 로 되돌린다.
+        restart=False,
+        session_log_dir="client/LocalGuard/input_signature/sessions",
+        # --auto-external-python 은 일부러 안 넘긴다. 그 옵션은 같은 세션의
+        # python.exe 를 후보로 삼고 게임·자기자신·자기 부모만 빼기 때문에,
+        # 런처가 띄운 다른 파이썬 탐지기를 검사 대상으로 잡는다(자기탐지).
+        note="Raw Input 대조·YARA·해시. --seconds 기본 0 이라 끝까지 돈다",
     ),
     Module(
         name="memory_integrity",
@@ -139,7 +151,10 @@ MODULES: List[Module] = [
         owner="에임봇 (은지)",
         argv=[PY, "client/detectors/aimbot/main.py"],
         mode=CONTINUOUS,
-        note="UE4SS DamageLogger 가 남기는 텔레메트리를 읽는다",
+        # {session}/{player} 를 아직 안 넘긴다. main.py 가 --log-path 하나만 받아서
+        # 지금 넘기면 argparse 가 "unrecognized arguments" 로 죽는다. 은지님이
+        # 받도록 고치면 위 input_signature 처럼 두 줄만 붙이면 된다.
+        note="UE4SS DamageLogger 텔레메트리. 세션·플레이어 인자 대기 중(은지님)",
     ),
 ]
 

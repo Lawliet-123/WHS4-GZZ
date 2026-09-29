@@ -11,7 +11,11 @@ from typing import Any, Callable, Dict, Optional
 # installed as a top-level dependency. Put that package root first so
 # ``import shared`` resolves to the team's shared client.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
-SHARED_PACKAGE_ROOT = REPOSITORY_ROOT / "shared" / "GZZ-Shared-0.1.0"
+VERSIONED_SHARED_ROOT = REPOSITORY_ROOT / "shared" / "GZZ-Shared-0.1.0"
+SHARED_PACKAGE_ROOT = (
+    VERSIONED_SHARED_ROOT if (VERSIONED_SHARED_ROOT / "shared").is_dir()
+    else REPOSITORY_ROOT
+)
 if str(SHARED_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(SHARED_PACKAGE_ROOT))
 

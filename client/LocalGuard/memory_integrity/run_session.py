@@ -29,6 +29,7 @@
 import argparse
 import datetime
 import importlib
+import inspect
 import json
 import math
 import os
@@ -37,8 +38,9 @@ import threading
 import time
 import traceback
 
+from core import telemetry
 from core.result import (DetectorResult, set_session_start, set_player_id,
-                         to_team_event)
+                         to_shared_event, to_team_event)
 
 # 한글 윈도 콘솔은 기본이 cp949 라 일부 문장부호를 못 찍고 **죽는다.**
 # 탐지기가 내놓는 근거 문자열에 뭐가 들어올지 모르는데, 출력하다 죽으면
@@ -288,6 +290,9 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
             os.remove(p)
 
     events = []
+    # 중앙 전송. GZZ_TELEMETRY_URL 이 없으면 꺼진 채로 돈다(core/telemetry.py 참고).
+    # 대기열은 러너마다 따로 둔다 — 한 SQLite 파일을 두 프로세스가 쓰지 못한다.
+    tele = telemetry.make(os.path.join(log_dir, "outbox"))
 
     def one_round(window_id):
         """등록된 탐지기를 한 바퀴 돌린다. **탐지기 하나 끝날 때마다 파일에 쓴다.**
@@ -314,6 +319,9 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
             ev["scan_end_ms"] = ended
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+            # **로컬에 먼저 쓰고 나서 보낸다.** 서버가 죽었다고 관측이 사라지면 안 된다.
+            # 전송은 여기서 실패해도 탐지를 막지 않는다(telemetry 가 다 삼킨다).
+            tele.send(to_shared_event(ev))
             out.append(ev)
             events.append(ev)
         return out
@@ -322,7 +330,17 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
     rounds = 0
     if not watch:
         # 런처가 주기 검사로 부르면 window 가 몇 번째 바퀴인지 알려준다.
-        one_round(window)
+        #
+        # **런처 경로에서도 기준점을 이어받아야 한다.** 런처는 같은 세션을 30초마다
+        # 새 프로세스로 부르는데(--log-name 으로 한 파일에 누적), 그때 whistle_rpc 가
+        # 후크 로그를 매번 처음부터 읽으면 위반이 한 번 찍힌 뒤 모든 바퀴가 DETECTED
+        # 가 되고 이전 게임 실행의 위반까지 섞인다. 기준점을 파일로 넘겨 이어 읽는다.
+        # log_name 이 있다 = 런처가 부르는 누적 모드다.
+        watching = _begin_watch(picked, log_dir if log_name else None, stem)
+        try:
+            one_round(window)
+        finally:
+            _end_watch(watching)
         rounds = 1
     else:
         initial = "ON" if start_on else "OFF"
@@ -334,7 +352,7 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
             "rounds": 0, "ended_ms": 0}, fresh=True)
         markers = Markers(os.path.join(log_dir, f"{stem}.markers.jsonl"),
                           t0, run_id, session_id, initial)
-        watching = _begin_watch(picked)
+        watching = _begin_watch(picked, log_dir if log_name else None, stem)
         _say(f"세션 {session_id}  —  {watch:g}초 동안 {interval:g}초마다 스캔")
         _say(f"  핵 {initial} 상태로 시작합니다. 핵을 켜거나 끌 때마다 Enter.")
         _say("  터미널은 클릭하지 말고 Alt+Tab 으로 오가세요 "
@@ -372,6 +390,8 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
         "log": log_path,
         "events": events,
         "rounds": rounds,
+        # 껐는지·보냈는지·밀렸는지를 숨기지 않는다. 조용히 안 보내지는 게 제일 나쁘다.
+        "telemetry": tele.finish(),
     }
     if markers is not None:
         summary["markers"] = list(markers.items)
@@ -386,8 +406,12 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
     return summary, exit_code(events)
 
 
-def _begin_watch(picked):
+def _begin_watch(picked, state_dir=None, stem=None):
     """반복 관측을 지원하는 탐지기에 "지금부터 새로 본다"를 알린다.
+
+    `state_dir` 를 주면 기준점을 파일로 남겨 **다음 실행이 이어받는다.**
+    런처는 30초마다 새 프로세스로 부르기 때문에, 이게 없으면 실행마다 기준점이
+    사라져 로그를 처음부터 다시 읽는다.
 
     whistle_rpc 는 후크 로그 파일을 처음부터 읽어 위반을 셌다. 반복 관측에서
     그대로 쓰면 위반이 한 번 찍힌 뒤로 **모든 바퀴가 계속 DETECTED** 가 되고,
@@ -402,7 +426,15 @@ def _begin_watch(picked):
             continue                # 불러오기 실패는 run_one 이 바퀴마다 ERROR 로 남긴다
         if hasattr(mod, "begin_watch"):
             try:
-                mod.begin_watch()
+                kw = {}
+                if state_dir and stem:
+                    try:
+                        if "state_file" in inspect.signature(mod.begin_watch).parameters:
+                            kw["state_file"] = os.path.join(
+                                state_dir, f"{stem}.{name}.watch.json")
+                    except (TypeError, ValueError):
+                        pass        # 서명을 못 읽는 탐지기는 그냥 예전 방식으로 부른다
+                mod.begin_watch(**kw)
                 started.append(mod)
             except Exception as e:
                 _say(f"  ! {name} 반복 관측 준비 실패: {e}")
@@ -418,7 +450,7 @@ def _end_watch(mods):
 
 
 def exit_code(events):
-    """0 정상 / 1 의심 이상 / 2 검사 실패가 하나라도 있음.
+    """0 정상 / 1 의심 이상 / 2 검사 실패가 하나라도 있음. (3 은 run_cli 가 낸다)
 
     **실패가 의심보다 강하다.** 검사를 못 한 세션을 '깨끗함'으로 넘기지
     않기 위해서다. 측정할 때 이 세션은 집계에서 빼야 한다.
@@ -586,5 +618,31 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
     return code
 
 
+def run_cli(entry):
+    """러너의 `if __name__` 에서 `sys.exit(entry())` 대신 쓴다.
+
+    예외가 그대로 파이썬까지 올라가면 종료코드가 **1** 이 된다. 그런데 1 은
+    우리 규칙에서 '의심' 이다. 탐지기가 터진 것을 탐지로 집계하면 없는 핵을
+    만들어내는 셈이고, 런처는 30초마다 다시 부르므로 한 번 터지면 세션 내내
+    의심이 찍힌다. 그래서 크래시를 3 으로 따로 뺀다. (재민님 제안, 9/29)
+
+        0 정상 / 1 의심 / 2 검사 실패 / 3 크래시·내부 예외
+
+    Ctrl+C 는 3 이 아니라 2 다. 코드가 터진 게 아니라 검사를 끝까지 못 한
+    것이고, 집계에서 빼야 하는 건 같다.
+    """
+    try:
+        code = entry()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("  중단했습니다. 이 세션은 검사 실패(2)로 남깁니다.", file=sys.stderr)
+        sys.exit(2)
+    except BaseException:
+        traceback.print_exc()
+        sys.exit(3)
+    sys.exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    run_cli(main)
