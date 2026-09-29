@@ -49,6 +49,7 @@ EXCLUDED_EVENT_STATUSES = {"ERROR", "OFFLINE"}
 # =========================================================
 MODULE_TARGETS = {
     "whistle": {"WHISTLE_SPOOFING"},
+    "whistle_rpc": {"WHISTLE_SPOOFING"},
     "noclip": {"NOCLIP"},
     "godmode": {"GODMODE"},
     "esp": {"ESP", "ESP_ONLY"},
@@ -62,7 +63,7 @@ MODULE_TARGETS = {
 
     # 범용 detector: 현재 팀 설계상 잡도록 의도된 구현 축만 포함
     # ESP처럼 외부 RPM 읽기 방식은 injection detector의 FN으로 세지 않음.
-    "injection": {"WHISTLE_SPOOFING", "AUTO_PAINT", "AUTOPAINT", "GODMODE"},
+    "injection": {"WHISTLE_SPOOFING", "AUTO_PAINT", "AUTOPAINT", "GODMODE", "HIDE_ANYWHERE"},
     "value_tamper": {"GODMODE", "NOCLIP", "HIDE_ANYWHERE", "AIMBOT"},
 }
 
@@ -205,6 +206,22 @@ def window_start_for_timestamp(timestamp, windows):
         elif start <= timestamp <= end:
             return start
     return None
+
+
+def module_post_off_is_censored(module, manifest):
+    """manifest의 post_off_censored에 현재 module이 포함되는지 확인."""
+    configured = manifest.get("post_off_censored", [])
+
+    if configured is True:
+        return True
+    if not isinstance(configured, (list, tuple, set)):
+        return False
+
+    normalized_module = normalize_module_name(module)
+    return any(
+        normalize_module_name(value) == normalized_module
+        for value in configured
+    )
 
 
 def fallback_module_name(session_dir, manifest):
@@ -368,9 +385,24 @@ def find_sessions(replay_data):
 
 
 def event_is_scoring_eligible(event):
-    """ERROR/OFFLINE 결과는 CLEAN/NORMAL로 간주하지 않고 scoring에서 제외."""
-    status = str(event.get("status", "")).upper()
-    return status not in EXCLUDED_EVENT_STATUSES
+    """ERROR/OFFLINE 결과는 CLEAN/NORMAL로 간주하지 않고 scoring에서 제외.
+
+    legacy 데이터의 최상위 status와 shared 7필드 형식의 evidence.status를
+    둘 다 확인한다. 둘 중 하나라도 제외 상태면 scoring에서 제외한다.
+    """
+    statuses = []
+
+    top_level_status = event.get("status")
+    if top_level_status is not None:
+        statuses.append(str(top_level_status).upper())
+
+    evidence = event.get("evidence")
+    if isinstance(evidence, dict):
+        evidence_status = evidence.get("status")
+        if evidence_status is not None:
+            statuses.append(str(evidence_status).upper())
+
+    return not any(status in EXCLUDED_EVENT_STATUSES for status in statuses)
 
 
 def numeric_scoring_events(events):
@@ -445,6 +477,8 @@ def analyze_session(module, manifest, events, threshold):
     cheat_start = manifest.get("cheat_start_ms")
     cheat_end = manifest.get("cheat_end_ms")
     cheat_windows = manifest.get("cheat_windows_ms") or []
+    cheat_open_ended = bool(manifest.get("cheat_open_ended", False))
+    post_off_censored = module_post_off_is_censored(module, manifest)
     scope_mode = module_scope_mode(module)
 
     all_numeric_events = [
@@ -479,6 +513,8 @@ def analyze_session(module, manifest, events, threshold):
             "excluded_event_count": excluded_event_count,
             "window_mode": "advisory",
             "scope_mode": scope_mode,
+            "cheat_open_ended": cheat_open_ended,
+            "post_off_censored": post_off_censored,
         }
 
     # 이 detector와 관계없는 다른 종류의 CHEAT 세션은 FN으로 세지 않는다.
@@ -504,6 +540,8 @@ def analyze_session(module, manifest, events, threshold):
             "excluded_event_count": excluded_event_count,
             "window_mode": "out_of_scope",
             "scope_mode": scope_mode,
+            "cheat_open_ended": cheat_open_ended,
+            "post_off_censored": post_off_censored,
         }
 
     # 이벤트는 있었는데 ERROR/OFFLINE 때문에 scoring 가능한 이벤트가 하나도 없는 경우
@@ -529,6 +567,8 @@ def analyze_session(module, manifest, events, threshold):
             "excluded_event_count": excluded_event_count,
             "window_mode": "excluded",
             "scope_mode": scope_mode,
+            "cheat_open_ended": cheat_open_ended,
+            "post_off_censored": post_off_censored,
         }
 
     max_score = max(
@@ -551,7 +591,7 @@ def analyze_session(module, manifest, events, threshold):
     last_post_off_detection = None
     post_off_duration = None
 
-    if label == "CHEAT" and cheat_end is not None:
+    if label == "CHEAT" and cheat_end is not None and not cheat_open_ended:
         post_off_detections = [
             event for event in detected_events
             if event["timestamp_ms"] > cheat_end
@@ -648,6 +688,8 @@ def analyze_session(module, manifest, events, threshold):
         "excluded_event_count": excluded_event_count,
         "window_mode": window_mode,
         "scope_mode": scope_mode,
+        "cheat_open_ended": cheat_open_ended,
+        "post_off_censored": post_off_censored,
     }
 
 
@@ -658,6 +700,8 @@ def summarize(results):
     post_off_durations = []
     post_off_sessions = 0
     post_off_detection_count = 0
+    censored_post_off_sessions = 0
+    open_ended_sessions = 0
     excluded_event_count = 0
 
     for result in results:
@@ -668,13 +712,19 @@ def summarize(results):
         if latency is not None:
             latencies.append(latency)
 
+        if result.get("cheat_open_ended"):
+            open_ended_sessions += 1
+
         count = result.get("post_off_detection_count", 0)
         if count > 0:
             post_off_sessions += 1
             post_off_detection_count += count
 
             duration = result.get("post_off_duration_ms")
-            if duration is not None:
+            if result.get("post_off_censored"):
+                # 실제 종료 시점을 관측하지 못한 하한값이므로 일반 평균에서 제외한다.
+                censored_post_off_sessions += 1
+            elif duration is not None:
                 post_off_durations.append(duration)
 
     tp = counts["TP"]
@@ -724,6 +774,8 @@ def summarize(results):
         "avg_latency_ms": avg_latency,
         "post_off_sessions": post_off_sessions,
         "post_off_detection_count": post_off_detection_count,
+        "censored_post_off_sessions": censored_post_off_sessions,
+        "open_ended_sessions": open_ended_sessions,
         "avg_post_off_duration_ms": avg_post_off_duration,
     }
 
@@ -850,6 +902,8 @@ def analyze_module(module, sessions):
             "avg_latency_ms": summary["avg_latency_ms"],
             "post_off_sessions": summary["post_off_sessions"],
             "post_off_detection_count": summary["post_off_detection_count"],
+            "censored_post_off_sessions": summary["censored_post_off_sessions"],
+            "open_ended_sessions": summary["open_ended_sessions"],
             "avg_post_off_duration_ms": summary["avg_post_off_duration_ms"],
         })
 
@@ -877,6 +931,8 @@ def analyze_module(module, sessions):
                     "first_post_off_detection_ms": result["first_post_off_detection_ms"],
                     "last_post_off_detection_ms": result["last_post_off_detection_ms"],
                     "post_off_duration_ms": result["post_off_duration_ms"],
+                    "post_off_censored": result.get("post_off_censored", False),
+                    "cheat_open_ended": result.get("cheat_open_ended", False),
                     "excluded_event_count": result["excluded_event_count"],
                 })
 
@@ -925,6 +981,17 @@ def analyze_module(module, sessions):
                     else "N/A"
                 )
 
+                if result.get("cheat_open_ended"):
+                    post_off_text = "N/A(open-ended)"
+                elif (
+                    result.get("post_off_censored")
+                    and result.get("post_off_detection_count", 0) > 0
+                    and result["post_off_duration_ms"] is not None
+                ):
+                    post_off_text = f">={format_latency(result['post_off_duration_ms'])} (censored)"
+                else:
+                    post_off_text = format_latency(result["post_off_duration_ms"])
+
                 print(
                     f"threshold={format_threshold(threshold):<6} "
                     f"session={result['session_id']:<16} "
@@ -936,7 +1003,7 @@ def analyze_module(module, sessions):
                     f"last={result['last_detection_ms']} "
                     f"latency={format_latency(result['detection_latency_ms'])} "
                     f"post_off_count={result['post_off_detection_count']} "
-                    f"post_off={format_latency(result['post_off_duration_ms'])}"
+                    f"post_off={post_off_text}"
                 )
 
     return comparison_rows, detail_rows
@@ -966,6 +1033,8 @@ def save_threshold_csv(output_dir, rows):
         "avg_latency_ms",
         "post_off_sessions",
         "post_off_detection_count",
+        "censored_post_off_sessions",
+        "open_ended_sessions",
         "avg_post_off_duration_ms",
     ]
 
@@ -1001,6 +1070,8 @@ def save_post_off_csv(output_dir, rows):
         "first_post_off_detection_ms",
         "last_post_off_detection_ms",
         "post_off_duration_ms",
+        "post_off_censored",
+        "cheat_open_ended",
         "excluded_event_count",
     ]
 
