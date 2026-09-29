@@ -1,0 +1,12 @@
+{
+  "test_id": "aimbot_004",
+  "module": "aimbot",
+  "label": "cheat",
+  "cheat_type": "aimbot",
+  "cheat_windows_ms": [
+    [
+      0,
+      340556
+    ]
+  ]
+}
