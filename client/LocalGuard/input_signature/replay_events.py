@@ -43,6 +43,8 @@ def json_line(stream, value):
 def session_args(parser):
     """검사기 CLI에 공통 세션·수동 실험 표식 옵션을 추가한다."""
     parser.add_argument('--session-id', help='Unique test name, e.g. normal_001; existing folders are never overwritten')
+    parser.add_argument('--t0', type=float, metavar='EPOCH',
+                        help='Launcher session start as Unix epoch seconds; omit for standalone runs')
     parser.add_argument('--label', choices=['normal', 'cheat', 'unknown'], default='unknown')
     parser.add_argument('--cheat-name', default='')
     parser.add_argument('--player-id', default='local_player', help='Tester-assigned local player ID, NOT authenticated identity')
@@ -60,6 +62,8 @@ def check_session_args(parser, args):
         parser.error('--label cheat requires --cheat-name')
     if args.label != 'cheat' and (args.cheat_name or args.hotkeys):
         parser.error('--cheat-name / --hotkeys require --label cheat')
+    if args.t0 is not None and (not math.isfinite(args.t0) or args.t0 <= 0):
+        parser.error('--t0 must be a finite positive Unix epoch in seconds')
 
 
 class ReplaySession:
@@ -71,19 +75,34 @@ class ReplaySession:
 
     def __init__(self, root, session_id=None, *, label='unknown', player_id='local_player',
                  cheat_name='', game_version='unverified', data_origin='live_game',
-                 modules=(), clock=clock_ms):
-        """세션 디렉터리와 공통 Event 파일을 새로 만들고 manifest를 초기화한다."""
+                 modules=(), clock=clock_ms, wall_clock=time.time, t0_epoch=None):
+        """세션 파일을 만들고, 선택한 런처 t0를 단조 시계 기준으로 변환한다.
+
+        벽시계는 시작 시 한 번만 읽는다. 이후 Event·마커의 경과 시간은 단조
+        시계에서 계산하므로 실행 중 시스템 시간이 바뀌어도 역행하지 않는다.
+        """
         session_id = session_id or 'localguard_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', session_id):
             raise ValueError('invalid session_id')
         if label not in ('normal', 'cheat', 'unknown') or (label == 'cheat' and not cheat_name):
             raise ValueError('invalid test label / missing cheat name')
+        if t0_epoch is not None:
+            if type(t0_epoch) not in (int, float) or not math.isfinite(t0_epoch) or t0_epoch <= 0:
+                raise ValueError('t0 must be a finite positive Unix epoch in seconds')
+            age_seconds = wall_clock() - t0_epoch
+            if not 0 <= age_seconds <= 86400:
+                raise ValueError('t0 must be no more than one day old and not in the future')
+            prior_elapsed_ms = round(age_seconds * 1000)
+        else:
+            prior_elapsed_ms = 0
+        run_origin = clock()
         self.path = Path(root).resolve() / session_id
         self.path.mkdir(parents=True, exist_ok=False)
         self.raw = self.path / 'raw'
         self.raw.mkdir()
         self.clock = clock
-        self.origin = clock()
+        self.run_origin = run_origin
+        self.origin = run_origin - prior_elapsed_ms
         self.lock = threading.RLock()
         self.file = (self.path / 'events.jsonl').open('x', encoding='utf-8')
         self.counts = Counter()
@@ -103,6 +122,7 @@ class ReplaySession:
             'started_utc': datetime.now(timezone.utc).isoformat(),
             'clock': 'GetTickCount64' if sys.platform == 'win32' else 'monotonic_ms',
             'clock_origin_ms': self.origin, 'timestamp_unit': 'milliseconds_since_session_start',
+            'session_t0_epoch': t0_epoch, 'module_start_offset_ms': prior_elapsed_ms,
             'modules': list(modules), 'status': 'running', 'duration_ms': None,
             'event_counts': {}, 'collection_errors': {}, 'comparison_ready': False,
             'cheat_confirmed': False, 'automatic_blocking': False,
@@ -115,12 +135,17 @@ class ReplaySession:
     @classmethod
     def from_args(cls, args, **kwargs):
         """CLI 인자를 명시적 생성자 인자로 옮기는 얇은 어댑터다."""
+        kwargs.setdefault('t0_epoch', getattr(args, 't0', None))
         return cls(args.log_root, args.session_id, label=args.label, player_id=args.player_id,
                    cheat_name=args.cheat_name, game_version=args.game_version, **kwargs)
 
     def elapsed(self):
-        """세션 시작 기준의 경과 밀리초를 반환한다."""
+        """런처 t0가 있으면 그 시각부터, 없으면 모듈 시작부터의 경과 밀리초."""
         return max(0, self.clock() - self.origin)
+
+    def run_elapsed(self):
+        """--seconds 종료 조건에 쓸 모듈 자체의 실행 경과 밀리초."""
+        return max(0, self.clock() - self.run_origin)
 
     def write_manifest(self):
         """현재 집계값을 manifest에 반영하고 원자적으로 저장한다."""
