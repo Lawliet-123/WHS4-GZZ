@@ -13,11 +13,26 @@ Sensor -> Detector -> 화면 출력까지 실제로 연결해서 돌리는 진�
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
+# When launched as ``python client/detectors/aimbot/main.py``, Python puts
+# this script's directory on sys.path, not the repository root where shared/ lives.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from detector.aimbot_detector import AimbotDetector
 from sensors.meccha_aim_telemetry_sensor import MecchaAimTelemetrySensor
+from shared.config import ClientConfig
+from shared.errors import SharedError
+from shared.logger import (
+    configure_client,
+    flush_client,
+    send_detection,
+    shutdown_client,
+)
 
 DEFAULT_LOG_PATH = Path(
     r"C:\Program Files (x86)\Steam\steamapps\common\MECCHA CHAMELEON"
@@ -49,6 +64,18 @@ def main():
     sensor = MecchaAimTelemetrySensor(args.log_path)
     detector = AimbotDetector()
 
+    client_configured = False
+    try:
+        configure_client(ClientConfig.from_env())
+        client_configured = True
+        print("[INFO] Shared telemetry client configured.")
+    except SharedError as exc:
+        # 중앙 전송 설정이 없거나 잘못돼도 로컬 탐지는 계속한다.
+        print(
+            f"[WARNING] Shared telemetry is unavailable: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
     print("[INFO] Telemetry connected.")
     print("[INFO] Aimbot detection started.")
     print("[INFO] Press Ctrl+C to stop.\n")
@@ -60,11 +87,50 @@ def main():
                 if result:
                     print("-" * 60)
                     print(json.dumps(result, ensure_ascii=False, indent=2))
+                    if client_configured:
+                        try:
+                            receipt = send_detection(result)
+                            # 'queued'는 로컬 outbox에 저장됐다는 뜻이며,
+                            # 중앙 서버가 수신했다는 확인 응답은 아니다.
+                            print(f"[INFO] Shared telemetry queued: {receipt.event_id}")
+                        except SharedError as exc:
+                            print(
+                                f"[WARNING] Shared telemetry rejected locally: "
+                                f"{type(exc).__name__}: {exc}",
+                                file=sys.stderr,
+                            )
             time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
         print("\n종료.")
+    finally:
+        if client_configured:
+            try:
+                flushed = flush_client(timeout=3)
+                if not flushed:
+                    print(
+                        "[WARNING] Shared telemetry flush incomplete; pending or failed events remain.",
+                        file=sys.stderr,
+                    )
+            except SharedError as exc:
+                print(
+                    f"[WARNING] Shared telemetry flush failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
+            try:
+                stopped = shutdown_client(timeout=5)
+                if not stopped:
+                    print(
+                        "[WARNING] Shared telemetry sender did not stop before timeout; "
+                        "queued data remains in the outbox.",
+                        file=sys.stderr,
+                    )
+            except SharedError as exc:
+                print(
+                    f"[WARNING] Shared telemetry shutdown failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
 
 
 if __name__ == "__main__":
     main()
-
