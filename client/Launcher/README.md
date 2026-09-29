@@ -40,7 +40,10 @@ Module(
 )
 ```
 
-자리표시자 `{session}` `{player}` `{t0}` `{window}` 는 런처가 채운다.
+자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` 는 런처가 채운다.
+`{game_bin}` 은 런처가 찾은 게임 실행 폴더(`...\Chameleon\Binaries\Win64`)다. UE4SS 모드가
+쓰는 로그처럼 게임 폴더 아래 파일을 읽는 모듈은 경로를 박지 말고 이걸로 받는다
+(예: `r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"`).
 
 | 항목 | 뜻 |
 |---|---|
