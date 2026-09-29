@@ -1,4 +1,4 @@
-﻿from core.result import DetectorResult, Evidence
+from core.result import DetectorResult, Evidence
 from core.process_memory import ProcessMemory
 from core.pawn_locator import PawnLocator
 from rules.noclip.memory_rules import NoclipMemoryRules
@@ -8,6 +8,8 @@ PROCESS_NAME = "PenguinHotel-Win64-Shipping.exe"
 
 OFFSET_BODY_CAPSULE = 0x420
 OFFSET_COLLISION_FLAGS = 0x94
+
+REASON_CODE = "collision_bit_cleared"
 
 
 def _format_evidence(
@@ -23,6 +25,7 @@ def _format_evidence(
 
     note = (
         f"{item.event_type}; "
+        f"reason={item.reason}; "
         f"pawn=0x{pawn_address:X}; "
         f"body_capsule=0x{body_capsule_address:X}"
     )
@@ -102,9 +105,9 @@ def scan():
                 return result
 
             for item in evidence_list:
-                if item.reason not in result.reasons:
+                if REASON_CODE not in result.reasons:
                     result.reasons.append(
-                        item.reason
+                        REASON_CODE
                     )
 
                 result.evidence.append(

@@ -1,4 +1,4 @@
-﻿import math
+import math
 import time
 
 from core.result import DetectorResult, Evidence
@@ -15,6 +15,8 @@ SAMPLE_HZ = 60.0
 SAMPLE_INTERVAL = 1.0 / SAMPLE_HZ
 
 SCAN_SECONDS = 3.0
+
+REASON_CODE = "control_rotation_pattern"
 
 
 def _read_control_rotation(
@@ -68,6 +70,7 @@ def _format_evidence(
 
     note = (
         f"{item.event_type}; "
+        f"reason={item.reason}; "
         f"controller=0x{controller_address:X}"
     )
 
@@ -216,11 +219,11 @@ def scan():
 
             for item in detected_evidence:
                 if (
-                    item.reason
+                    REASON_CODE
                     not in result.reasons
                 ):
                     result.reasons.append(
-                        item.reason
+                        REASON_CODE
                     )
 
                 result.evidence.append(

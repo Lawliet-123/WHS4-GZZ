@@ -1,4 +1,4 @@
-﻿from core.result import DetectorResult, Evidence
+from core.result import DetectorResult, Evidence
 from core.process_memory import ProcessMemory
 from core.pawn_locator import PawnLocator
 from rules.godmode.memory_rules import GodModeMemoryRules
@@ -12,6 +12,18 @@ OFFSET_HEALTH = 0x0638
 OFFSET_MAX_HEALTH = 0x0640
 OFFSET_CHANGE_BEFORE_HEALTH = 0x0648
 OFFSET_IS_HUNTER = 0x0C3A
+
+REASON_CODES = {
+    "Invincible": "invincible_enabled",
+    "GodModeState": "godmode_value_pattern",
+}
+
+
+def _reason_code(item):
+    return REASON_CODES.get(
+        item.target,
+        "godmode_memory_evidence",
+    )
 
 
 def _read_values(memory, pawn_address):
@@ -46,6 +58,7 @@ def _format_evidence(item, pawn_address):
 
     note = (
         f"{item.event_type}; "
+        f"reason={item.reason}; "
         f"pawn=0x{pawn_address:X}"
     )
 
@@ -103,9 +116,13 @@ def scan():
                 return result
 
             for item in evidence_list:
-                if item.reason not in result.reasons:
+                reason_code = _reason_code(
+                    item
+                )
+
+                if reason_code not in result.reasons:
                     result.reasons.append(
-                        item.reason
+                        reason_code
                     )
 
                 result.evidence.append(
