@@ -63,8 +63,8 @@ def find_game_dir(explicit=None):
             return p
     # 실행 중이면 프로세스에서 직접 얻는다
     try:
-        import pymem
-        pm = pymem.Pymem("PenguinHotel-Win64-Shipping.exe")
+        from core import procopen
+        pm = procopen.open_game("PenguinHotel-Win64-Shipping.exe")
         exe = pm.process_base.filename
         exe = exe if isinstance(exe, str) else exe.decode("utf-8", "replace")
         return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(exe))))

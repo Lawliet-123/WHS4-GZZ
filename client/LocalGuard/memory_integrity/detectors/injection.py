@@ -51,6 +51,7 @@ import time
 import pymem
 import pymem.exception
 
+from core import procopen
 from core import scan_engine as D
 # 이 파일을 직접 실행해도 core/ 를 찾게 한다.
 # 팀원마다 실행 방식이 달라서 둘 다 되게 해둔다.
@@ -79,7 +80,7 @@ def scan(baseline=None):
     t0 = time.time()
 
     try:
-        pm = pymem.Pymem(D.GAME_EXE)
+        pm = procopen.open_game(D.GAME_EXE)
     except pymem.exception.ProcessNotFound:
         return r.unavailable("게임이 실행 중이 아닙니다")
     except Exception as e:
