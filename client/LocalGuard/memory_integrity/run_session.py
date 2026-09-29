@@ -238,9 +238,13 @@ def _existing(log_dir, stem):
 
 def run(session_id=None, only=None, post_url=None, log_dir=None,
         player_id=None, detectors=None, log_name=None,
-        watch=0, interval=15.0, overwrite=False, start_on=False):
+        watch=0, interval=15.0, overwrite=False, start_on=False,
+        t0=None, window=0):
     detectors = DETECTORS if detectors is None else detectors
-    t0 = time.time()
+    # 런처가 주기적으로 부를 때는 **바깥에서 기준 시각을 넘긴다.**
+    # 그러지 않으면 실행마다 t0 가 새로 잡혀 timestamp_ms 가 0 으로 되돌아가고,
+    # replay_export 의 무결성 검사에 "두 번 실행된 기록"으로 걸려 버려진다.
+    t0 = time.time() if t0 is None else float(t0)
     set_session_start(t0)          # 모든 모듈이 같은 기준 시각을 쓰게 한다
     set_player_id(player_id)       # 로그에 누구 PC 인지 박아둔다
     run_id = f"{t0:.6f}"
@@ -317,7 +321,8 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
     markers = None
     rounds = 0
     if not watch:
-        one_round(0)
+        # 런처가 주기 검사로 부르면 window 가 몇 번째 바퀴인지 알려준다.
+        one_round(window)
         rounds = 1
     else:
         initial = "ON" if start_on else "OFF"
@@ -536,6 +541,11 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
                     help="핵을 이미 켠 상태에서 시작한다 (기본은 OFF 로 시작)")
     ap.add_argument("--overwrite", action="store_true",
                     help="같은 세션 이름의 기록을 지우고 다시 쓴다")
+    ap.add_argument("--t0", type=float, default=None, metavar="EPOCH",
+                    help="기준 시각(epoch). 런처가 주기적으로 부를 때 모든 실행이 "
+                         "같은 시계를 쓰도록 넘긴다")
+    ap.add_argument("--window", type=int, default=0, metavar="N",
+                    help="이번이 몇 번째 주기 검사인지 (window_id 로 기록)")
     a = ap.parse_args(argv)
 
     if a.list:
@@ -564,7 +574,8 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
                         player_id=a.player, detectors=detectors,
                         log_name=a.log_name,
                         watch=a.watch, interval=a.interval,
-                        overwrite=a.overwrite, start_on=a.start_on)
+                        overwrite=a.overwrite, start_on=a.start_on,
+                        t0=a.t0, window=a.window)
     if summary is None:
         return code
 

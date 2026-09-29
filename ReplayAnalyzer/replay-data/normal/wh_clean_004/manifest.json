@@ -1,0 +1,36 @@
+{
+  "label": "NORMAL",
+  "player_id": "player_001",
+  "session_id": "wh_clean_004",
+  "cheat_type": null,
+  "cheat_start_ms": null,
+  "cheat_end_ms": null,
+  "cheat_windows_ms": null,
+  "cheat_timing": "none (normal session)",
+  "cheat_open_ended": false,
+  "initial_state": "OFF",
+  "module_timing": {
+    "whistle": "dll_resident",
+    "whistle_rpc": "toggle"
+  },
+  "post_off_censored": [],
+  "phase_counts": null,
+  "source": "external scan, repeated (run_session.py --watch)",
+  "rounds": 12,
+  "interval_s": 10.0,
+  "samples": 24,
+  "span_ms": [
+    1457,
+    111528
+  ],
+  "modules": [
+    "whistle",
+    "whistle_rpc"
+  ],
+  "excluded_from_scoring": [
+    "whistle_rpc"
+  ],
+  "error_events": {
+    "whistle_rpc": 12
+  }
+}

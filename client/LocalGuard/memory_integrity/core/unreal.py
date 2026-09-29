@@ -36,6 +36,8 @@ import struct
 
 import pymem
 
+from core import selfid
+
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
 # ── 4.0.2 오프셋 ─────────────────────────────────────────────────────────
@@ -76,9 +78,16 @@ class Runtime:
         self.blocks = self.base + NAMEPOOL_RVA + NAMEPOOL_BLOCKS
 
         self.modules = {}
+        self.module_paths = {}
         for m in self.pm.list_modules():
             n = m.name if isinstance(m.name, str) else m.name.decode("utf-8", "replace")
             self.modules[n.lower()] = (m.lpBaseOfDll, m.lpBaseOfDll + m.SizeOfImage)
+            # 경로를 같이 들고 있어야 "이게 우리 것인가"를 이름이 아니라
+            # 출처로 판정할 수 있다. core/selfid.py 참고.
+            f = getattr(m, "filename", None)
+            if isinstance(f, bytes):
+                f = f.decode("utf-8", "replace")
+            self.module_paths[n.lower()] = f or ""
         self.game_lo, self.game_hi = self.modules[GAME_EXE.lower()]
 
         self._names = {}
@@ -103,6 +112,17 @@ class Runtime:
             if lo <= addr < hi:
                 return name
         return "알 수 없는 메모리"
+
+    def owner_path_of(self, addr):
+        """이 주소를 가진 모듈의 파일 경로. 모르면 빈 문자열."""
+        for name, (lo, hi) in self.modules.items():
+            if lo <= addr < hi:
+                return self.module_paths.get(name, "")
+        return ""
+
+    def is_self_module(self, addr):
+        """안티치트 자신의 모듈인가. core/selfid.py 의 기준을 그대로 쓴다."""
+        return selfid.is_self_path(self.owner_path_of(addr))
 
     # ── 이름 ─────────────────────────────────────────────────────────────
     def resolve(self, name_id):

@@ -109,16 +109,31 @@ def scan():
     fns = [x for x in rows if x.exec_fn and rt.class_name(x.cls) in UFUNCTION_CLASSES]
     r.meta["ufunctions"] = len(fns)
 
+    self_hooks = []
     for x in fns:
         if rt.in_game_module(x.exec_fn):
             continue
         fname = rt.name_of(x)
         owner = rt.owner_of(x.exec_fn)
+        if rt.is_self_module(x.exec_fn):
+            # **우리 자신의 관측용 후크다.** ac_whistle DLL 은 도발 RPC 를 보려고
+            # ExecFunction 을 바꾼다. 이걸 핵으로 세면 후크를 넣은 세션이 전부
+            # DETECTED 가 되어, 정작 핵이 있는지 없는지를 구분할 수 없다.
+            # 점수만 빼고 근거에는 남긴다 — 안 남기면 나중에 "왜 이 세션만
+            # 다르지"를 설명할 수 없다. core/selfid.py 참고.
+            self_hooks.append(f"{fname} -> {owner}")
+            continue
         # 도발 경로거나 오디오 재생 경로면 휘파람 핵으로 귀속한다
         related = _is_provo(fname) or fname.lower() in ("play", "playsound", "setsound")
         r.add("exec_function_hooked", 60 if related else 40,
               f"{fname}() 의 ExecFunction 이 {owner} 로 교체됨",
               [Evidence("address", f"0x{x.exec_fn:016X}", f"{fname} -> {owner}")])
+
+    if self_hooks:
+        r.meta["self_hooks"] = self_hooks
+        r.evidence.append(Evidence(
+            "module", f"안티치트 자체 후크 {len(self_hooks)}건",
+            "관측용 ac_whistle DLL — 점수에서 제외"))
 
     # ── W-2. 캐릭터 vtable 변조 + W-3. 사운드 교체 ───────────────────────
     chars = [x for x in rows if "cleon_character" in rt.class_name(x.cls).lower()]

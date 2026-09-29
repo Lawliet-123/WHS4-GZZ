@@ -1,0 +1,44 @@
+{
+  "label": "CHEAT",
+  "player_id": "player_001",
+  "session_id": "hide_hack_001",
+  "cheat_type": "HIDE_ANYWHERE",
+  "cheat_start_ms": 41309,
+  "cheat_end_ms": 93437,
+  "cheat_windows_ms": [
+    [
+      41309,
+      93437
+    ]
+  ],
+  "cheat_timing": "marked",
+  "cheat_open_ended": false,
+  "initial_state": "OFF",
+  "module_timing": {
+    "injection": "dll_resident",
+    "value_tamper": "toggle"
+  },
+  "post_off_censored": [
+    "injection",
+    "value_tamper"
+  ],
+  "phase_counts": {
+    "ON": 10,
+    "OFF": 18,
+    "BOUNDARY": 2
+  },
+  "source": "external scan, repeated (run_session.py --watch)",
+  "rounds": 15,
+  "interval_s": 10.0,
+  "samples": 30,
+  "span_ms": [
+    1785,
+    143668
+  ],
+  "modules": [
+    "injection",
+    "value_tamper"
+  ],
+  "excluded_from_scoring": [],
+  "error_events": {}
+}
