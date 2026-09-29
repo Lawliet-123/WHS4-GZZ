@@ -72,17 +72,17 @@ This integration is **not yet confirmed to reach the central server**:
   result and keeps the originals as `evidence.source_attacker_id` and
   `evidence.source_session_id`. Detection logic, scores and reasons are
   unchanged.
-- **Attribution assumption (unverified).** Every scored signal needs shot
-  records (signal 12's +3 needs only three shots, no aim trace and no
-  confirmed find). Shots come from `SpawnShotEffect(Local)`, and aimed
-  candidates / LOS are computed from this PC's local controller, so a result
-  is treated as this PC's. But that hook does not check that the shooter is the
-  local pawn. If the `SpawnShotEffect(Client)` multicast also calls `(Local)`
-  on other PCs, a remote Hunter's shots would be scored with this PC's camera
-  and attributed to this PC. The current recordings (two players, one Hunter
-  per round) cannot tell. A multi-Hunter round measurement, or recording an
-  `is_local` flag in the Lua collector, is needed. The original actor path is
-  kept in `evidence.source_attacker_id` so such cases can be separated later.
+- **Attribution.** Every scored signal needs shot records (signal 12's +3
+  needs only three shots, no aim trace and no confirmed find). Since #43 the
+  Lua collector records `is_local` (shooter vs. this PC's pawn) and the sensor
+  drops `is_local=false`. Remaining caveat (code reading, not yet measured in
+  game): the local controller comes from `UEHelpers.GetPlayerController`,
+  which effectively returns the first PlayerController without checking that
+  it is local. A listen-server host also holds controllers for remote
+  clients, so on the host PC the comparison can pick the wrong pawn. Checking
+  the shooter with `IsLocallyControlled()` would avoid that. The original actor
+  path is kept in `evidence.source_attacker_id` so such cases can be separated
+  later.
 - `KillPlayer` is a server RPC (SDK dump), so on the host it may also fire for
   remote Hunters and on guests it may not fire at all. Outcome-only windows
   score 0, but their evidence would carry the host PC's `player_id`.
@@ -100,9 +100,9 @@ This integration is **not yet confirmed to reach the central server**:
   (`client/Launcher/logs/outbox/<module>/`). Otherwise aimbot and
   external_access would share `telemetry-outbox/` under the repo root, and
   shared allows only one sender per outbox.
-- Known issue, not changed here: when `GetRoundId()` is nil the Lua writes the
-  string `"nil"`, which the Python side treats as a real round, so the
-  "don't score an unconfirmed round" gate does not apply.
+- Fixed in #43: when `GetRoundId()` is nil the Lua now writes JSON `null`, and
+  older logs with the string `"nil"` are treated as an unconfirmed round, so
+  such rounds are not scored.
 - A `queued` receipt only means the shared client accepted the event into its
   local outbox; it is not proof that the receiver stored it. The `/api/detection`
   end-to-end delivery and durable-storage response still need testing after the
