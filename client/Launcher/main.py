@@ -35,6 +35,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import sys
 import time
 
@@ -136,9 +137,68 @@ def preflight(pm, only):
             ui.line(f"    - {s.name:<18} {s.detail}")
     if only:
         ui.line(f"  --only: {', '.join(only)}")
+    root = publish_game_dir()
+    if root:
+        ui.line(f"  게임 폴더: {root}")
+    else:
+        ui.line("  ! 게임 폴더를 못 찾았습니다. 스팀으로 띄우고, 게임이 뜨면 다시 봅니다.")
+        ui.line("    직접 지정하려면 GZZ_GAME_DIR 환경변수를 쓰세요.")
+
+
+def report_stop(ended):
+    """누가 스스로 끝났고 누가 강제로 끝났는지 보여준다.
+
+    강제로 끝난 모듈은 정리 코드가 안 돌았다. manifest 가 RUNNING 으로 남았을
+    수 있으니, 그 세션 로그를 쓸 사람은 알아야 한다. 조용히 넘기지 않는다.
+    """
+    g, f, u = ended.get("graceful", []), ended.get("forced", []), ended.get("unsignaled", [])
+    d = ended.get("defaulted", [])
+    if not (g or f or u):
+        return
+    ui.line(f"  정리 결과: 요청 후 종료 {len(g)}  /  강제 종료 {len(f) + len(u)}")
+    if d:
+        ui.line(f"    기본 처리로 끝남(정리 코드가 돌았는지 모름): {', '.join(d)}")
+    if f:
+        ui.line(f"    요청은 갔는데 제때 안 끝남: {', '.join(f)}")
+    if u:
+        ui.line(f"    요청을 못 보냄(콘솔 없음 등): {', '.join(u)}")
+    if d or f or u:
+        ui.line("    위 모듈은 manifest 가 RUNNING 으로 남았을 수 있습니다. 모듈 시작부에")
+        ui.line("    아래 한 줄이 있으면 Ctrl+Break 가 KeyboardInterrupt 로 바뀌어 finally 가 돕니다.")
+        ui.line("      signal.signal(signal.SIGBREAK, signal.default_int_handler)")
+
+
+def publish_game_dir(refresh=False):
+    """찾은 게임 폴더를 자식 모듈들에게 환경변수로 알려준다.
+
+    탐지기마다 게임 폴더를 따로 추측하고 있다 — filesystem 은 하드코딩 3줄,
+    런처는 또 다른 한 줄이었다. 서로 다른 값을 쓰면 한쪽은 훑고 한쪽은 못 훑는다.
+    런처가 이미 알고 있으니 알려주고, 자식은 환경을 물려받는다.
+
+    게임이 뜬 뒤에 `refresh=True` 로 다시 부르면 프로세스에서 얻은 확실한
+    경로로 갱신된다. 스팀 라이브러리 추정보다 그쪽이 정확하다.
+
+    두 층을 다 내보낸다. 이름을 하나로 쓰면 받는 쪽마다 다른 층을 뜻하게 된다.
+        GZZ_GAME_ROOT  ...\\MECCHA CHAMELEON                 (filesystem 이 훑는 층)
+        GZZ_GAME_BIN   ...\\Chameleon\\Binaries\\Win64        (exe·UE4SS 가 있는 층)
+    """
+    if refresh:
+        game_launcher._cache.clear()
+    root = game_launcher.find_game_root()
+    if root:
+        os.environ["GZZ_GAME_ROOT"] = root
+        os.environ["GZZ_GAME_BIN"] = game_launcher.find_game_dir()
+    return root
 
 
 def main(argv=None):
+    # 런처도 모듈과 같은 약속을 지킨다 — Ctrl+Break 를 받으면 Ctrl+C 처럼 정리하고
+    # 끝난다. 나중에 Dashboard 나 배치 스크립트가 런처를 끌 때 쓸 수 있는 문이다.
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, signal.default_int_handler)
+        except (ValueError, OSError):
+            pass
     ap = argparse.ArgumentParser(description="MECCHA 안티치트 런처")
     ap.add_argument("--session", help="세션 id (기본: 시각으로 자동 생성)")
     ap.add_argument("--player", help="이 PC 의 player_id. 기본은 player_id.txt 를 읽고, "
@@ -226,6 +286,11 @@ def main(argv=None):
             ui.line("  게임이 뜨지 않아 종료합니다. 게임을 켜고 다시 실행해 주세요.")
             return 2
         ctx["game_pid"] = pid
+        # 게임이 떴으니 이제 추정이 아니라 프로세스에서 경로를 얻을 수 있다.
+        # 게임 관련 모듈을 띄우기 **전에** 갱신해야 그 값을 물려받는다.
+        found = publish_game_dir(refresh=True)
+        if found:
+            ui.line(f"      게임 폴더: {found}")
 
         ui.line("  [4/4] 게임 관련 모듈 시작")
         pm.start_group(needs_game=True)
@@ -248,9 +313,11 @@ def main(argv=None):
         ui.line("")
         ui.line("  중단합니다.")
     finally:
-        pm.stop_all()
+        ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (최대 십여 초).")
+        ended = pm.stop_all()
         ui.render(pm.snapshot(), ctx)
         ui.line("")
+        report_stop(ended)
         ui.line(f"  세션 {session} 종료. 모듈 로그: client/Launcher/logs/")
 
     # 런처 자체의 성공/실패만 돌려준다. 탐지 결과는 각 모듈 로그에 있다.

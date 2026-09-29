@@ -33,6 +33,7 @@ import inspect
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -339,6 +340,14 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
         watching = _begin_watch(picked, log_dir if log_name else None, stem)
         try:
             one_round(window)
+        except KeyboardInterrupt:
+            # 런처가 끄는 중이다. 이미 큐에 넣은 전송은 짧게 비우고 나간다.
+            # 못 보낸 것은 outbox 에 남아 다음 실행 때 같이 나간다.
+            try:
+                tele.finish(timeout=2.0)
+            except Exception:
+                pass
+            raise
         finally:
             _end_watch(watching)
         rounds = 1
@@ -630,7 +639,17 @@ def run_cli(entry):
 
     Ctrl+C 는 3 이 아니라 2 다. 코드가 터진 게 아니라 검사를 끝까지 못 한
     것이고, 집계에서 빼야 하는 건 같다.
+
+    런처는 끌 때 Ctrl+Break 를 보낸다(모듈마다 프로세스 그룹이 따로라 Ctrl+C 는
+    못 보낸다). 그걸 KeyboardInterrupt 로 바꿔 두어야 아래 경로와 각 finally
+    (_end_watch 기준점 저장, 전송 flush)가 돈다. 안 바꾸면 윈도 기본 처리로 즉시
+    끝나서 강제 종료와 같아진다.
     """
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, signal.default_int_handler)
+        except (ValueError, OSError):
+            pass
     try:
         code = entry()
     except SystemExit:

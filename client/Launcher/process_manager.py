@@ -50,6 +50,9 @@ RESTARTING = "RESTART"     # 상주 모듈이 죽었고 되살리는 중 (간격
 FAILED = "FAILED"          # 비정상 종료. 되살리지 않거나 한도를 넘었다
 STOPPED = "STOPPED"        # 우리가 끝냈다
 
+# Ctrl+C/Ctrl+Break 를 윈도 기본 처리로 받고 끝난 프로세스의 종료 코드.
+STATUS_CONTROL_C_EXIT = 0xC000013A
+
 
 def is_admin() -> bool:
     try:
@@ -237,7 +240,8 @@ class ProcessManager:
                 pass
 
     def _oneshot_exit(self, st: ModuleState, code: int, now: float) -> None:
-        # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패
+        # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패 / 3 크래시.
+        # 3 은 아래 비정상 종료 쪽으로 간다 — 크래시를 의심으로 세지 않는다.
         if code in (0, 1, 2):
             st.status = {0: DONE, 1: DONE, 2: WARN}[code]
             st.detail = {0: "정상", 1: "의심 발견", 2: "검사 실패"}[code]
@@ -310,15 +314,61 @@ class ProcessManager:
         return sum(1 for s in self.states.values() if s.status == RUNNING)
 
     # ── 종료 ───────────────────────────────────────────────────────────
-    def stop_all(self, grace_s: float = 10.0) -> None:
-        """stopping 을 설정하고 모듈이 전송 큐 등을 정리할 시간을 준 뒤 종료한다.
+    def stop_all(self, grace_s: float = 10.0) -> Dict[str, List[str]]:
+        """전부 끝낸다. 요청하고, 기다리고, 그래도 안 끝난 것만 강제로 끈다.
 
-        **stopping 을 먼저 켠다.** 안 그러면 모듈을 끄는 사이 워치독이 "죽었다" 며
-        되살린다. 그 뒤 우리가 띄운 것, 이어받은 것, 등록부에 적힌 것을 모두 끈다.
+        예전에는 terminate() 로 끝냈다. 윈도에서 그건 TerminateProcess 라 모듈의
+        finally·atexit 이 한 줄도 안 돈다. 기다리는 시간(grace)을 두긴 했지만 **이미
+        죽인 뒤에** 기다리는 것이라 의미가 없었다. 그래서 input_signature 같은 모듈의
+        manifest 가 RUNNING 으로 남았다(UE4SS.md 8번, 성민님 요구).
 
-        자식은 별도 콘솔 프로세스 그룹으로 실행한다. CTRL_BREAK_EVENT 로 Python 의
-        KeyboardInterrupt/finally 경로를 먼저 실행하고, 제한 시간이 지나면 강제 종료한다.
+        자식은 모듈마다 별도 콘솔 프로세스 그룹이다(registry.spawn). 그래서 하나씩
+        골라 Ctrl+Break 로 종료를 요청할 수 있다(은지님 9/29 #34 가 이 뼈대를 먼저
+        넣었다. 여기에 순서·결과 보고·재입력 방지를 더했다).
+
+        순서
+          1. stopping 을 켠다         안 그러면 끄는 사이 워치독이 되살린다
+          2. 진행 중인 재시작을 기다린다
+          3. 게임 관련 모듈 먼저       탐지기가 먼저 정리를 끝내야 한다
+             게임과 무관한 것 나중     SelfDefense·KernelWatcher 는 끝까지 지킨다
+             무리마다: 종료 요청(Ctrl+Break) -> grace_s 까지 기다림 -> 남은 것만 강제
+          4. 등록부에 남은 것 정리      워치독이 stopping 직전에 띄운 것
+
+        grace_s 는 무리마다다. 10초인 이유: 에임봇·external_access 가 끝날 때 중앙
+        전송을 flush(3초) + shutdown(5초) 한다. 서버가 죽어 있으면 8초를 다 쓴다.
+        그보다 짧으면 비우는 도중에 강제로 끊게 된다. 보통은 1초 안에 끝나므로
+        이 시간을 다 기다리는 건 정리가 걸린 모듈이 있을 때뿐이다.
+
+        종료하는 동안 런처는 Ctrl+C 를 무시한다. 급해서 한 번 더 누르면 기다리던
+        중에 빠져나가 모듈이 고아로 남는다.
+
+        돌려주는 값: {"graceful": [...], "forced": [...], "unsignaled": [...],
+                      "defaulted": [...]}
+          graceful    요청 후 스스로 끝남
+          defaulted   graceful 중 윈도 기본 처리로 끝난 것(0xC000013A). 신호 처리
+                      한 줄이 없는 모듈이 이렇게 끝나지만, 한 줄은 있고 KeyboardInterrupt
+                      를 안 잡은 모듈도 같은 코드라 정리가 돌았는지는 모른다
+          forced      요청은 갔는데 grace_s 안에 안 끝나 강제로 끔
+          unsignaled  요청을 못 보내서 바로 강제로 끔 (콘솔이 없거나 다른 콘솔)
         """
+        # 두 번째 Ctrl+C / Ctrl+Break 가 기다리는 도중 빠져나가게 하면 모듈이 고아로 남는다.
+        sigs = [signal.SIGINT] + ([signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else [])
+        prev = {}
+        for s in sigs:
+            try:
+                prev[s] = signal.signal(s, signal.SIG_IGN)
+            except (ValueError, OSError):      # 메인 스레드가 아니면 못 바꾼다
+                pass
+        try:
+            return self._stop_all(grace_s)
+        finally:
+            for s, h in prev.items():
+                try:
+                    signal.signal(s, h)
+                except (ValueError, OSError):
+                    pass
+
+    def _stop_all(self, grace_s: float) -> Dict[str, List[str]]:
         try:
             registry.set_stopping()
         except Exception as e:
@@ -334,40 +384,11 @@ class ProcessManager:
             except Exception:
                 pass
 
-        for st in self.states.values():
-            if st.proc is not None and st.proc.poll() is None:
-                try:
-                    st.proc.send_signal(signal.CTRL_BREAK_EVENT)
-                except Exception:
-                    try:
-                        st.proc.terminate()
-                    except Exception:
-                        pass
-            if st.adopted_pid:
-                registry.request_stop(st.adopted_pid, st.adopted_ctime)
-        deadline = time.time() + grace_s
-        while time.time() < deadline:
-            entries = registry.load().get("entries", {}).values()
-            if not any(registry.is_alive(e.get("pid"), e.get("create_time", 0)) for e in entries):
-                break
-            time.sleep(0.1)
-        for st in self.states.values():
-            if st.proc is not None:
-                try:
-                    st.proc.wait(timeout=max(0.0, deadline - time.time()))
-                except Exception:
-                    try:
-                        st.proc.kill()
-                        self.say(f"  - {st.name} 강제 종료")
-                    except Exception:
-                        pass
-                st.proc = None
-            if st.adopted_pid:
-                if registry.is_alive(st.adopted_pid, st.adopted_ctime):
-                    registry.kill(st.adopted_pid, st.adopted_ctime)
-                st.adopted_pid, st.adopted_ctime = None, 0
-            if st.status in (RUNNING, RESTARTING):
-                st.status = STOPPED
+        out: Dict[str, List[str]] = {"graceful": [], "forced": [], "unsignaled": []}
+        game = [s for s in self.states.values() if s.module.needs_game]
+        base = [s for s in self.states.values() if not s.module.needs_game]
+        for group in (game, base):
+            self._stop_group(group, grace_s, out)
 
         # 등록부에 남은 것까지 끈다. 워치독이 stopping 직전에 띄운 것이 있을 수 있다.
         for e in registry.load().get("entries", {}).values():
@@ -376,3 +397,63 @@ class ProcessManager:
             registry.end_session()
         except Exception:
             pass
+        return out
+
+    def _alive(self, st: ModuleState) -> bool:
+        if st.proc is not None:
+            return st.proc.poll() is None
+        if st.adopted_pid:
+            return registry.is_alive(st.adopted_pid, st.adopted_ctime)
+        return False
+
+    def _stop_group(self, group: List[ModuleState], grace_s: float,
+                    out: Dict[str, List[str]]) -> None:
+        live = [st for st in group if self._alive(st)]
+        for st in group:
+            if st not in live and st.status in (RUNNING, RESTARTING):
+                st.status = STOPPED
+        if not live:
+            return
+
+        # 이어받은 프로세스는 생성 시각까지 맞춰 본다(PID 재사용이면 남의 프로세스다).
+        # 런처가 띄운 것은 Popen 을 쥐고 있어 재사용될 수 없으므로 시각을 안 넘긴다.
+        sent = {st.name: registry.request_stop(
+                    st.pid, None if st.proc is not None else st.adopted_ctime)
+                for st in live}
+        deadline = time.time() + grace_s
+        waiting = [st for st in live if sent[st.name]]
+        while waiting and time.time() < deadline:
+            waiting = [st for st in waiting if self._alive(st)]
+            if waiting:
+                time.sleep(0.1)
+
+        for st in live:
+            if not self._alive(st):
+                code = st.proc.returncode if st.proc is not None else None
+                st.last_code = code
+                if code is not None and (code & 0xFFFFFFFF) == STATUS_CONTROL_C_EXIT:
+                    # 윈도 기본 처리로 끝났다. 한 줄이 없는 모듈이 이렇게 끝나는데,
+                    # 한 줄은 있지만 KeyboardInterrupt 를 안 잡은 모듈도 코드가 같다.
+                    # 그래서 "정리가 안 돌았다" 고 단정하지 않고 모른다고 적는다.
+                    st.detail = "요청 후 종료 (기본 처리 — 정리 코드가 돌았는지 모름)"
+                    out.setdefault("defaulted", []).append(st.name)
+                else:
+                    st.detail = "요청 후 종료" + (f" (code {code})" if code is not None else "")
+                out["graceful"].append(st.name)
+            else:
+                # 여기까지 와야 강제로 끈다. 정리 코드는 안 돈다.
+                if st.proc is not None:
+                    registry._kill_proc(st.proc)
+                elif st.adopted_pid:
+                    registry.kill(st.adopted_pid, st.adopted_ctime)
+                if sent[st.name]:
+                    st.detail = f"강제 종료 — 요청 후 {grace_s:g}초 안에 안 끝남"
+                    out["forced"].append(st.name)
+                else:
+                    st.detail = "강제 종료 — 종료 요청을 보내지 못함"
+                    out["unsignaled"].append(st.name)
+                self.say(f"  - {st.name} {st.detail}")
+            st.proc = None
+            st.adopted_pid, st.adopted_ctime = None, 0
+            if st.status in (RUNNING, RESTARTING):
+                st.status = STOPPED

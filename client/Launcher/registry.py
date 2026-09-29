@@ -191,7 +191,21 @@ def kill(pid, ctime: Optional[int] = None) -> bool:
 
 
 def request_stop(pid, ctime: Optional[int] = None) -> bool:
-    """그때 그 프로세스 그룹에 CTRL_BREAK_EVENT를 보내 정상 종료를 요청한다."""
+    """그때 그 프로세스 그룹에 CTRL_BREAK_EVENT를 보내 정상 종료를 요청한다.
+
+    **요청이지 강제가 아니다. 받는 쪽이 처리해야 정리 코드가 돈다.** 파이썬은
+    Ctrl+Break(SIGBREAK)를 기본으로 KeyboardInterrupt 로 바꾸지 않는다 — 기본 처리는
+    그 자리에서 프로세스를 끝내고(종료 코드 0xC000013A) finally·atexit 이 안 돈다.
+    실제로 재 봤다(9/30, 한 줄 없는 모듈은 finally 가 안 돌았다). 그래서 모듈은
+    시작부에 이 한 줄이 있어야 한다.
+
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+
+    이 줄이 없으면 예전 강제 종료와 같다. 나빠지는 모듈은 없지만 좋아지지도 않는다.
+
+    못 보내는 경우(False): 이미 죽었거나 PID 가 재사용됐을 때(ctime 불일치), 런처가
+    콘솔 없이 떠 있거나(pythonw, 창 모드 exe) 대상이 다른 콘솔에 붙어 있을 때.
+    """
     if not pid or (ctime is not None and not is_alive(pid, ctime)):
         return False
     # spawn() creates a new console process group whose ID is the leader PID.
@@ -365,7 +379,16 @@ def end_session() -> None:
 # ── 띄우기·등록 ─────────────────────────────────────────────────────────
 
 def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Popen:
-    """모듈을 띄운다. 출력은 모듈 로그 파일에 이어 쓴다. 런처가 쓰던 방식 그대로다."""
+    """모듈을 띄운다. 출력은 모듈 로그 파일에 이어 쓴다.
+
+    **모듈마다 프로세스 그룹을 따로 만든다(CREATE_NEW_PROCESS_GROUP).** 그래야
+    끌 때 모듈 하나만 골라 종료 신호(Ctrl+Break)를 보낼 수 있다. 같은 그룹에 두면
+    신호가 런처를 포함한 전부에게 한꺼번에 간다.
+
+    덤으로 사용자가 런처 창에서 누른 Ctrl+C 가 모듈에 바로 가지 않는다. 예전에는
+    Ctrl+C 한 번에 모두가 동시에 정리를 시작했고, 사용자가 한 번 더 누르면 모듈의
+    finally 가 중간에 끊겼다. 이제 런처가 받아서 순서대로 끈다.
+    """
     os.makedirs(os.path.dirname(log) or ".", exist_ok=True)
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     with open(log, "a", encoding="utf-8") as f:
