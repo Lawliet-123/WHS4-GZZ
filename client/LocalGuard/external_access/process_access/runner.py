@@ -1,10 +1,23 @@
 """외부 process handle 수집·판정·로컬 JSONL 기록을 연결하는 실행기."""
 
 import argparse
+import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+
+# The shared package is versioned under shared/GZZ-Shared-0.1.0 rather than
+# installed as a top-level dependency. Put that package root first so
+# ``import shared`` resolves to the team's shared client.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+SHARED_PACKAGE_ROOT = REPOSITORY_ROOT / "shared" / "GZZ-Shared-0.1.0"
+if str(SHARED_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SHARED_PACKAGE_ROOT))
+
+from shared.config import ClientConfig
+from shared.errors import SharedError
+from shared.logger import configure_client, flush_client, send_detection, shutdown_client
 
 from ..common import (
     ArtifactCache,
@@ -18,6 +31,43 @@ from .handle_sensor import ExternalHandleSensor, HandleSensorUnavailable
 from .models import ExternalHandleObservation, ScanContext
 
 Writer = Callable[[Path, Dict[str, Any]], None]
+
+
+def _configure_shared_client() -> bool:
+    """Configure the shared sender once; local detection can still run offline."""
+    try:
+        configure_client(ClientConfig.from_env())
+    except SharedError as error:
+        # Do not print config values: they may contain the bearer token.
+        print(f"[shared] client unavailable: {type(error).__name__}")
+        return False
+    return True
+
+
+def _write_local_and_send(path: Path, result: Dict[str, Any]) -> None:
+    """Keep the existing JSONL record, then enqueue the same 7-field result."""
+    append_detection_jsonl(path, result)
+    try:
+        receipt = send_detection(result)
+    except SharedError as error:
+        print(f"[shared] detection not queued: {type(error).__name__}")
+        return
+    # A queued receipt means durable local outbox acceptance, not server delivery.
+    print(f"[shared] detection {receipt.status}: {receipt.event_id}")
+
+
+def _finish_shared_client() -> None:
+    """Give queued detections a bounded chance to send, then close the worker."""
+    try:
+        delivered = flush_client(timeout=3)
+        print(f"[shared] flush delivered={delivered}")
+    except SharedError as error:
+        print(f"[shared] flush failed: {type(error).__name__}")
+    try:
+        stopped = shutdown_client(timeout=5)
+        print(f"[shared] shutdown complete={stopped}")
+    except SharedError as error:
+        print(f"[shared] shutdown failed: {type(error).__name__}")
 
 
 @dataclass(frozen=True)
@@ -149,25 +199,31 @@ def main() -> None:
     if args.interval_ms <= 0:
         raise SystemExit("--interval-ms는 0보다 커야 함")
 
-    runner = ProcessAccessRunner(
-        game_executable_name=args.game_exe,
-        session_id=args.session_id,
-        player_id=args.player_id,
-        output_path=args.output,
-        allowlist=ProcessAllowlist.from_json(args.allowlist),
-    )
-    while True:
-        started_at = time.monotonic()
-        report = runner.scan_once()
-        print(
-            f"game_found={report.game_found} observed={report.observed_processes} "
-            f"allowed={report.allowed_processes} "
-            f"emitted={report.emitted_detections} duration_ms={report.duration_ms}"
-            + (f" error={report.error}" if report.error else "")
+    shared_ready = _configure_shared_client()
+    try:
+        runner = ProcessAccessRunner(
+            game_executable_name=args.game_exe,
+            session_id=args.session_id,
+            player_id=args.player_id,
+            output_path=args.output,
+            allowlist=ProcessAllowlist.from_json(args.allowlist),
+            writer=_write_local_and_send if shared_ready else append_detection_jsonl,
         )
-        if args.once:
-            return
-        time.sleep(max(0, args.interval_ms / 1000 - (time.monotonic() - started_at)))
+        while True:
+            started_at = time.monotonic()
+            report = runner.scan_once()
+            print(
+                f"game_found={report.game_found} observed={report.observed_processes} "
+                f"allowed={report.allowed_processes} "
+                f"emitted={report.emitted_detections} duration_ms={report.duration_ms}"
+                + (f" error={report.error}" if report.error else "")
+            )
+            if args.once:
+                return
+            time.sleep(max(0, args.interval_ms / 1000 - (time.monotonic() - started_at)))
+    finally:
+        if shared_ready:
+            _finish_shared_client()
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@
 import ctypes
 import json
 import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -139,8 +140,12 @@ class ProcessManager:
             log.write(header)
             log.flush()
             env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            )
             st.proc = subprocess.Popen(argv, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL, env=env)
+                                       stdin=subprocess.DEVNULL, env=env,
+                                       creationflags=creationflags)
         except Exception as e:
             st.status = FAILED
             st.detail = f"실행 실패: {e}"
@@ -210,20 +215,26 @@ class ProcessManager:
         return sum(1 for s in self.states.values() if s.status == RUNNING)
 
     # ── 종료 ───────────────────────────────────────────────────────────
-    def stop_all(self, grace_s: float = 5.0) -> None:
-        """전부 끝낸다. 먼저 정중히, 안 되면 강제로.
+    def stop_all(self, grace_s: float = 10.0) -> None:
+        """모듈에 정상 종료 신호를 보내고, 제한 시간 후 남은 프로세스만 종료한다.
 
         주기 검사 도중에 끊으면 그때까지 끝난 탐지기 결과는 이미 파일에 있다
-        (run_session 이 탐지기 하나 끝날 때마다 쓴다). 그래서 중간에 끊어도
-        관측이 통째로 날아가지 않는다.
+        (run_session 이 탐지기 하나 끝날 때마다 쓴다). Python 모듈은 정상 종료
+        신호에서 finally 정리(shared 전송 flush 등)를 수행할 수 있다.
         """
         alive = [s for s in self.states.values()
                  if s.proc is not None and s.proc.poll() is None]
         for st in alive:
             try:
-                st.proc.terminate()
+                if os.name == "nt":
+                    st.proc.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    st.proc.terminate()
             except Exception:
-                pass
+                try:
+                    st.proc.terminate()
+                except Exception:
+                    pass
         deadline = time.time() + grace_s
         for st in alive:
             left = max(0.0, deadline - time.time())
