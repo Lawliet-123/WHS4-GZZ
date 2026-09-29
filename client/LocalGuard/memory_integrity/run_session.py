@@ -72,6 +72,9 @@ DETECTORS = [
     ("injection",    "detectors.injection",    "주입·후킹 범용 (핵 종류 무관)"),
     ("value_tamper", "detectors.value_tamper", "값 변조 (CDO·아키타입 대조)"),
     ("overlay_hook", "detectors.overlay_hook", "인라인·렌더링 후킹 (익스포트 프롤로그)"),
+    ("godmode_runtime", "detectors.godmode_runtime", "GodMode runtime memory evidence"),
+    ("noclip_runtime", "detectors.noclip_runtime", "Noclip runtime memory evidence"),
+    ("aimbot_runtime", "detectors.aimbot_runtime", "Aimbot ControlRotation pattern evidence"),
 ]
 
 
@@ -538,7 +541,7 @@ def render(summary):
     print("    " + "-" * 68)
     for ev in summary["events"]:
         reason = ", ".join(ev["reasons"]) or ev["evidence"].get("detail", "") \
-            or ev["evidence"].get("error", "").splitlines()[0]
+            or next(iter(ev["evidence"].get("error", "").splitlines()), "")
         if len(reason) > 44:
             reason = reason[:43] + "…"
         print(f" {MARK.get(ev['status'], '  ')} {ev['module']:<14} "
