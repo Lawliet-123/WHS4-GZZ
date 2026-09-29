@@ -45,6 +45,9 @@ class Module:
     needs_game: bool = True         # 게임이 떠 있어야 의미가 있는가
     needs_admin: bool = False       # 관리자 권한이 필요한가
     every_s: float = 0.0            # ONESHOT 을 몇 초마다 다시 부를지 (0 이면 한 번만)
+    # CONTINUOUS 가 죽으면 되살릴지. 런처와 워치독이 둘 다 되살린다(registry.py).
+    # 되살리면 안 되는 모듈(예: 한 번 적재하고 끝나야 하는 드라이버)이면 False.
+    restart: bool = True
     # 이 모듈이 세션 로그(<세션>.jsonl)를 쓰는 폴더. 런처가 시작 전에
     # "그 세션 이름이 이미 있는지" 를 보려고 쓴다. 레포 루트 기준 상대경로.
     session_log_dir: str = ""
@@ -84,7 +87,7 @@ MODULES: List[Module] = [
         owner="4번 (성민)",
         argv=[PY, "client/SelfDefense/main.py"],
         needs_game=False,
-        note="워치독·안티디버깅·자체 무결성. 아직 폴더가 비어 있다",
+        note="워치독·안티디버깅·자체 무결성. 진입점은 이 경로로 확정(2026-09-29 성민님)",
     ),
     Module(
         name="kernel_watcher",

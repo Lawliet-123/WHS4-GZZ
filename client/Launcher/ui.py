@@ -10,10 +10,14 @@
 >
 >     {"name": "memory_integrity", "owner": "2번 (재민·랑언)",
 >      "status": "RUNNING", "mode": "oneshot", "runs": 3,
+>      "restarts": 0, "started_by": "launcher",
 >      "last_code": 1, "uptime_s": 12.4,
 >      "detail": "의심 발견", "log": "...logs/memory_integrity.log"}
 >
-> status 값: MISSING / SKIPPED / PENDING / RUNNING / DONE / WARN / FAILED / STOPPED
+> status 값: MISSING / SKIPPED / PENDING / RUNNING / DONE / WARN / RESTART / FAILED / STOPPED
+>
+> RESTART 는 상주 모듈이 죽어서 되살리는 중이라는 뜻이다(간격 대기 포함).
+> started_by 는 지금 떠 있는 프로세스를 누가 띄웠는지("launcher" / "watchdog").
 >
 > 서버 연결 상태는 ctx["server"] 로 들어옵니다. 하트비트를 붙이시면
 > 그 값만 채워 주시면 됩니다.
@@ -32,6 +36,7 @@ import sys
 MARK = {
     "RUNNING": "  ", "DONE": "  ", "WARN": "! ", "FAILED": "!!",
     "MISSING": "- ", "SKIPPED": "- ", "PENDING": ".. ", "STOPPED": "  ",
+    "RESTART": "~ ",
 }
 
 
