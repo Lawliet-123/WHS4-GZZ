@@ -69,6 +69,7 @@ class ModuleState:
     last_code: Optional[int] = None
     runs: int = 0
     restarts: int = 0
+    skips: int = 0             # 등록부에서 못 찾은 횟수. 한 번으로 포기하지 않는다
     crash_times: List[float] = field(default_factory=list)   # ONESHOT 비정상 종료 시각
     next_run_at: float = 0.0
     detail: str = ""
@@ -151,12 +152,24 @@ class ProcessManager:
                     return True
                 proc = registry.spawn(argv, cwd, st.log_path,
                                       note=f"launcher run #{st.runs + 1}")
-                registry.register(name, proc, by="launcher",
-                                  restartable=self._restartable(st),
-                                  argv=argv, cwd=cwd, log=st.log_path)
+                try:
+                    registry.register(name, proc, by="launcher",
+                                      restartable=self._restartable(st),
+                                      argv=argv, cwd=cwd, log=st.log_path)
+                except BaseException:
+                    # 등록을 못 하면 방금 띄운 것을 남기지 않는다. 아무도 추적하지 못하고
+                    # stop_all 도 모르는 프로세스가 되어 세션이 끝난 뒤에도 남는다.
+                    registry._kill_proc(proc)
+                    raise
         except Exception as e:
-            st.status = FAILED
-            st.detail = f"실행 실패: {e}"
+            if st.module.mode == ONESHOT and st.module.every_s:
+                # 주기 검사는 일시적 실패 한 번으로 세션 끝까지 멈추면 안 된다.
+                st.status = WARN
+                st.detail = f"실행 실패: {e} — 다음 주기에 다시"
+                st.next_run_at = time.time() + st.module.every_s
+            else:
+                st.status = FAILED
+                st.detail = f"실행 실패: {e}"
             self.say(f"  ! {name} 실행 실패 — {e}")
             return False
 
@@ -188,6 +201,7 @@ class ProcessManager:
     def poll(self) -> None:
         """상태를 갱신하고, 죽은 상주 모듈을 되살리고, 주기 실행을 다시 부른다."""
         now = time.time()
+        exited = False
         for st in self.states.values():
             if st.status == RUNNING:
                 if st.proc is not None:
@@ -195,12 +209,14 @@ class ProcessManager:
                     if code is not None:
                         st.proc = None
                         st.last_code = code
+                        exited = True
                         if st.module.mode == ONESHOT:
                             self._oneshot_exit(st, code, now)
                         else:
                             self._down(st, f"종료됨 (code {code})")
                 elif st.adopted_pid and not registry.is_alive(st.adopted_pid, st.adopted_ctime):
                     st.adopted_pid, st.adopted_ctime = None, 0
+                    exited = True
                     self._down(st, "이어받은 프로세스가 종료됨")
 
             if st.status == RESTARTING:
@@ -209,6 +225,15 @@ class ProcessManager:
             if (st.status in (DONE, WARN) and st.module.every_s
                     and st.next_run_at and now >= st.next_run_at):
                 self.start(st.name)
+
+        if exited:
+            # 죽은 PID 를 등록부에 남겨 두지 않는다. 주기 검사는 30초에 한 번 도는데,
+            # 그동안 modules 에 죽은 PID 가 있으면 1번이 엉뚱한 프로세스를 우리 것으로 본다.
+            try:
+                with registry.edit():
+                    pass          # _save 가 살아 있는 것만으로 modules 를 다시 쓴다
+            except Exception:
+                pass
 
     def _oneshot_exit(self, st: ModuleState, code: int, now: float) -> None:
         # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패
@@ -251,6 +276,7 @@ class ProcessManager:
             st.started_by = "launcher"
             st.started_at = time.time()
             st.runs += 1
+            st.skips = 0
             st.detail = f"런처가 되살림 ({st.restarts}/{registry.MAX_RESTARTS})"
             self.say(f"  ~ {st.name} 을 되살렸습니다 (pid {pid})")
         elif status == registry.ALIVE:
@@ -265,8 +291,15 @@ class ProcessManager:
                          f"{registry.MAX_RESTARTS}회) — 로그 확인")
             self.say(f"  ! {st.name} 을 더 되살리지 않습니다. {st.log_path}")
         elif status == registry.SKIP:
-            st.status = FAILED
-            st.detail = "등록부에 없어 되살릴 수 없음"
+            # 등록부를 그 순간 못 읽었을 수도 있다(상대가 파일을 바꿔 끼우는 중).
+            # 한 번 못 봤다고 감시를 포기하면 멀쩡한 모듈을 세션 끝까지 버리게 된다.
+            st.skips += 1
+            if st.skips >= 5:
+                st.status = FAILED
+                st.detail = "등록부에서 찾을 수 없음 (5회 확인)"
+                self.say(f"  ! {st.name} 을 등록부에서 찾을 수 없습니다.")
+            else:
+                st.detail = f"등록부 확인 실패 {st.skips}/5 — 다시 시도"
         # STOPPING 이면 아무것도 안 한다. 곧 stop_all 이 정리한다.
 
     def snapshot(self) -> List[dict]:
@@ -292,6 +325,16 @@ class ProcessManager:
             registry.set_stopping()
         except Exception as e:
             self.say(f"  ! 등록부에 종료 표시를 못 했습니다: {e}")
+
+        # 진행 중인 재시작이 끝나기를 기다린다. 되살리는 쪽은 모듈 잠금을 쥐고 있고,
+        # 끝낼 때 stopping 을 다시 본다. 안 기다리면 그 프로세스가 등록 전 상태로 남아
+        # 아무도 못 끄게 된다.
+        for n in self.states:
+            try:
+                with registry.lock("mod_" + n, timeout=8):
+                    pass
+            except Exception:
+                pass
 
         for st in self.states.values():
             if st.proc is not None and st.proc.poll() is None:
@@ -321,6 +364,6 @@ class ProcessManager:
         for e in registry.load().get("entries", {}).values():
             registry.kill(e.get("pid"), e.get("create_time", 0))
         try:
-            registry.clear_entries()
+            registry.end_session()
         except Exception:
             pass

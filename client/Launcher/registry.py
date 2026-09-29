@@ -65,6 +65,7 @@ import json
 import msvcrt
 import os
 import subprocess
+import sys
 import time
 from ctypes import wintypes
 from typing import Dict, List, Optional, Tuple
@@ -107,12 +108,17 @@ SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_TERMINATE = 0x0001
 WAIT_TIMEOUT = 0x102
+ERROR_ACCESS_DENIED = 5
+ERROR_INVALID_PARAMETER = 87       # 그런 PID 가 없을 때 나온다
 
 
 def _open(pid, access):
+    """(핸들, 오류코드). 못 열었을 때 '없다' 와 '권한이 없다' 를 가르려고 코드도 준다."""
     if not pid:
-        return None
-    return _k32.OpenProcess(access, False, int(pid)) or None
+        return None, ERROR_INVALID_PARAMETER
+    ctypes.set_last_error(0)
+    h = _k32.OpenProcess(access, False, int(pid))
+    return (h or None), (0 if h else ctypes.get_last_error())
 
 
 def _ctime_of(handle) -> int:
@@ -125,7 +131,7 @@ def _ctime_of(handle) -> int:
 
 def create_time(pid) -> int:
     """프로세스 생성 시각(FILETIME 정수). 못 얻으면 0."""
-    h = _open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+    h, _err = _open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
     if not h:
         return 0
     try:
@@ -147,12 +153,17 @@ def popen_create_time(proc: subprocess.Popen) -> int:
 
 
 def is_alive(pid, ctime: Optional[int] = None) -> bool:
-    """살아 있는가. ctime 을 주면 그때 그 프로세스가 맞는지까지 본다(0 이면 모름=아님)."""
+    """살아 있는가. ctime 을 주면 그때 그 프로세스가 맞는지까지 본다(0 이면 모름=아님).
+
+    **권한이 없어서 못 연 것은 '죽었다' 가 아니다.** 4번 SelfDefense 처럼 자기를
+    보호하려고 핸들 접근을 막는 모듈이 나오면, 죽은 것으로 보고 한도까지 중복으로
+    띄우게 된다. 이때는 살아 있다고 본다. 대신 PID 재사용은 가려내지 못한다.
+    """
     if ctime == 0:
         return False
-    h = _open(pid, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
+    h, err = _open(pid, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
     if not h:
-        return False
+        return err == ERROR_ACCESS_DENIED
     try:
         if _k32.WaitForSingleObject(h, 0) != WAIT_TIMEOUT:
             return False
@@ -163,7 +174,7 @@ def is_alive(pid, ctime: Optional[int] = None) -> bool:
 
 def kill(pid, ctime: Optional[int] = None) -> bool:
     """그때 그 프로세스일 때만 끈다. 재사용된 PID 의 엉뚱한 프로세스는 끄지 않는다."""
-    h = _open(pid, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE)
+    h, _err = _open(pid, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE)
     if not h:
         return False
     try:
@@ -206,13 +217,22 @@ def lock(name: str, timeout: float = 15.0):
 # ── 등록부 읽기·쓰기 ────────────────────────────────────────────────────
 
 def load() -> dict:
-    """등록부를 읽는다. 없거나 깨졌으면 빈 것으로 본다."""
-    try:
-        with open(PID_FILE, encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except Exception:
-        return {}
+    """등록부를 읽는다. 파일이 없으면 빈 것으로 본다.
+
+    상대가 os.replace 로 바꿔 끼우는 순간에 열면 PermissionError 가 난다.
+    이걸 '비어 있음' 으로 처리하면 살아 있는 모듈을 등록 안 된 것으로 오해해서
+    감시를 포기한다. 그래서 잠깐 뒤 다시 읽는다.
+    """
+    for _ in range(25):
+        try:
+            with open(PID_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            time.sleep(0.02)
+    return {}
 
 
 def _save(d: dict) -> None:
@@ -262,10 +282,36 @@ def live_pid(name: str) -> Optional[Tuple[int, int]]:
 
 # ── 세션 ────────────────────────────────────────────────────────────────
 
+class LauncherAlreadyRunning(RuntimeError):
+    """런처가 이미 하나 돌고 있다."""
+
+
 def begin_session(session_id: str) -> None:
-    """런처가 세션을 시작할 때 한 번. 지난 세션 기록을 지운다."""
+    """런처가 세션을 시작할 때 한 번. 지난 세션 기록을 지운다.
+
+    두 가지를 먼저 처리한다.
+
+      1. **런처가 이미 돌고 있으면 시작하지 않는다.** 그냥 지우면 두 번째 런처가
+         등록부를 통째로 가져가고, 첫 런처는 자기 모듈을 잃고 재시작도 못 한다.
+         나중에 한쪽을 끄면 다른 쪽 모듈까지 꺼진다.
+      2. **지난 런처가 비정상 종료했으면 그 세션 모듈을 끄고 시작한다.** 기록만
+         지우면 아무도 못 끄는 프로세스가 남아 다음 세션과 겹치고, 등록부에도
+         없으니 1번이 우리 프로세스를 핵으로 신고한다.
+    """
     me = os.getpid()
     with edit() as d:
+        prev, prev_ct = d.get("launcher_pid"), d.get("launcher_create_time")
+        if prev and prev != me and is_alive(prev, prev_ct or None):
+            raise LauncherAlreadyRunning(
+                f"런처가 이미 실행 중입니다 (pid {prev}). "
+                "두 개를 같이 띄우면 서로의 모듈을 죽입니다.")
+        left = [n for n, e in (d.get("entries") or {}).items()
+                if kill(e.get("pid"), e.get("create_time", 0))]
+        if left:
+            # stderr 로 보낸다. 이 프로젝트는 사람이 보는 출력과 기계가 읽는 출력을
+            # 섞지 않는다(ui.py 참고). 런처를 감싸 쓰는 쪽의 stdout 을 더럽히면 안 된다.
+            print(f"  지난 세션에서 남은 모듈을 정리했습니다: {', '.join(left)}",
+                  file=sys.stderr, flush=True)
         d.clear()
         d.update({
             "launcher_pid": me,
@@ -291,6 +337,18 @@ def is_stopping() -> bool:
 def clear_entries() -> None:
     with edit() as d:
         d["entries"] = {}
+
+
+def end_session() -> None:
+    """세션이 끝났다. 목록을 비우고 런처 표시도 지운다.
+
+    런처 표시를 남겨 두면, 같은 프로세스가 런처를 다시 돌릴 때 자기 자신 때문에
+    '이미 실행 중' 으로 막힌다. 끝난 세션의 런처는 주인이 아니다.
+    """
+    with edit() as d:
+        d["entries"] = {}
+        d["launcher_pid"] = None
+        d["launcher_create_time"] = None
 
 
 # ── 띄우기·등록 ─────────────────────────────────────────────────────────
@@ -342,7 +400,9 @@ def _decide(d: dict, name: str, now: float):
         return ORPHANED, None
     if e.get("gave_up"):
         return GAVE_UP, None
-    recent = [t for t in e.get("restarts", []) if now - t < WINDOW_S]
+    # 0 <= 도 같이 본다. 시계가 뒤로 가면 미래 시각이 남는데, 그대로 세면
+    # 한도에 걸린 채로 영원히 안 풀린다.
+    recent = [t for t in e.get("restarts", []) if 0 <= now - t < WINDOW_S]
     if len(recent) >= MAX_RESTARTS:
         return GAVE_UP, None
     if recent and now - recent[-1] < BACKOFF_S[min(len(recent), len(BACKOFF_S) - 1)]:
@@ -372,24 +432,48 @@ def restart_if_dead(name: str, by: str) -> Tuple[str, Optional[int], Optional[su
             return status, pid, None
 
         e = d["entries"][name]
-        recent = [t for t in e.get("restarts", []) if now - t < WINDOW_S] + [now]
+        recent = [t for t in e.get("restarts", []) if 0 <= now - t < WINDOW_S] + [now]
+
+        # 띄우기 **전에** 이번 시도를 먼저 적는다. 아래 등록이 실패해도 이 시도가
+        # 한도·간격에 잡혀야 한다. 안 그러면 등록부를 못 쓰는 동안 poll 마다
+        # 계속 새로 띄워서 같은 모듈이 쌓인다.
+        with edit() as d0:
+            if d0.get("stopping"):
+                return STOPPING, None, None
+            d0.setdefault("entries", {}).setdefault(name, dict(e))["restarts"] = recent
+
         proc = spawn(e["argv"], e["cwd"], e["log"],
                      note=f"{by} restart {len(recent)}/{MAX_RESTARTS}")
-        with edit() as d2:
-            if d2.get("stopping"):
-                # 띄우는 사이 런처가 끄기 시작했다. 방금 띄운 것을 스스로 끈다.
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                return STOPPING, None, None
-            e2 = d2.setdefault("entries", {}).setdefault(name, dict(e))
-            e2.update({"pid": proc.pid, "create_time": popen_create_time(proc),
-                       "started_by": by, "restarts": recent, "gave_up": False})
+        try:
+            with edit() as d2:
+                if d2.get("stopping"):
+                    # 띄우는 사이 런처가 끄기 시작했다. 방금 띄운 것을 스스로 끈다.
+                    _kill_proc(proc)
+                    return STOPPING, None, None
+                e2 = d2.setdefault("entries", {}).setdefault(name, dict(e))
+                e2.update({"pid": proc.pid, "create_time": popen_create_time(proc),
+                           "started_by": by, "restarts": recent, "gave_up": False})
+        except BaseException:
+            # 등록을 못 했으면 방금 띄운 것을 남기면 안 된다. 아무도 추적하지 못하고
+            # stop_all 도 모르는 프로세스가 되어 세션이 끝난 뒤에도 게임 핸들을 쥔 채 남는다.
+            _kill_proc(proc)
+            raise
         return RESTARTED, proc.pid, proc
 
 
+def _kill_proc(proc: subprocess.Popen) -> None:
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
 def _mark_gave_up(name: str) -> None:
+    # 이미 표시돼 있으면 아무것도 하지 않는다. 워치독은 포기한 모듈에도 계속 물어보는데,
+    # 그때마다 등록부를 다시 쓰면 읽는 쪽(1번·커널)이 내내 쓰다 만 파일과 부딪힌다.
+    if (load().get("entries", {}).get(name) or {}).get("gave_up"):
+        return
     with edit() as d:
         e = d.get("entries", {}).get(name)
         if e and not e.get("gave_up"):

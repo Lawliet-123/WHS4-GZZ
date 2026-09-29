@@ -37,6 +37,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import game_launcher                                          # noqa: E402
+import registry                                               # noqa: E402
 import ui                                                     # noqa: E402
 from modules import MODULES, REPO                              # noqa: E402
 from process_manager import MISSING, ProcessManager, SKIPPED, is_admin  # noqa: E402
@@ -117,7 +118,12 @@ def main(argv=None):
     # 세션 전체가 같은 시계를 쓴다. 주기 검사는 실행마다 새 프로세스라
     # 이걸 안 넘기면 시각이 매번 0 으로 되돌아가고 타임라인이 깨진다.
     t0 = time.time()
-    pm = ProcessManager(picked, session, a.player, t0, say=ui.line)
+    try:
+        pm = ProcessManager(picked, session, a.player, t0, say=ui.line)
+    except registry.LauncherAlreadyRunning as e:
+        ui.line(str(e))
+        ui.line("먼저 뜬 런처를 끝내고 다시 실행하세요.")
+        return 2
     preflight(pm, only)
 
     ctx = {"session": session, "game_pid": None, "server": "미연결"}
