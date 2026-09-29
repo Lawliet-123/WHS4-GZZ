@@ -2,8 +2,8 @@
 -- GodMode Anti-Cheat Telemetry Sensor
 --
 -- IMPORTANT:
--- 이 파일은 플레이어 상태를 변경하지 않는다.
--- 게임 상태와 이벤트를 읽어서 Python Anti-Cheat에 전달한다.
+-- ???뚯씪? ?뚮젅?댁뼱 ?곹깭瑜?蹂寃쏀븯吏 ?딅뒗??
+-- 寃뚯엫 ?곹깭? ?대깽?몃? ?쎌뼱??Python Anti-Cheat???꾨떖?쒕떎.
 
 local UEHelpers = require("UEHelpers")
 
@@ -12,8 +12,32 @@ local HOOK_RETRY_INTERVAL_MS = 1000
 
 local elapsed_ms = 0
 
-local output_path =
-    [[C:\Users\LG\Desktop\MECCHA-GodMode-AntiCheat\logs\meccha_telemetry.jsonl]]
+local configured_output_path =
+    os.getenv("GZZ_GODMODE_TELEMETRY_PATH")
+
+local output_path
+
+if configured_output_path ~= nil
+    and configured_output_path ~= ""
+then
+    output_path =
+        configured_output_path
+else
+    local base_dir =
+        os.getenv("LOCALAPPDATA")
+        or os.getenv("TEMP")
+
+    if base_dir ~= nil
+        and base_dir ~= ""
+    then
+        output_path =
+            base_dir
+            .. "\\MECCHA-GZZ-godmode-telemetry.jsonl"
+    else
+        output_path =
+            ".\\MECCHA-GZZ-godmode-telemetry.jsonl"
+    end
+end
 
 
 ------------------------------------------------------------
@@ -303,7 +327,7 @@ local function resolve_function_name(function_name)
         return function_name
     end
 
-    -- RegisterHook에서는 "Function " prefix가 필요하지 않음.
+    -- RegisterHook?먯꽌??"Function " prefix媛 ?꾩슂?섏? ?딆쓬.
     full_name = full_name:gsub(
         "^Function%s+",
         ""

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections import deque
 from pathlib import Path
@@ -10,18 +11,18 @@ from sensors.game_state_sensor import GameStateSensor
 
 class MecchaTelemetrySensor(GameStateSensor):
     """
-    MECCHA CHAMELEON telemetry JSONL을 읽어서
-    PlayerSnapshot으로 변환하는 Sensor.
+    MECCHA CHAMELEON telemetry JSONL???쎌뼱??
+    PlayerSnapshot?쇰줈 蹂?섑븯??Sensor.
 
-    영상/실험 환경에서는 GodModeHost402.log의
-    "blocked server death call" 로그도 함께 관찰한다.
+    ?곸긽/?ㅽ뿕 ?섍꼍?먯꽌??GodModeHost402.log??
+    "blocked server death call" 濡쒓렇???④퍡 愿李고븳??
 
-    해당 로그는 서버 사망 호출이 GodMode에 의해
-    차단된 시점을 의미하므로 다음 Snapshot에
-    kill_event=True로 전달한다.
+    ?대떦 濡쒓렇???쒕쾭 ?щ쭩 ?몄텧??GodMode???섑빐
+    李⑤떒???쒖젏???섎??섎?濡??ㅼ쓬 Snapshot??
+    kill_event=True濡??꾨떖?쒕떎.
 
-    기존 read_snapshot() / read_snapshot_with_raw()
-    인터페이스는 그대로 유지한다.
+    湲곗〈 read_snapshot() / read_snapshot_with_raw()
+    ?명꽣?섏씠?ㅻ뒗 洹몃?濡??좎??쒕떎.
     """
 
     BLOCKED_DEATH_PATTERN = re.compile(
@@ -38,24 +39,52 @@ class MecchaTelemetrySensor(GameStateSensor):
         project_root = Path(__file__).resolve().parents[1]
 
         if telemetry_path is None:
-            self.telemetry_path = (
-                project_root
-                / "logs"
-                / "meccha_telemetry.jsonl"
+            configured_path = os.environ.get(
+                "GZZ_GODMODE_TELEMETRY_PATH"
             )
+
+            if configured_path:
+                self.telemetry_path = Path(
+                    configured_path
+                )
+            else:
+                base_dir = (
+                    os.environ.get("LOCALAPPDATA")
+                    or os.environ.get("TEMP")
+                )
+
+                if base_dir:
+                    self.telemetry_path = (
+                        Path(base_dir)
+                        / "MECCHA-GZZ-godmode-telemetry.jsonl"
+                    )
+                else:
+                    self.telemetry_path = (
+                        Path.cwd()
+                        / "MECCHA-GZZ-godmode-telemetry.jsonl"
+                    )
         else:
             self.telemetry_path = Path(
                 telemetry_path
             )
 
         if native_log_path is None:
-            self.native_log_path = (
-                Path.home()
-                / "Desktop"
-                / "godmode 영상 테스트"
-                / "native"
-                / "GodModeHost402.log"
+            configured_native_log = os.environ.get(
+                "GZZ_GODMODE_NATIVE_LOG_PATH"
             )
+
+            if configured_native_log:
+                self.native_log_path = Path(
+                    configured_native_log
+                )
+            else:
+                self.native_log_path = (
+                    Path.home()
+                    / "Desktop"
+                    / "godmode ?? ???"
+                    / "native"
+                    / "GodModeHost402.log"
+                )
         else:
             self.native_log_path = Path(
                 native_log_path
@@ -68,8 +97,8 @@ class MecchaTelemetrySensor(GameStateSensor):
 
         self.native_file = None
 
-        # 새 server-death block을 발견했지만
-        # 아직 Snapshot에 전달하지 않은 상태.
+        # ??server-death block??諛쒓껄?덉?留?
+        # ?꾩쭅 Snapshot???꾨떖?섏? ?딆? ?곹깭.
         self.native_kill_pending = False
 
         self.last_native_total: Optional[int] = None
@@ -80,17 +109,23 @@ class MecchaTelemetrySensor(GameStateSensor):
 
     def connect(self) -> bool:
         """
-        Telemetry JSONL 파일에 연결한다.
+        Telemetry JSONL ??? ????.
 
-        Native GodMode 로그 연결 실패는
-        기본 Telemetry 연결 실패로 취급하지 않는다.
+        ??? ?? ??? ???? ????.
+        Native GodMode ?? ?? ???
+        ?? Telemetry ?? ??? ???? ???.
         """
 
-        if not self.telemetry_path.exists():
-            self.connected = False
-            return False
-
         try:
+            self.telemetry_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            self.telemetry_path.touch(
+                exist_ok=True,
+            )
+
             self.file = self.telemetry_path.open(
                 "r",
                 encoding="utf-8",
@@ -115,9 +150,9 @@ class MecchaTelemetrySensor(GameStateSensor):
 
     def _connect_native_log(self) -> bool:
         """
-        GodMode native 로그에 연결한다.
+        GodMode native 濡쒓렇???곌껐?쒕떎.
 
-        파일이 아직 존재하지 않으면 나중에 다시 시도한다.
+        ?뚯씪???꾩쭅 議댁옱?섏? ?딆쑝硫??섏쨷???ㅼ떆 ?쒕룄?쒕떎.
         """
 
         if self.native_file is not None:
@@ -147,7 +182,7 @@ class MecchaTelemetrySensor(GameStateSensor):
 
     def disconnect(self) -> None:
         """
-        모든 로그 파일 연결을 종료한다.
+        紐⑤뱺 濡쒓렇 ?뚯씪 ?곌껐??醫낅즺?쒕떎.
         """
 
         if self.file is not None:
@@ -171,14 +206,14 @@ class MecchaTelemetrySensor(GameStateSensor):
 
     def _read_native_events(self) -> None:
         """
-        GodModeHost402.log에 새로 추가된 줄을 읽는다.
+        GodModeHost402.log???덈줈 異붽???以꾩쓣 ?쎈뒗??
 
-        blocked server death call이 하나 이상 새로 발생하면
-        다음 PlayerSnapshot에 kill_event=True를 전달한다.
+        blocked server death call???섎굹 ?댁긽 ?덈줈 諛쒖깮?섎㈃
+        ?ㅼ쓬 PlayerSnapshot??kill_event=True瑜??꾨떖?쒕떎.
 
-        한 프레임/한 공격에서 여러 block 로그가 발생하더라도
-        여러 점수로 중복 계산되지 않도록 pending bool 하나로
-        합쳐서 전달한다.
+        ???꾨젅????怨듦꺽?먯꽌 ?щ윭 block 濡쒓렇媛 諛쒖깮?섎뜑?쇰룄
+        ?щ윭 ?먯닔濡?以묐났 怨꾩궛?섏? ?딅룄濡?pending bool ?섎굹濡?
+        ?⑹퀜???꾨떖?쒕떎.
         """
 
         if self.native_file is None:
@@ -219,7 +254,7 @@ class MecchaTelemetrySensor(GameStateSensor):
         data: dict,
     ) -> Optional[PlayerSnapshot]:
         """
-        JSON 데이터를 PlayerSnapshot으로 변환한다.
+        JSON ?곗씠?곕? PlayerSnapshot?쇰줈 蹂?섑븳??
         """
 
         try:
@@ -296,7 +331,7 @@ class MecchaTelemetrySensor(GameStateSensor):
 
     def _read_new_lines(self) -> None:
         """
-        새 Telemetry와 Native GodMode 이벤트를 읽는다.
+        ??Telemetry? Native GodMode ?대깽?몃? ?쎈뒗??
         """
 
         if (
@@ -305,8 +340,8 @@ class MecchaTelemetrySensor(GameStateSensor):
         ):
             return
 
-        # Telemetry Snapshot을 만들기 전에
-        # native 사망 차단 이벤트부터 확인.
+        # Telemetry Snapshot??留뚮뱾湲??꾩뿉
+        # native ?щ쭩 李⑤떒 ?대깽?몃????뺤씤.
         self._read_native_events()
 
         while True:
@@ -330,13 +365,13 @@ class MecchaTelemetrySensor(GameStateSensor):
             except json.JSONDecodeError:
                 continue
 
-            # GodMode native hook이 서버 사망 호출을 막았다면
-            # 다음 Snapshot을 kill_event로 표시한다.
+            # GodMode native hook???쒕쾭 ?щ쭩 ?몄텧??留됱븯?ㅻ㈃
+            # ?ㅼ쓬 Snapshot??kill_event濡??쒖떆?쒕떎.
             if self.native_kill_pending:
                 data["kill_event"] = True
 
-                # Raw export에서도 실제 Sensor가 사용한
-                # 이벤트를 확인할 수 있도록 보조 정보 추가.
+                # Raw export?먯꽌???ㅼ젣 Sensor媛 ?ъ슜??
+                # ?대깽?몃? ?뺤씤?????덈룄濡?蹂댁“ ?뺣낫 異붽?.
                 data["native_block_event"] = True
 
                 if self.last_native_total is not None:
@@ -370,7 +405,7 @@ class MecchaTelemetrySensor(GameStateSensor):
         self,
     ) -> Optional[PlayerSnapshot]:
         """
-        다음 PlayerSnapshot 하나를 반환한다.
+        ?ㅼ쓬 PlayerSnapshot ?섎굹瑜?諛섑솚?쒕떎.
         """
 
         if not self.connected:
@@ -393,12 +428,12 @@ class MecchaTelemetrySensor(GameStateSensor):
         Tuple[PlayerSnapshot, str]
     ]:
         """
-        ReplayAnalyzer export용.
+        ReplayAnalyzer export??
 
-        반환:
+        諛섑솚:
             (
                 PlayerSnapshot,
-                실제 Sensor가 처리한 JSONL 문자열
+                ?ㅼ젣 Sensor媛 泥섎━??JSONL 臾몄옄??
             )
         """
 

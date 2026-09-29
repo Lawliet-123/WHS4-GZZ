@@ -1,21 +1,40 @@
 import json
+import os
 import time
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-LOG_PATH = (
-    PROJECT_ROOT
-    / "logs"
-    / "meccha_telemetry.jsonl"
+CONFIGURED_PATH = os.environ.get(
+    "GZZ_GODMODE_TELEMETRY_PATH"
 )
 
+if CONFIGURED_PATH:
+    LOG_PATH = Path(
+        CONFIGURED_PATH
+    )
+else:
+    BASE_DIR = (
+        os.environ.get("LOCALAPPDATA")
+        or os.environ.get("TEMP")
+    )
+
+    if BASE_DIR:
+        LOG_PATH = (
+            Path(BASE_DIR)
+            / "MECCHA-GZZ-godmode-telemetry.jsonl"
+        )
+    else:
+        LOG_PATH = (
+            Path.cwd()
+            / "MECCHA-GZZ-godmode-telemetry.jsonl"
+        )
 
 def send_snapshot(snapshot):
     """
-    MECCHA가 실제 Telemetry 데이터를 보내는 것처럼
-    JSON 한 줄을 기존 로그 파일 뒤에 추가한다.
+    MECCHA媛 ?ㅼ젣 Telemetry ?곗씠?곕? 蹂대궡??寃껋쿂??
+    JSON ??以꾩쓣 湲곗〈 濡쒓렇 ?뚯씪 ?ㅼ뿉 異붽??쒕떎.
     """
 
     with LOG_PATH.open(
@@ -43,14 +62,14 @@ def main():
     print("=" * 60)
     print()
 
-    # 로그 폴더가 없으면 생성
+    # 濡쒓렇 ?대뜑媛 ?놁쑝硫??앹꽦
     LOG_PATH.parent.mkdir(
         parents=True,
         exist_ok=True
     )
 
-    # 파일이 없을 때만 새로 생성한다.
-    # 이미 main.py가 읽고 있는 파일은 절대 삭제하지 않는다.
+    # ?뚯씪???놁쓣 ?뚮쭔 ?덈줈 ?앹꽦?쒕떎.
+    # ?대? main.py媛 ?쎄퀬 ?덈뒗 ?뚯씪? ?덈? ??젣?섏? ?딅뒗??
     LOG_PATH.touch(
         exist_ok=True
     )
@@ -66,7 +85,7 @@ def main():
     time.sleep(1.0)
 
     # --------------------------------------------------
-    # 1. 정상 상태
+    # 1. ?뺤긽 ?곹깭
     # --------------------------------------------------
 
     send_snapshot({
@@ -85,7 +104,7 @@ def main():
     time.sleep(0.7)
 
     # --------------------------------------------------
-    # 2. Health 감소
+    # 2. Health 媛먯냼
     # --------------------------------------------------
 
     send_snapshot({
@@ -104,7 +123,7 @@ def main():
     time.sleep(0.7)
 
     # --------------------------------------------------
-    # 3. GodMode Lua 형태의 강제 Health 복구
+    # 3. GodMode Lua ?뺥깭??媛뺤젣 Health 蹂듦뎄
     # --------------------------------------------------
 
     send_snapshot({
@@ -123,7 +142,7 @@ def main():
     time.sleep(0.7)
 
     # --------------------------------------------------
-    # 4. Kill 조건 발생
+    # 4. Kill 議곌굔 諛쒖깮
     # --------------------------------------------------
 
     send_snapshot({
@@ -142,7 +161,7 @@ def main():
     time.sleep(0.7)
 
     # --------------------------------------------------
-    # 5. Kill 이후 Death가 발생하지 않음
+    # 5. Kill ?댄썑 Death媛 諛쒖깮?섏? ?딆쓬
     # --------------------------------------------------
 
     send_snapshot({
@@ -161,7 +180,7 @@ def main():
     time.sleep(0.7)
 
     # --------------------------------------------------
-    # 6. Invincible 지속
+    # 6. Invincible 吏??
     # --------------------------------------------------
 
     send_snapshot({
