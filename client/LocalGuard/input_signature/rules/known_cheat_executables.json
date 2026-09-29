@@ -1,0 +1,33 @@
+{
+  "schema_version": "meccha-known-executable-hashes-1",
+  "entries": [
+    {
+      "id": "whs4_gzz_auto_paint_injector_v1",
+      "family": "AutoPaint",
+      "source": "WHS4-GZZ/modules/auto-paint/Scripts/native/runtime-injector.exe",
+      "size_bytes": 286720,
+      "sha256": "e20a686b84583a3b93d198092b3b2e1a4d58a4e2d68124d1f2fbc1082d4ed56b"
+    },
+    {
+      "id": "whs4_gzz_auto_paint_injector_v2",
+      "family": "AutoPaint",
+      "source": "WHS4-GZZ/modules/auto-paint-ver2/app/native/runtime-injector.exe",
+      "size_bytes": 267264,
+      "sha256": "f89f74d9575ea83238e79a9f4b247d16843576354e0ced8b2888a810289a9c2f"
+    },
+    {
+      "id": "whs4_gzz_auto_paint_lite_v2",
+      "family": "AutoPaint",
+      "source": "WHS4-GZZ/modules/auto-paint-ver2/dist/Meccha-Chameleon-LiteV2.exe",
+      "size_bytes": 12498147,
+      "sha256": "f52673cfed587330ecc192ed6abe240e9e24f70a032e11090d5bbc98dfff76e0"
+    },
+    {
+      "id": "whs4_gzz_godmode_simple_injector",
+      "family": "GodMode",
+      "source": "WHS4-GZZ/modules/godmode/native/godmode-simple-injector.exe",
+      "size_bytes": 2766691,
+      "sha256": "138aa8f745d2c65dbac21a02591ec37ea4963c652cb4ae3bef7459828764af8d"
+    }
+  ]
+}

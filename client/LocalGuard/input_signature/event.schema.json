@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LocalGuard common ReplayAnalyzer Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "player_id", "module", "timestamp_ms", "evidence", "reasons", "raw_score"],
+  "properties": {
+    "session_id": {"type": "string", "minLength": 1},
+    "player_id": {"type": "string", "minLength": 1},
+    "module": {"type": "string", "minLength": 1},
+    "timestamp_ms": {"type": "integer", "minimum": 0},
+    "evidence": {"type": "object"},
+    "reasons": {"type": "array", "items": {"type": "string"}},
+    "raw_score": {"type": "number", "minimum": 0}
+  }
+}
