@@ -83,3 +83,10 @@ app.include_router(create_router(
 
 This split lets A implement and test request validation before the shared
 logger and scoring module are completed.
+
+## Separate heartbeat endpoint
+
+`create_heartbeat_router()` implements `POST /api/heartbeat` using the verified
+HWID-free v3 contract. Its persistent sequence/liveness store is separate from
+detection JSONL and scoring. See [HEARTBEAT.md](HEARTBEAT.md) for the verified
+schema, ACK and conflict rules, tests, and C's integration instructions.
