@@ -37,10 +37,16 @@ class DetectionTransportTests(unittest.TestCase):
         self.session.finish()
         self.temp.cleanup()
 
-    def emit(self):
+    def emit(self, raw_score=0):
         """YARA 평가를 흉내 낸 동일한 7필드 Event를 기록한다."""
-        return self.session.emit('localguard_yara', 'local_player',
-                                 {'matched_rules': []}, [], 0)
+        reasons = ['YARA Rule Matched: test_rule'] if raw_score > 0 else []
+        return self.session.emit(
+            'localguard_yara',
+            'local_player',
+            {'matched_rules': ['test_rule'] if raw_score > 0 else []},
+            reasons,
+            raw_score,
+        )
 
     def test_no_configuration_keeps_local_jsonl_only(self):
         """중앙 설정이 없는 독립 실행은 로컬 파일만 사용한다."""
@@ -75,9 +81,9 @@ class DetectionTransportTests(unittest.TestCase):
             self.assertEqual(configure.call_args.args[0].outbox_path,
                              (Path(__file__).resolve().parents[1] /
                               'telemetry-outbox' / 'client.sqlite3'))
-            event = self.emit()
+            event = self.emit(3)
             event['_matched_strings_for_console'] = ['display only']
-            self.emit()
+            self.emit(3)
             stop_detection_forwarding(True)
             flush.assert_called_once_with(timeout=3)
             shutdown.assert_called_once_with(timeout=5)
@@ -89,6 +95,34 @@ class DetectionTransportTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(set(json.loads(lines[0])), EVENT_FIELDS)
 
+    def test_zero_score_event_stays_local_and_is_not_queued(self):
+        """0점 정상 Event는 로컬 JSONL에만 남고 Shared로 보내지 않는다."""
+        sent = []
+
+        env = {
+            'GZZ_TELEMETRY_URL': 'https://telemetry.example',
+            'GZZ_TELEMETRY_TOKEN': 'test-token',
+        }
+
+        with patch.dict(os.environ, env, clear=True), \
+             patch('yara_scanner.configure_client'), \
+             patch('yara_scanner.send_detection',
+                   side_effect=lambda event: sent.append(event)), \
+             patch('yara_scanner.flush_client', return_value=True), \
+             patch('yara_scanner.shutdown_client', return_value=True):
+            self.assertTrue(configure_detection_forwarding(self.session))
+            event = self.emit(0)
+            stop_detection_forwarding(True)
+
+        self.assertEqual(event['raw_score'], 0)
+        self.assertEqual(sent, [])
+
+        local = json.loads(
+            (self.session.path / 'events.jsonl').read_text(
+                encoding='utf-8'
+            )
+        )
+        self.assertEqual(local, event)
     def test_queue_failure_does_not_erase_or_rescore_local_result(self):
         """송신 대기열 실패가 이미 기록된 점수와 로컬 증거를 바꾸지 않는다."""
         env = {'GZZ_TELEMETRY_URL': 'https://telemetry.example',
@@ -101,9 +135,9 @@ class DetectionTransportTests(unittest.TestCase):
              patch('yara_scanner.shutdown_client', return_value=True), \
              redirect_stderr(diagnostic):
             self.assertTrue(configure_detection_forwarding(self.session))
-            event = self.emit()
+            event = self.emit(3)
             stop_detection_forwarding(True)
-        self.assertEqual(event['raw_score'], 0)
+        self.assertEqual(event['raw_score'], 3)
         self.assertEqual(json.loads((self.session.path / 'events.jsonl').read_text(
             encoding='utf-8')), event)
         self.assertIn('중앙 전송 대기열 오류', diagnostic.getvalue())
@@ -161,7 +195,7 @@ class DetectionTransportTests(unittest.TestCase):
                        side_effect=lambda: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)):
                 active = configure_detection_forwarding(self.session)
                 self.assertTrue(active)
-                event = self.emit()
+                event = self.emit(3)
                 self.assertTrue(flush_client(timeout=3))
                 stop_detection_forwarding(active)
                 active = False
