@@ -21,7 +21,6 @@
     python main.py                          # 전부 실행, 세션 id 자동
     python main.py --session noclip_001     # 측정 실험용으로 id 지정
     python main.py --only whistle,value_tamper
-    python main.py --post http://<서버>/events   # TelemetryServer 로 전송
 
 결과는 항상 `logs/detection/<session_id>.jsonl` 에 남는다.
 """
@@ -104,24 +103,6 @@ def run_one(name, module_path):
             f"{module_path}.scan() 이 DetectorResult 가 아닌 "
             f"{type(res).__name__} 을 돌려줬습니다")
     return res
-
-
-def post(url, events):
-    """TelemetryServer 로 보낸다. 실패해도 로컬 기록은 이미 끝나 있다."""
-    import urllib.error
-    import urllib.request
-
-    body = json.dumps({"events": events}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={"Content-Type": "application/json; charset=utf-8"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return True, f"{resp.status}"
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code}"
-    except Exception as e:
-        return False, str(e)
 
 
 class Markers:
@@ -242,7 +223,7 @@ def _existing(log_dir, stem):
             if os.path.exists(p)]
 
 
-def run(session_id=None, only=None, post_url=None, log_dir=None,
+def run(session_id=None, only=None, log_dir=None,
         player_id=None, detectors=None, log_name=None,
         watch=0, interval=15.0, overwrite=False, start_on=False,
         t0=None, window=0):
@@ -325,7 +306,8 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
             # **로컬에 먼저 쓰고 나서 보낸다.** 서버가 죽었다고 관측이 사라지면 안 된다.
             # 전송은 여기서 실패해도 탐지를 막지 않는다(telemetry 가 다 삼킨다).
-            tele.send(to_shared_event(ev))
+            if ev["raw_score"] > 0:
+                tele.send(to_shared_event(ev))
             out.append(ev)
             events.append(ev)
         return out
@@ -410,10 +392,6 @@ def run(session_id=None, only=None, post_url=None, log_dir=None,
         summary["markers_log"] = markers.path
         summary["initial_state"] = "ON" if start_on else "OFF"
 
-    if post_url:
-        ok, info = post(post_url, events)
-        summary["posted"] = ok
-        summary["post_info"] = info
 
     return summary, exit_code(events)
 
@@ -546,10 +524,6 @@ def render(summary):
             reason = reason[:43] + "…"
         print(f" {MARK.get(ev['status'], '  ')} {ev['module']:<14} "
               f"{ev['status']:<11} {ev['raw_score']:>4}  {reason}")
-    if "posted" in summary:
-        print()
-        print("전송 " + ("성공" if summary["posted"] else
-                        f"실패 ({summary['post_info']}) — 로컬 로그는 남아 있습니다"))
 
 
 def main(argv=None):
@@ -567,7 +541,6 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
     ap = argparse.ArgumentParser(description=desc)
     ap.add_argument("--session", help="세션 id. 측정 실험에서는 직접 지정한다")
     ap.add_argument("--only", help="쉼표로 구분한 탐지기 이름")
-    ap.add_argument("--post", help="TelemetryServer 엔드포인트 URL")
     ap.add_argument("--player", help="플레이어 식별자 (기본 player_001)")
     ap.add_argument("--json", action="store_true", help="요약 대신 JSON 출력")
     ap.add_argument("--list", action="store_true", help="등록된 탐지기 목록")
@@ -605,15 +578,13 @@ def main_with(argv, detectors, desc="안티치트 실행기", default_log_dir=No
         if not math.isfinite(a.interval) or a.interval < 1:
             ap.error("--interval 은 1초 이상이어야 합니다 "
                      "(0 이면 쉬지 않고 무한히 돈다)")
-        if a.post:
-            ap.error("--watch 와 --post 는 같이 쓸 수 없습니다 (전송은 단발 실행만)")
         if a.log_name:
             # 핵별 누적 파일에 마커까지 누적되면 어느 세션의 ON/OFF 인지 못 가른다.
             ap.error("--watch 와 --log-name 은 같이 쓸 수 없습니다 "
                      "(반복 관측은 세션별 파일로만)")
     elif a.start_on:
         ap.error("--start-on 은 --watch 와 같이 쓸 때만 의미가 있습니다")
-    summary, code = run(a.session, only, a.post,
+    summary, code = run(a.session, only,
                         log_dir=a.log_dir or default_log_dir,
                         player_id=a.player, detectors=detectors,
                         log_name=a.log_name,
