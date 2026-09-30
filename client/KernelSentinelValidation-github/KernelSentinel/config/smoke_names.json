@@ -1,0 +1,7 @@
+{
+  "process_patterns": ["notepad.exe"],
+  "driver_patterns": [],
+  "module_patterns": [],
+  "driver_sha256": [],
+  "module_sha256": []
+}

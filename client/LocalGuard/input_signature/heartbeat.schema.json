@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://meccha.local/schemas/heartbeat.schema.json",
   "title": "MECCHA Anti-Cheat Heartbeat",
-  "description": "탐지 점수와 별개인 구성 요소 생존·검사 신선도 형식. hwid는 임시 계약에 따라 네트워크 본문에만 선택적으로 포함된다.",
+  "description": "탐지 점수와 별개인 구성 요소 생존·검사 신선도 형식.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -19,7 +19,7 @@
     "transport"
   ],
   "properties": {
-    "schema_version": { "const": "meccha-heartbeat-2", "description": "하트비트 형식 버전" },
+    "schema_version": { "const": "meccha-heartbeat-3", "description": "하트비트 형식 버전" },
     "message_type": { "const": "heartbeat", "description": "탐지 Event와 구분하는 메시지 종류" },
     "session_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$", "description": "세션 식별자" },
     "player_id": { "type": "string", "minLength": 1, "maxLength": 100, "description": "대상 식별자; 인증 수단이 아님" },
@@ -52,15 +52,13 @@
       "type": "object",
       "description": "최근 네트워크 송신 상태; 탐지 결과 점수나 서버 가용성 전체를 뜻하지 않음",
       "additionalProperties": false,
-      "required": ["configured", "hwid_included_on_wire", "consecutive_failures", "last_success_sequence", "last_error_type"],
+      "required": ["configured", "consecutive_failures", "last_success_sequence", "last_error_type"],
       "properties": {
         "configured": { "type": "boolean", "description": "하트비트 수신 URL이 설정됐는지 여부" },
-        "hwid_included_on_wire": { "type": "boolean", "description": "네트워크 본문에 HWID를 붙이도록 설정됐는지 여부" },
         "consecutive_failures": { "type": "integer", "minimum": 0, "description": "연속 송신 실패 횟수" },
         "last_success_sequence": { "type": ["integer", "null"], "minimum": 1, "description": "확인 응답을 받은 마지막 순번" },
         "last_error_type": { "type": ["string", "null"], "description": "마지막 전송 오류의 종류; 비밀값·응답 본문은 저장하지 않음" }
       }
-    },
-    "hwid": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "임시 계약의 사전 계산된 식별값; 로컬 파일에는 기록하지 않음" }
+    }
   }
 }
