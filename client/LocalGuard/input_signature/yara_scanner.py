@@ -16,8 +16,7 @@ import time
 import traceback
 
 from heartbeat import (HeartbeatClient, LOCALGUARD_REQUIRED_COMPONENTS,
-                       SCHEMA_VERSION as HEARTBEAT_SCHEMA_VERSION,
-                       load_hwid_file)
+                       SCHEMA_VERSION as HEARTBEAT_SCHEMA_VERSION)
 from executable_hashes import load_blacklist
 from hash_monitor import HashMonitor
 from replay_events import ReplaySession, ManualMarkers, session_args, check_session_args, json_line
@@ -507,13 +506,10 @@ def main(argv=None):
                         help='0 until Ctrl+C; otherwise scanner runtime, independent of --t0')
     parser.add_argument('--log-root', type=Path, default=ROOT / 'sessions')
     # 하트비트 설정은 탐지 Event용 GZZ_TELEMETRY_* 설정과 독립이다.
-    # 실제 /api/heartbeat 수신 계약과 HWID 생산 형식은 아직 임시다.
+    # 실제 /api/heartbeat 수신 계약은 아직 임시다.
     parser.add_argument('--heartbeat-url',
                         default=os.environ.get('MECCHA_TELEMETRY_HEARTBEAT_URL'),
                         help='Central receiver URL; can also use MECCHA_TELEMETRY_HEARTBEAT_URL')
-    parser.add_argument('--hwid-file', type=Path,
-                        default=os.environ.get('MECCHA_HWID_FILE'),
-                        help='Component 1 JSON file with a precomputed SHA-256 HWID')
     parser.add_argument('--heartbeat-interval', type=float, default=5,
                         help='Heartbeat interval in seconds (5..10); local JSONL is always recorded')
     parser.add_argument('--heartbeat-timeout', type=float, default=3,
@@ -534,8 +530,6 @@ def main(argv=None):
     if not .5 <= args.heartbeat_timeout <= 30: parser.error('--heartbeat-timeout must be 0.5..30')
     if args.heartbeat_url and args.heartbeat_timeout >= args.heartbeat_interval:
         parser.error('--heartbeat-timeout must be shorter than --heartbeat-interval')
-    if args.heartbeat_url and not args.hwid_file:
-        parser.error('--heartbeat-url requires --hwid-file or MECCHA_HWID_FILE')
     if args.pid is not None and args.pid <= 0: parser.error('--pid must be positive')
     for out in (sys.stdout, sys.stderr):
         if hasattr(out, 'reconfigure'): out.reconfigure(encoding='utf-8', errors='replace')
@@ -575,7 +569,6 @@ def main(argv=None):
     try:
         # Event 전송은 로컬 세션이 만들어진 뒤 한 번만 설정한다.
         detection_forwarding_active = configure_detection_forwarding(session)
-        hwid = load_hwid_file(args.hwid_file) if args.hwid_file else None
         # 하트비트는 탐지 점수가 아니라 스캐너·해시 검사·게임의 생존을 보고한다.
         heartbeat = HeartbeatClient(
             session_id=session.manifest['session_id'],
@@ -583,7 +576,6 @@ def main(argv=None):
             log_path=session.raw / 'heartbeat.jsonl',
             endpoint=args.heartbeat_url,
             token=os.environ.get('MECCHA_HEARTBEAT_TOKEN'),
-            hwid=hwid,
             interval_seconds=args.heartbeat_interval,
             timeout_seconds=args.heartbeat_timeout,
             clock=session.clock,
@@ -604,7 +596,6 @@ def main(argv=None):
              heartbeat={'schema_version': HEARTBEAT_SCHEMA_VERSION,
                         'interval_seconds': args.heartbeat_interval,
                         'receiver_configured': bool(args.heartbeat_url),
-                        'hwid_configured': bool(hwid),
                         'token_configured': bool(os.environ.get('MECCHA_HEARTBEAT_TOKEN'))},
             files=dict(session.manifest['files'], heartbeat='raw/heartbeat.jsonl',
                        **({} if args.no_executable_hash else
