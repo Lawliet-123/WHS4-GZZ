@@ -1,13 +1,10 @@
-"""Durable idempotency and current-state storage for server-side scoring.
+"""B Scoring의 SQLite 저장 계층.
 
-This layer intentionally does not choose cheat thresholds or aggregate detector
-scores.  It establishes the safety properties required by the shared telemetry
-handoff first:
-
-* the same ``event_id`` is reflected at most once;
-* repeated detector samples replace current state instead of accumulating;
-* late/out-of-order samples do not overwrite a newer module state;
-* recovery progress is stored separately from live request processing.
+목적은 최종 치트 판정이 아니라 데이터의 무결성 보장이다.
+- 같은 event_id 재전송을 한 번만 반영한다.
+- 동일 모듈의 반복 표본을 합산하지 않고 최신 상태를 갱신한다.
+- 늦게 도착한 과거 표본이 새 표본을 덮어쓰지 못하게 한다.
+- 실시간 처리 위치와 장애 복구 커서를 별도로 관리한다.
 """
 
 from __future__ import annotations
@@ -23,6 +20,7 @@ from typing import Any, Mapping
 from shared.schema import encode_event, validate_event_id
 
 
+# 이벤트 1건을 처리한 결과: 중복 여부와 최신 상태 변경 여부를 구분한다.
 @dataclass(frozen=True)
 class ProcessReceipt:
     event_id: str
@@ -31,6 +29,8 @@ class ProcessReceipt:
     state_updated: bool
 
 
+# (세션, 플레이어, 모듈)별로 현재 저장된 최신 7필드 Event의 상태.
+# 이는 최종 위험도가 아니며, 특히 event_delta 모듈에는 최신 기록만으로 충분하지 않다.
 @dataclass(frozen=True)
 class ModuleState:
     session_id: str
@@ -45,22 +45,25 @@ class ModuleState:
 
 
 class ScoringStore:
-    """SQLite-backed scoring state for a single server deployment."""
+    """단일 서버가 사용하는 SQLite 기반 처리 이력·최신 상태 저장소."""
 
     STORAGE_VERSION = "1"
 
     def __init__(self, path: str | Path):
+        # 기존 DB는 재사용하며, 파일이 없으면 상위 폴더와 테이블을 준비한다.
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
+        """DB 연결 1개 생성. 호출한 쪽에서 반드시 close()/closing()으로 닫는다."""
         db = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         return db
 
     def _initialize(self) -> None:
+        """중복 이력, 최신 상태, 복구 위치 테이블을 초기화한다."""
         try:
             with closing(self._connect()) as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -68,6 +71,7 @@ class ScoringStore:
                     "CREATE TABLE IF NOT EXISTS metadata ("
                     "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
                 )
+                # 예전 버전 DB를 새 구조로 착각하지 않도록 저장소 버전을 확인한다.
                 row = db.execute(
                     "SELECT value FROM metadata WHERE key='scoring_version'"
                 ).fetchone()
@@ -82,6 +86,7 @@ class ScoringStore:
                 db.execute(
                     "INSERT OR IGNORE INTO metadata(key, value) VALUES('recovery_cursor', '0')"
                 )
+                # event_id: 재전송 중복 검사 / sequence: 서버 저장 순서 / digest: 본문 무결성.
                 db.execute(
                     """CREATE TABLE IF NOT EXISTS processed_events (
                         event_id TEXT PRIMARY KEY,
@@ -89,6 +94,7 @@ class ScoringStore:
                         digest TEXT NOT NULL
                     )"""
                 )
+                # 플레이어 1명이 여러 모듈 탐지를 받으므로 3개 식별자를 복합 기본키로 사용한다.
                 db.execute(
                     """CREATE TABLE IF NOT EXISTS latest_state (
                         session_id TEXT NOT NULL,
@@ -109,6 +115,7 @@ class ScoringStore:
 
     @staticmethod
     def _canonical_event(result: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
+        """공통 7필드 검증 → 정해진 JSON 직렬화 → 동일 본문 확인용 SHA-256 생성."""
         payload = encode_event(result)
         event = json.loads(payload)
         digest = hashlib.sha256(payload).hexdigest()
@@ -121,17 +128,24 @@ class ScoringStore:
         event_id: str,
         sequence: int,
     ) -> ProcessReceipt:
-        """Reflect one stored detection into scoring state exactly once per event ID."""
+        """이벤트를 한 번만 반영하고 필요한 경우 최신 모듈 상태를 갱신한다.
+
+        처리 이력 INSERT와 최신 상태 갱신을 같은 DB 트랜잭션에서 실행한다.
+        중간에 예외가 나면 둘 다 롤백하여 '처리했다고 표시만 된 이벤트'를 막는다.
+        """
         event_id = validate_event_id(event_id)
         if type(sequence) is not int or sequence <= 0:
             raise ValueError("sequence must be a positive integer")
 
+        # 본문을 검증한 다음 동일 event_id가 동일 내용인지도 확인할 수 있게 해시를 만든다.
         event, digest = self._canonical_event(result)
 
         try:
             db = self._connect()
             try:
                 db.execute("BEGIN IMMEDIATE")
+                # 재전송된 동일 이벤트는 최신 점수에 다시 반영하지 않는다.
+                # 같은 ID로 다른 본문/순서가 오면 단순 중복이 아닌 충돌이므로 거부한다.
                 existing = db.execute(
                     "SELECT sequence, digest FROM processed_events WHERE event_id=?",
                     (event_id,),
@@ -144,6 +158,7 @@ class ScoringStore:
                     db.commit()
                     return ProcessReceipt(event_id, sequence, "duplicate", False)
 
+                # 하나의 sequence가 서로 다른 이벤트를 뜻하는 경우도 거부한다.
                 sequence_owner = db.execute(
                     "SELECT event_id FROM processed_events WHERE sequence=?",
                     (sequence,),
@@ -156,6 +171,7 @@ class ScoringStore:
                     (event_id, sequence, digest),
                 )
 
+                # 모듈별 현재 상태를 독립 저장한다. 다른 모듈의 raw_score와 합산하지 않는다.
                 key = (event["session_id"], event["player_id"], event["module"])
                 current = db.execute(
                     """SELECT timestamp_ms, sequence
@@ -164,6 +180,8 @@ class ScoringStore:
                     key,
                 ).fetchone()
 
+                # game elapsed timestamp가 우선이다. timestamp가 같으면 서버 저장 sequence로 결정한다.
+                # 뒤늦게 도착한 오래된 결과도 처리 이력은 기록하지만 최신 상태는 덮어쓰지 않는다.
                 should_update = (
                     current is None
                     or event["timestamp_ms"] > current["timestamp_ms"]
@@ -174,6 +192,7 @@ class ScoringStore:
                 )
 
                 if should_update:
+                    # INSERT 또는 기존 3중 키의 UPSERT. 점수를 누적(+ 연산)하지 않는다.
                     db.execute(
                         """INSERT INTO latest_state(
                                session_id, player_id, module, timestamp_ms, sequence,
@@ -208,9 +227,11 @@ class ScoringStore:
                         ),
                     )
 
+                # 처리 이력과 (해당 시) 최신 상태를 동시에 확정한다.
                 db.commit()
                 return ProcessReceipt(event_id, sequence, "processed", should_update)
             except BaseException:
+                # 실패한 트랜잭션을 다음 이벤트가 이어받지 않도록 전부 되돌린다.
                 if db.in_transaction:
                     db.rollback()
                 raise
@@ -219,6 +240,7 @@ class ScoringStore:
         except sqlite3.Error as exc:
             raise RuntimeError("scoring storage operation failed") from exc
 
+    # 개별 모듈 현재 기록 조회: 정책 계산이나 대시보드가 참조할 수 있다.
     def get_module_state(
         self, session_id: str, player_id: str, module: str
     ) -> ModuleState | None:
@@ -234,6 +256,7 @@ class ScoringStore:
         return self._row_to_state(row) if row is not None else None
 
     def get_player_snapshot(self, session_id: str, player_id: str) -> list[ModuleState]:
+        """플레이어의 모듈별 최신 기록 목록. 과거 사건 전체를 뜻하지 않는다."""
         try:
             with closing(self._connect()) as db:
                 rows = db.execute(
@@ -248,6 +271,7 @@ class ScoringStore:
 
     @staticmethod
     def _row_to_state(row: sqlite3.Row) -> ModuleState:
+        """DB의 JSON 문자열을 다시 Python dict/list로 복원한다."""
         return ModuleState(
             session_id=row["session_id"],
             player_id=row["player_id"],
@@ -261,6 +285,7 @@ class ScoringStore:
         )
 
     def get_recovery_cursor(self) -> int:
+        """장애 복구 feed에서 마지막으로 확인 완료한 서버 저장 sequence 조회."""
         try:
             with closing(self._connect()) as db:
                 row = db.execute(
@@ -271,11 +296,10 @@ class ScoringStore:
         return int(row["value"]) if row is not None else 0
 
     def advance_recovery_cursor(self, sequence: int) -> None:
-        """Advance the feed cursor only after that sequence has been processed.
+        """복구로 처리 완료한 sequence에 한해 복구 커서를 이동한다.
 
-        Live ``process_event`` calls deliberately do not move this cursor.  That
-        prevents a concurrently processed newer request from skipping an older
-        stored record during crash recovery.
+        실시간 처리로 새 이벤트가 들어왔다고 이 커서를 옮기면, 더 오래된
+        미복구 이벤트를 건너뛸 수 있어 의도적으로 분리했다.
         """
         if type(sequence) is not int or sequence <= 0:
             raise ValueError("sequence must be a positive integer")
@@ -290,6 +314,7 @@ class ScoringStore:
                 if sequence < current:
                     db.commit()
                     return
+                # 처리 이력이 없는 위치로 복구 커서를 건너뛰지 못하게 한다.
                 processed = db.execute(
                     "SELECT 1 FROM processed_events WHERE sequence=?", (sequence,)
                 ).fetchone()

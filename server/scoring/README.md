@@ -55,3 +55,13 @@ Aimbot, AutoPaint and LocalGuard do not share one raw-score range), and the
 repository does not yet define one agreed normalization formula. The next B step
 should add a policy layer on top of `get_player_snapshot()` after those rules are
 agreed/validated with ReplayAnalyzer data.
+
+## Detector score audit / B2a preview
+
+See `MODULE_INVENTORY.md` for source-code-audited module names, raw-score ranges,
+transmission semantics, unreviewed ESP, and policy blockers. `policy.py` adds
+`inspect_event()` and `get_player_signal_inventory()` as **inspection-only**
+helpers. They deliberately do **not** assign cross-module weights or final
+player risk. In particular `godmode` sends per-event deltas, and several other
+modules send only positive results; B1's latest-state table cannot be treated
+as a complete active-risk picture for those modules.
