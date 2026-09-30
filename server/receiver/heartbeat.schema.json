@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MECCHA Anti-Cheat Heartbeat v3 receiver contract",
+  "$comment": "Verified against the sender schema in PR #56 / main eee51e9. Sequence and timestamp maximums are additional server storage limits.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "message_type", "session_id", "player_id", "client_id", "sequence", "timestamp_ms", "sent_at_utc", "status", "components", "transport"],
+  "properties": {
+    "schema_version": {"const": "meccha-heartbeat-3"},
+    "message_type": {"const": "heartbeat"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"},
+    "player_id": {"type": "string", "minLength": 1, "maxLength": 100},
+    "client_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "timestamp_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "sent_at_utc": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["starting", "healthy", "degraded", "stopped", "failed"]},
+    "components": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "required", "pid", "updated_at_ms", "stale_after_ms", "age_ms", "details"],
+        "properties": {
+          "status": {"enum": ["starting", "running", "degraded", "failed", "stopped", "unknown", "stale"]},
+          "required": {"type": "boolean"},
+          "pid": {"type": ["integer", "null"], "minimum": 1},
+          "updated_at_ms": {"type": "integer", "minimum": 0},
+          "stale_after_ms": {"type": "integer", "minimum": 1000},
+          "age_ms": {"type": "integer", "minimum": 0},
+          "details": {"type": "object"}
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configured", "consecutive_failures", "last_success_sequence", "last_error_type"],
+      "properties": {
+        "configured": {"type": "boolean"},
+        "consecutive_failures": {"type": "integer", "minimum": 0},
+        "last_success_sequence": {"type": ["integer", "null"], "minimum": 1},
+        "last_error_type": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

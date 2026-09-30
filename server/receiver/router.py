@@ -35,7 +35,9 @@ def bearer_token_verifier(expected_token: str) -> TokenVerifier:
         prefix = "Bearer "
         if not authorization.startswith(prefix):
             return False
-        return hmac.compare_digest(authorization[len(prefix):], expected_token)
+        return hmac.compare_digest(
+            authorization[len(prefix):].encode("utf-8"), expected_token.encode("utf-8")
+        )
 
     return verify
 
