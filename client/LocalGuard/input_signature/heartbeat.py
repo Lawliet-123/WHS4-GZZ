@@ -1,8 +1,7 @@
 """LocalGuard 구성 요소의 생존·신선도를 기록하는 하트비트 클라이언트.
 
 하트비트는 탐지 점수 Event와 별개다. 항상 로컬 JSONL을 남기며, 수신 URL이
-설정된 경우에만 임시 계약에 따라 POST한다. HWID는 다른 담당자가 계산한
-최종 식별값을 받아 *네트워크 본문에만* 포함한다.
+설정된 경우에만 임시 계약에 따라 POST한다.
 """
 from datetime import datetime, timezone
 import ipaddress
@@ -16,7 +15,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 
-SCHEMA_VERSION = 'meccha-heartbeat-2'
+SCHEMA_VERSION = 'meccha-heartbeat-3'
 MESSAGE_TYPE = 'heartbeat'
 # 필수 구성 요소가 아직 시작 중이거나 오래 갱신되지 않았다면 전체 상태를
 # healthy로 보고하지 않는다. 목록은 호출자가 추가할 수도 있다.
@@ -32,29 +31,6 @@ MAX_RESPONSE_BYTES = 64 * 1024
 _SESSION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}')
 _COMPONENT_NAME = re.compile(r'[a-z][a-z0-9_.-]{0,63}')
 _SECRET_KEY = re.compile(r'(?:token|secret|password|authorization|cookie|credential)', re.I)
-_HWID = re.compile(r'[0-9a-f]{64}\Z')
-
-
-def load_hwid_file(path):
-    """외부 담당 모듈이 만든 ``{"hwid": "..."}`` 파일만 읽는다.
-
-    원시 하드웨어 정보는 수집하지 않는다. 현재 64자리 소문자 SHA-256 형태는
-    최종 팀 계약이 아니라 임시 입력 계약이므로 형식이 달라지면 조정해야 한다.
-    """
-    path = Path(path).resolve()
-    if path.stat().st_size > 4096:
-        raise ValueError('hwid_file_too_large')
-    try:
-        value = json.loads(path.read_text(encoding='utf-8-sig'))
-    except (UnicodeError, ValueError) as exc:
-        raise ValueError('invalid_hwid_file') from exc
-    if (not isinstance(value, dict) or set(value) != {'hwid'} or
-            not isinstance(value['hwid'], str) or
-            not _HWID.fullmatch(value['hwid'])):
-        raise ValueError('hwid_file_requires_lowercase_sha256_hex')
-    return value['hwid']
-
-
 def monotonic_ms():
     """벽시계 변경과 무관한 경과 시간 계산용 밀리초를 반환한다."""
     return time.monotonic_ns() // 1_000_000
@@ -136,7 +112,7 @@ class HeartbeatClient:
                  token=None, interval_seconds=5.0, timeout_seconds=3.0,
                  stale_after_ms=None, client_id=None, clock=monotonic_ms,
                  origin_ms=None, utc_now=utc_iso, opener=None,
-                 required_components=(), hwid=None):
+                 required_components=()):
         """식별자·주기·전송 조건을 검증하고 새 로컬 하트비트 파일을 연다.
 
         ``clock``/``utc_now``/``opener`` 주입은 테스트용이며, 기본값은 실제
@@ -153,9 +129,6 @@ class HeartbeatClient:
         if token is not None and (not isinstance(token, str) or len(token) > 4096 or
                                   '\r' in token or '\n' in token):
             raise ValueError('invalid heartbeat token')
-        if hwid is not None and (not isinstance(hwid, str) or
-                                 not _HWID.fullmatch(hwid)):
-            raise ValueError('HWID must be a precomputed lowercase SHA-256 hex string')
         client_id = client_id or uuid.uuid4().hex
         if not isinstance(client_id, str) or not _SESSION_ID.fullmatch(client_id):
             raise ValueError('invalid heartbeat client_id')
@@ -165,7 +138,6 @@ class HeartbeatClient:
         self.client_id = client_id
         self.endpoint = _validated_endpoint(endpoint)
         self.token = token
-        self.hwid = hwid
         self.interval_seconds = float(interval_seconds)
         self.timeout_seconds = float(timeout_seconds)
         if self.endpoint and self.timeout_seconds >= self.interval_seconds:
@@ -205,7 +177,6 @@ class HeartbeatClient:
             }
         self.transport = {
             'configured': bool(self.endpoint),
-            'hwid_included_on_wire': bool(hwid and self.endpoint),
             'consecutive_failures': 0,
             'last_success_sequence': None,
             'last_error_type': None,
@@ -337,7 +308,7 @@ class HeartbeatClient:
             return payload
 
     def _write_local(self, payload, encoded):
-        """HWID를 제외한 스냅샷을 즉시 flush해 전송 실패 후에도 진단 가능하게 한다."""
+        """상태 스냅샷을 즉시 flush해 전송 실패 후에도 진단 가능하게 한다."""
         if self.file.tell() + len(encoded) + 1 > MAX_LOG_BYTES:
             raise RuntimeError('heartbeat_log_size_limit')
         self.file.write(encoded.decode('utf-8') + '\n')
@@ -405,16 +376,8 @@ class HeartbeatClient:
             delivered = None
             if self.endpoint:
                 try:
-                    # 로컬 파일에는 HWID를 남기지 않고 전송 본문 복사본에만 추가한다.
-                    wire_payload = dict(payload)
-                    if self.hwid is not None:
-                        wire_payload['hwid'] = self.hwid
-                    wire_encoded = json.dumps(
-                        wire_payload, ensure_ascii=False, allow_nan=False,
-                        separators=(',', ':')).encode('utf-8')
-                    if len(wire_encoded) > MAX_PAYLOAD_BYTES:
-                        raise RuntimeError('heartbeat_wire_payload_too_large')
-                    self._post(wire_payload, wire_encoded)
+                    # 로컬 기록과 서버 요청은 동일한 검증 완료 스냅샷을 사용한다.
+                    self._post(payload, encoded)
                     delivered = True
                     with self.lock:
                         self.transport.update(consecutive_failures=0,

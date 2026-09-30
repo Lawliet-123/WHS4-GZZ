@@ -1,6 +1,6 @@
 """하트비트의 상태 계산·로컬 기록·임시 HTTP 계약을 분리해 검증한다.
 
-시계와 응답을 제어해 실제 서버 없이 신선도·순번·인증 헤더·HWID 비기록
+시계와 응답을 제어해 실제 서버 없이 신선도·순번·인증 헤더·본문 일치
 동작을 재현한다. loopback 테스트도 배포 서버의 수신 성공을 의미하지 않는다.
 """
 import json
@@ -12,7 +12,7 @@ import unittest
 from urllib.error import URLError
 
 from heartbeat import (HeartbeatClient, LOCALGUARD_REQUIRED_COMPONENTS,
-                       SCHEMA_VERSION, _NoRedirect, load_hwid_file)
+                       SCHEMA_VERSION, _NoRedirect)
 
 
 class Clock:
@@ -156,9 +156,8 @@ class Tests(unittest.TestCase):
         self.assertEqual(json.loads(request.data), payload)
         self.assertNotIn('test-token', self.path.read_text(encoding='utf-8'))
 
-    def test_component_one_hwid_is_wire_only(self):
-        """HWID는 네트워크 본문에만 들어가고 로컬 JSONL에는 없다."""
-        hwid = 'a' * 64
+    def test_http_post_matches_local_snapshot(self):
+        """서버로 보낸 상태와 로컬에 기록한 상태가 같은지 확인한다."""
         sent = []
         def opener(request, timeout):
             payload = json.loads(request.data)
@@ -168,26 +167,16 @@ class Tests(unittest.TestCase):
                                         'client_id': payload['client_id'],
                                         'sequence': payload['sequence']}).encode())
         heartbeat = self.client(endpoint='http://127.0.0.1:8000/api/heartbeat',
-                                hwid=hwid, opener=opener)
+                                opener=opener)
         local, delivered = heartbeat.emit_once()
         heartbeat.stop()
         self.assertTrue(delivered)
-        self.assertEqual(sent[0]['hwid'], hwid)
-        self.assertNotIn('hwid', local)
-        self.assertTrue(local['transport']['hwid_included_on_wire'])
-        self.assertNotIn(hwid, self.path.read_text(encoding='utf-8'))
+        self.assertEqual(sent[0], local)
+        first_local = json.loads(self.path.read_text(encoding='utf-8').splitlines()[0])
+        self.assertEqual(first_local, local)
 
-    def test_hwid_file_requires_prehashed_value(self):
-        """원시 시리얼 대신 임시 계약의 64자리 소문자 해시만 받는다."""
-        path = Path(self.temp.name) / 'hwid.json'
-        path.write_text(json.dumps({'hwid': 'b' * 64}), encoding='utf-8')
-        self.assertEqual(load_hwid_file(path), 'b' * 64)
-        path.write_text(json.dumps({'hwid': 'raw-machine-serial'}), encoding='utf-8')
-        with self.assertRaises(ValueError):
-            load_hwid_file(path)
-
-    def test_real_loopback_http_receives_hwid_and_acknowledges_sequence(self):
-        """로컬 HTTP 모의 서버가 HWID 본문과 같은 순번의 확인을 교환한다."""
+    def test_real_loopback_http_acknowledges_sequence(self):
+        """로컬 HTTP 모의 서버가 요청 본문과 같은 순번의 확인을 교환한다."""
         received = []
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
@@ -211,14 +200,13 @@ class Tests(unittest.TestCase):
         heartbeat = None
         try:
             url = f'http://127.0.0.1:{server.server_port}/api/heartbeat'
-            heartbeat = self.client(endpoint=url, hwid='c' * 64)
+            heartbeat = self.client(endpoint=url)
             first, delivered = heartbeat.emit_once()
             self.assertTrue(delivered)
             heartbeat.stop()
             self.assertEqual(received[0][0], '/api/heartbeat')
-            self.assertEqual(received[0][1]['hwid'], 'c' * 64)
+            self.assertEqual(received[0][1], first)
             self.assertEqual(received[0][1]['sequence'], first['sequence'])
-            self.assertNotIn('c' * 64, self.path.read_text(encoding='utf-8'))
         finally:
             if heartbeat and not heartbeat.closed:
                 heartbeat.stop(final_status='failed')

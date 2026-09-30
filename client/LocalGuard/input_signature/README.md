@@ -9,7 +9,7 @@
 | `rules/known_cheat_executables.json` | 팀의 WHS4-GZZ 저장소에서 확인한 핵 EXE 빌드 4개의 정확한 파일 크기·SHA-256 |
 | `executable_hashes.py` · `hash_monitor.py` | 게임과 같은 Windows 세션에서 실행 중인 프로세스의 디스크 EXE를 5초 간격으로 해시 대조 |
 | `rules/repository_cheats.yar` · `yara_scanner.py` | 알려진 팀 핵의 게임·외부 후보 프로세스 메모리 시그니처 검사 및 실행 진입점 |
-| `heartbeat.py` · `heartbeat.schema.json` | 5~10초 간격 상태 기록, 선택적 HTTPS 전송, 1번이 제공한 HWID 동봉 |
+| `heartbeat.py` · `heartbeat.schema.json` | 5~10초 간격 상태 기록과 선택적 HTTPS 전송 |
 | `windows_process.py` | 읽기 전용 프로세스 식별·게임 DLL 범위 확인 지원 |
 | `replay_events.py` · `event.schema.json` | 7개 필드 Event를 로컬에 기록하고, 설정된 경우 `shared.logger`에 전달 |
 
@@ -39,21 +39,20 @@ py -3.12 -m venv .venv
 & .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-## HWID·TelemetryServer 연동 경계
+## TelemetryServer 연동 경계
 
-1번 모듈이 `{"hwid":"<64자리 소문자 16진수>"}` JSON 파일을 제공한다고 **임시로 가정**했다. 이 모듈은 HWID를 계산하거나 원시 하드웨어 정보를 수집하지 않는다. 서버 URL을 설정하려면 HWID 파일도 지정해야 한다.
+하트비트 수신 URL을 설정하면 로컬 기록과 함께 같은 상태 스냅샷을 서버에도 전송한다. URL을 설정하지 않으면 로컬 JSONL에만 남는다.
 
 ```powershell
-$env:MECCHA_HWID_FILE = 'C:\path\from-component-1\hwid.json'
 $env:MECCHA_TELEMETRY_HEARTBEAT_URL = 'https://telemetry.example/api/heartbeat'
 $env:MECCHA_HEARTBEAT_TOKEN = 'receiver가 발급한 토큰'
 & .\.venv\Scripts\python.exe .\yara_scanner.py --heartbeat-interval 5
 ```
 
-URL을 설정하지 않으면 하트비트는 로컬 JSONL에만 남는다. 원격 URL은 HTTPS가 필수이며 HTTP는 loopback 테스트에만 허용한다. HWID는 **전송 본문에만** 포함하고 로컬 하트비트 파일에는 기록하지 않는다. 서버는 같은 `session_id`·`client_id`·`sequence`로 확인 응답해야 한다. 요청·응답 형식은 [`TELEMETRY_CONTRACT.md`](TELEMETRY_CONTRACT.md)에 명시한 **임시 계약**으로, 1번·6번 담당자와 합의 후 확정해야 한다.
+원격 URL은 HTTPS가 필수이며 HTTP는 loopback 테스트에만 허용한다. 서버는 같은 `session_id`·`client_id`·`sequence`로 확인 응답해야 한다. 요청·응답 형식은 [`TELEMETRY_CONTRACT.md`](TELEMETRY_CONTRACT.md)에 명시한 **임시 계약**으로, 서버·Launcher 담당자와 합의 후 확정해야 한다.
 
-탐지 Event의 중앙 경로는 이제 `/events`가 아니라 `shared`의 `POST /api/detection`이다. `server/receiver/router.py`에 해당 수신 라우터도 있다. 다만 중앙 scoring 연결과 실제 배포 서버에서의 저장 성공은 별도 검증이 필요하다. 하트비트의 `POST /api/heartbeat`는 이 탐지 API와 **별개**이며, 1번 HWID 생산 형식과 수신 API가 확정되지 않아 현재는 로컬 기록 및 임시 계약에 따른 선택적 송신까지만 지원한다. 최종 Launcher의 단일 집계 하트비트도 아직 연결되지 않았다. 런처 등록표의 `input_signature` 명령에는 `--t0 {t0}`를 추가해야 이 시간 기준이 실제 실행에 적용된다. 이 스캐너는 같은 세션 폴더를 다시 사용할 수 없으므로 재시작 정책도 별도 협의가 필요하다. 나중에 Launcher가 세션 전체 하트비트를 보내면 자식 스캐너의 `--heartbeat-url`은 비워 중복 발신을 피해야 한다.
+탐지 Event의 중앙 경로는 이제 `/events`가 아니라 `shared`의 `POST /api/detection`이다. `server/receiver/router.py`에 해당 수신 라우터도 있다. 다만 중앙 scoring 연결과 실제 배포 서버에서의 저장 성공은 별도 검증이 필요하다. 하트비트의 `POST /api/heartbeat`는 이 탐지 API와 **별개**이며, 수신 API가 확정되지 않아 현재는 로컬 기록 및 임시 계약에 따른 선택적 송신까지만 지원한다. 최종 Launcher의 단일 집계 하트비트도 아직 연결되지 않았다. 런처 등록표는 이미 `yara_scanner.py`에 `--session-id {session} --player-id {player}`를 전달하지만, `--t0 {t0}`는 아직 전달하지 않는다. 이 스캐너는 같은 세션 폴더를 다시 사용할 수 없으므로 재시작 정책도 별도 협의가 필요하다. 나중에 Launcher가 세션 전체 하트비트를 보내면 자식 스캐너의 `--heartbeat-url`은 비워 중복 발신을 피해야 한다.
 
 ## 업로드 범위
 
-이 폴더의 소스·규칙·스키마·테스트·문서만 포함한다. `.venv/`, `sessions/`, `telemetry-outbox/`, `fixture-sessions/`, `__pycache__/`, 게임 파일, 치트 실행 파일, 로컬 HWID 파일과 토큰은 올리지 않는다. 게임 읽기 핸들 보유자 탐색과 `client/LocalGuard/memory_integrity/`는 이번 변경 범위가 아니다.
+이 폴더의 소스·규칙·스키마·테스트·문서만 포함한다. `.venv/`, `sessions/`, `telemetry-outbox/`, `fixture-sessions/`, `__pycache__/`, 게임 파일, 치트 실행 파일과 토큰은 올리지 않는다. 게임 읽기 핸들 보유자 탐색과 `client/LocalGuard/memory_integrity/`는 이번 변경 범위가 아니다.
