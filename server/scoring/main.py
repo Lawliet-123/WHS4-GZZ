@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from .storage import ModuleState, ProcessReceipt, ScoringStore
+from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
 _DEFAULT_DB = Path(__file__).resolve().parents[1] / "logs" / "scoring" / "scoring.sqlite3"
@@ -100,3 +100,46 @@ def get_player_signal_inventory(session_id: str, player_id: str):
     from .policy import inspect_player_snapshot
 
     return inspect_player_snapshot(get_player_snapshot(session_id, player_id))
+
+
+def get_event_delta_history(
+    session_id: str,
+    player_id: str,
+    *,
+    module: str = "godmode",
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[DeltaEvent]:
+    """새 사건별 이력 조회. 이 값 자체는 종합 위험도나 치트 판정이 아니다."""
+    return _get_store().get_event_delta_history(
+        session_id, player_id, module=module,
+        after_sequence=after_sequence, limit=limit,
+    )
+
+
+def backfill_event_delta_history_from_writer(writer, *, batch_size: int = 1000) -> int:
+    """B1 사용 중 누락됐던 과거 Godmode 사건을 Shared 원본 로그에서 채운다.
+
+    일반 recover_from_writer()는 복구 커서부터 읽기 때문에 이전에 처리한
+    사건을 다시 보지 못한다. 따라서 수동 업그레이드 작업에서는 처음부터
+    전체 원본을 읽고, 사건형 모듈만 기존 event_id와 대조해 안전하게 기록한다.
+    여러 번 실행해도 점수 합산·최근 상태 중복 변경은 일어나지 않는다.
+    반환값은 마지막으로 검사한 Shared sequence이며, 추가된 사건 개수가 아니다.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+    store = _get_store()
+    cursor = 0
+    while True:
+        batch = writer.iter_stored(after_sequence=cursor, limit=batch_size)
+        if not batch:
+            return cursor
+        for record in batch:
+            # 현재 감사로 증분형임이 확인된 모듈만 재처리한다.
+            if record.result["module"] in EVENT_DELTA_MODULES:
+                store.process_event(
+                    record.result, event_id=record.event_id, sequence=record.sequence
+                )
+            cursor = record.sequence
+        if len(batch) < batch_size:
+            return cursor

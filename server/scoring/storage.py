@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from shared.schema import encode_event, validate_event_id
+from shared.schema import encode_event, validate_event_id, validate_identifier
+
+# 현재 소스에서 '새 사건의 증분 점수'를 보내는 것으로 확인된 모듈만 포함한다.
+# 다른 모듈을 임의로 이 목록에 넣으면 평가 표본까지 사건으로 잘못 기록될 수 있다.
+EVENT_DELTA_MODULES = frozenset({"godmode"})
 
 
 # 이벤트 1건을 처리한 결과: 중복 여부와 최신 상태 변경 여부를 구분한다.
@@ -44,6 +48,21 @@ class ModuleState:
     reasons: list[str]
 
 
+# 최신 모듈 상태와 별개로 보존하는 신규 사건 1건의 원본 탐지 정보.
+# 서버가 받은 순서(sequence)와 게임 시간(timestamp_ms)은 서로 다를 수 있다.
+@dataclass(frozen=True)
+class DeltaEvent:
+    event_id: str
+    sequence: int
+    session_id: str
+    player_id: str
+    module: str
+    timestamp_ms: int
+    raw_score: float
+    evidence: dict[str, Any]
+    reasons: list[str]
+
+
 class ScoringStore:
     """단일 서버가 사용하는 SQLite 기반 처리 이력·최신 상태 저장소."""
 
@@ -59,6 +78,8 @@ class ScoringStore:
         """DB 연결 1개 생성. 호출한 쪽에서 반드시 close()/closing()으로 닫는다."""
         db = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
         db.row_factory = sqlite3.Row
+        # 사건 이력이 processed_events 원본 없이 단독 저장되지 않도록 외래키 검사 활성화.
+        db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA synchronous=FULL")
         return db
 
@@ -109,6 +130,28 @@ class ScoringStore:
                         PRIMARY KEY(session_id, player_id, module)
                     )"""
                 )
+                # B2b: Godmode처럼 '새로 발생한 사건'을 보내는 모듈의 기록은
+                # 최신 상태 테이블과 분리하여 모두 보존한다.
+                # 기존 B1 DB에도 이 테이블만 추가되는 호환 가능한 확장이다.
+                # 신규 데이터에 적용하며, 과거 이벤트는 backfill 함수로 보완한다.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS event_delta_history (
+                        event_id TEXT PRIMARY KEY,
+                        sequence INTEGER NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL,
+                        player_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        raw_score REAL NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        FOREIGN KEY(event_id) REFERENCES processed_events(event_id)
+                    )"""
+                )
+                db.execute(
+                    """CREATE INDEX IF NOT EXISTS ix_delta_player_sequence
+                       ON event_delta_history(session_id, player_id, module, sequence)"""
+                )
                 db.commit()
         except sqlite3.Error as exc:
             raise RuntimeError("cannot initialize scoring storage") from exc
@@ -120,6 +163,33 @@ class ScoringStore:
         event = json.loads(payload)
         digest = hashlib.sha256(payload).hexdigest()
         return event, digest
+
+    @staticmethod
+    def _remember_delta_event(
+        db: sqlite3.Connection, event: dict[str, Any], event_id: str, sequence: int
+    ) -> None:
+        """새 사건의 원본 데이터를 재전송 ID 기준으로 정확히 한 번 보존한다.
+
+        새로 받은 이벤트와 기존 B1 처리 이력을 복구하는 이벤트 양쪽에서 사용한다.
+        같은 근거가 *다른 event_id*로 또 발생하는 의미상 중복 여부는 여기서
+        판단하지 않는다. detector 재시작을 포함한 판정 규칙은 팀 합의가 필요하다.
+        """
+        if event["module"] not in EVENT_DELTA_MODULES:
+            return
+        db.execute(
+            """INSERT INTO event_delta_history(
+                   event_id, sequence, session_id, player_id, module, timestamp_ms,
+                   raw_score, evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(event_id) DO NOTHING""",
+            (
+                event_id, sequence,
+                event["session_id"], event["player_id"], event["module"],
+                event["timestamp_ms"], float(event["raw_score"]),
+                json.dumps(event["evidence"], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                json.dumps(event["reasons"], ensure_ascii=False, separators=(",", ":")),
+            ),
+        )
 
     def process_event(
         self,
@@ -155,6 +225,10 @@ class ScoringStore:
                         raise RuntimeError(
                             "event_id is already associated with different scoring input"
                         )
+                    # 업그레이드 전 B1이 이미 처리했던 Godmode 이벤트라도,
+                    # 원본 Shared feed로 재전송되면 누락된 사건 이력을 채운다.
+                    # 최근 상태나 event_id 처리 이력은 다시 누적하지 않는다.
+                    self._remember_delta_event(db, event, event_id, sequence)
                     db.commit()
                     return ProcessReceipt(event_id, sequence, "duplicate", False)
 
@@ -227,7 +301,9 @@ class ScoringStore:
                         ),
                     )
 
-                # 처리 이력과 (해당 시) 최신 상태를 동시에 확정한다.
+                # processed_events + 최신 상태 + 새 사건 이력을 한 트랜잭션으로 묶는다.
+                # 이력 INSERT 실패 시 세 변경 사항 모두 롤백된다.
+                self._remember_delta_event(db, event, event_id, sequence)
                 db.commit()
                 return ProcessReceipt(event_id, sequence, "processed", should_update)
             except BaseException:
@@ -283,6 +359,50 @@ class ScoringStore:
             evidence=json.loads(row["evidence_json"]),
             reasons=json.loads(row["reasons_json"]),
         )
+
+    def get_event_delta_history(
+        self,
+        session_id: str,
+        player_id: str,
+        *,
+        module: str = "godmode",
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[DeltaEvent]:
+        """새 사건 이력을 서버 저장 순서로 나누어 조회한다(최종 위험도 아님).
+
+        게임 시간은 역순으로 도착할 수 있으므로 sequence를 페이지 커서로 사용한다.
+        raw_score 합계를 만들지 않는다. 같은 이유로 새 event_id가 전송되는
+        detector 재시작 시 재탐지 여부는 현재 규격만으로 구별할 수 없기 때문이다.
+        """
+        validate_identifier(session_id)
+        validate_identifier(player_id)
+        if module not in EVENT_DELTA_MODULES:
+            raise ValueError("module is not configured for event-delta history")
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("after_sequence must be a nonnegative integer")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        try:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    """SELECT * FROM event_delta_history
+                       WHERE session_id=? AND player_id=? AND module=? AND sequence>?
+                       ORDER BY sequence LIMIT ?""",
+                    (session_id, player_id, module, after_sequence, limit),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise RuntimeError("cannot read event-delta history") from exc
+        return [
+            DeltaEvent(
+                event_id=row["event_id"], sequence=row["sequence"],
+                session_id=row["session_id"], player_id=row["player_id"],
+                module=row["module"], timestamp_ms=row["timestamp_ms"],
+                raw_score=row["raw_score"], evidence=json.loads(row["evidence_json"]),
+                reasons=json.loads(row["reasons_json"]),
+            )
+            for row in rows
+        ]
 
     def get_recovery_cursor(self) -> int:
         """장애 복구 feed에서 마지막으로 확인 완료한 서버 저장 sequence 조회."""

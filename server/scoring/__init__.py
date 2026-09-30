@@ -5,14 +5,25 @@
 """
 
 # Receiver/서버 통합부는 아래 함수들을 import해 사용한다.
-from .main import configure_scoring, get_player_snapshot, get_player_signal_inventory, process, recover_from_writer
-from .storage import ModuleState, ProcessReceipt, ScoringStore
+from .main import (
+    backfill_event_delta_history_from_writer,
+    configure_scoring,
+    get_event_delta_history,
+    get_player_signal_inventory,
+    get_player_snapshot,
+    process,
+    recover_from_writer,
+)
+from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore
 
 __all__ = (
+    "DeltaEvent",
     "ModuleState",
     "ProcessReceipt",
     "ScoringStore",
+    "backfill_event_delta_history_from_writer",
     "configure_scoring",
+    "get_event_delta_history",
     "get_player_snapshot",
     "get_player_signal_inventory",
     "process",

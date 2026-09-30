@@ -47,3 +47,14 @@ for signal in get_player_signal_inventory("session_1", "player_1"):
 ```
 
 No schema migration or detector rewrite is required to use this **inspection-only** API. It reads existing B1 latest states. For `godmode` and `external_access` those states are **not sufficient for full scoring** and this API reports the limitation.
+
+## B2b-1 추가 점검(업로드된 병합 HEAD 스냅샷 기준)
+
+- Godmode는 `result.new_reasons`가 있을 때만 Shared로 보내고,
+  `raw_score=result.new_score`, `reasons=new_reasons`로 구성함을 재확인했다.
+- B2b-1은 수신한 각 Godmode Event를 원본 7필드 값 그대로 별도 사건 이력으로
+  보존한다. 동일 `event_id` 재전송은 이력에 중복 삽입하지 않는다.
+- 단, detector가 재시작해 같은 이유를 새로운 `event_id`로 보내는 경우에는
+  현재 공통 Event만으로 같은 실제 사건인지 단정할 수 없다.
+- 이 단계는 **관측 이력 보존**이며, 중복 원인 통합·점수 감쇠·정규화·최종 판정
+  공식을 확정하지 않는다. ESP의 실제 전송 규격도 추후 재검토한다.

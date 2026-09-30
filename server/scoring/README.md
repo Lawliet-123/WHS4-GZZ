@@ -65,3 +65,45 @@ helpers. They deliberately do **not** assign cross-module weights or final
 player risk. In particular `godmode` sends per-event deltas, and several other
 modules send only positive results; B1's latest-state table cannot be treated
 as a complete active-risk picture for those modules.
+
+## B2b-1: Godmode 사건별 이력 보존 (최종 scoring 공식 아님)
+
+최신 Event 한 개로 전체 사건을 복원할 수 없는 `godmode`는 별도
+`event_delta_history`에 **모든 수신 이벤트를 event_id 기준으로 한 번씩**
+보존한다. B1 `latest_state`도 기존과 동일하게 갱신하며, 원본 7필드 형식이나
+Receiver의 `process(payload, event_id=..., sequence=...)` 연결을 바꾸지 않는다.
+
+```python
+from server.scoring.main import get_event_delta_history
+
+# sequence는 서버 영구 저장 순서이며 timestamp_ms(게임 시간)와 다르다.
+rows = get_event_delta_history("session1", "player1", module="godmode", limit=100)
+for item in rows:
+    print(item.event_id, item.timestamp_ms, item.raw_score, item.reasons)
+```
+
+**주의:** 여기서 raw_score는 Godmode가 보고한 새 사건의 증분이다.
+현재 정책은 기록만 보존하며, 여러 이벤트를 단순 합산하거나 최종 위험도와
+치트 판정을 계산하지 않는다. 특히 detector가 재시작돼 동일 reason을 새로운
+`event_id`로 보낼 경우, 전송 중복은 구별할 수 있지만 실제 사건 중복 여부는
+추가 고유 사건 식별자 없이 판단할 수 없다. 추후 detector 팀과 규칙 합의가 필요하다.
+
+### 기존 B1 DB에서 업그레이드할 경우
+
+DB 초기화 시 새 테이블을 자동 추가한다. 하지만 이미 과거 B1에서 처리 완료한
+Godmode 사건은 `latest_state`에 마지막 1건만 남아 있으므로, **Shared 원본
+로그를 백업·보존한 상태에서** 다음을 한 번 실행해야 사건 이력을 채울 수 있다.
+
+```python
+from server.scoring.main import backfill_event_delta_history_from_writer
+
+backfill_event_delta_history_from_writer(writer)  # configure_scoring() 완료 후
+```
+
+백필은 Shared의 처음부터 읽고 동일 ID의 처리 이력을 검증하며 빠진 사건만
+채운다. 일반 장애 복구용 `recover_from_writer(writer)`는 기존과 동일하게
+별도로 사용한다. 실제 서버 시작 시 언제 실행할지는 A/C 담당자와 합의해야 한다.
+Shared 원본이 없으면 과거 누락 사건을 만들어낼 수 없다.
+
+새 사건 이력은 현재 단일 서버용 SQLite에 누적되며, 보관 기간·용량 제한·
+정규화 가중치·LocalGuard 상관관계 제거·ESP 정책은 아직 미구현이다.
