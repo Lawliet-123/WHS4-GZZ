@@ -148,8 +148,17 @@ def build_common_event(
     누적 reasons / score가 아니라
     이번 Snapshot에서 새로 발생한 탐지만 저장한다.
 
-    Shared 전송에서도 이 값을 수정하지 않고
-    그대로 send_detection()에 전달한다.
+    따라서 정상 Snapshot에서는:
+
+        reasons = []
+        raw_score = 0
+
+    이 될 수 있다.
+
+    Replay export에는 모든 Snapshot의 Event를 기록한다.
+
+    Shared 전송에서는 new_reasons가 발생한 Event만
+    수정하지 않고 그대로 send_detection()에 전달한다.
     """
 
     timestamp_ms = get_timestamp_ms(
@@ -323,10 +332,12 @@ def append_event(
     event,
 ):
     """
-    기존 공통 7필드 Event를 로컬 JSONL에 저장한다.
+    기존 공통 7필드 Event를 로컬 Replay JSONL에 저장한다.
 
-    Shared 연동 이후에도 기존 로컬 기록은
-    그대로 유지한다.
+    ReplayAnalyzer가 정상 구간과 탐지 구간을 함께
+    비교할 수 있도록 모든 Snapshot Event를 기록한다.
+
+    Shared 전송 여부와 Replay 기록 여부는 분리한다.
     """
 
     with events_path.open(
@@ -349,7 +360,7 @@ def send_shared_event(
     telemetry_enabled,
 ):
     """
-    기존 공통 Event를 Shared 전송 큐에 등록한다.
+    탐지가 발생한 공통 Event를 Shared 전송 큐에 등록한다.
 
     send_detection() 성공은 서버 저장 완료가 아니라
     로컬 outbox에 정상 등록되었다는 의미다.
@@ -557,26 +568,53 @@ def main():
             )
 
             # -----------------------------
-            # 공통 7필드 Event
+            # 공통 7필드 Event 생성
+            # -----------------------------
+
+            event = build_common_event(
+                session_id=session_id,
+                player_id=player_id,
+                snapshot=snapshot,
+                result=result,
+                session_start_timestamp=(
+                    session_start_timestamp
+                ),
+            )
+
+            # -----------------------------
+            # ReplayAnalyzer Event 기록
+            # -----------------------------
+            #
+            # Replay 데이터에는 모든 Snapshot의
+            # 계산 결과를 저장한다.
+            #
+            # 정상 Snapshot:
+            #   raw_score = 0
+            #   reasons = []
+            #
+            # 탐지 Snapshot:
+            #   raw_score = new_score
+            #   reasons = new_reasons
+            #
+            # Shared 전송과는 별개로 동작한다.
+            # -----------------------------
+
+            append_event(
+                events_path,
+                event,
+            )
+
+            # -----------------------------
+            # Shared 탐지 Event 전송
+            # -----------------------------
+            #
+            # 기존 Shared 동작을 유지한다.
+            #
+            # 새 탐지 reason이 발생한 Snapshot만
+            # 동일한 7필드 Event를 수정 없이 전송한다.
             # -----------------------------
 
             if result.new_reasons:
-
-                event = build_common_event(
-                    session_id=session_id,
-                    player_id=player_id,
-                    snapshot=snapshot,
-                    result=result,
-                    session_start_timestamp=(
-                        session_start_timestamp
-                    ),
-                )
-
-                # 기존 로컬 JSONL 기록 유지
-                append_event(
-                    events_path,
-                    event,
-                )
 
                 print()
                 print(
@@ -591,8 +629,6 @@ def main():
                     )
                 )
 
-                # 같은 Event를 수정 없이
-                # Shared 중앙 전송 큐에 등록
                 send_shared_event(
                     event,
                     telemetry_enabled,

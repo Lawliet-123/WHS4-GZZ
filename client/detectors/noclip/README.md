@@ -95,6 +95,23 @@ python3 client/detectors/noclip/main.py \
 python3 client/detectors/noclip/main.py --help
 ```
 
+런처 연동 시에는 다음 옵션을 함께 사용할 수 있습니다.
+
+- `--from-end`: detector 시작 전에 CSV에 이미 남아 있던 완성된 행은 건너뛰고 이후 행만 처리
+- `--t0 <EPOCH>`: 런처 세션 시작 epoch를 받아 다른 모듈과 `timestamp_ms` 기준을 맞춤
+
+```bash
+python3 client/detectors/noclip/main.py \
+  --session-id session_001 \
+  --player-id player_001 \
+  --log-file /path/to/noclip_log.csv \
+  --from-end \
+  --t0 1760000000.000
+```
+
+`NoclipLogger`의 CSV는 현재 작업 디렉터리가 아니라 Lua `main.lua`의 실제 위치를
+기준으로 `NoclipLogger/noclip_log.csv`에 생성됩니다.
+
 ## Shared 연동
 
 프로그램 시작 시 shared client를 설정하고,

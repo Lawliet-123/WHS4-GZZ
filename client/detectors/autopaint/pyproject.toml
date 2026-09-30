@@ -1,0 +1,13 @@
+[project]
+name = "gzz-anticheat"
+version = "0.4.1"
+description = "Client-side AutoPaint detector for Meccha Chameleon"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+gzz-anticheat = "gzz_anticheat.cli:main"
+gzz-mark = "gzz_anticheat.mark:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

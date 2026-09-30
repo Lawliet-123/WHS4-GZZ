@@ -90,6 +90,68 @@ class LauncherIdsTest(unittest.TestCase):
         self.assertTrue(all(e["evidence"]["source_attacker_id"] for e in mapped))
 
 
+class _Ev:
+    def __init__(self, session_id, timestamp_ms):
+        self.session_id = session_id
+        self.timestamp_ms = timestamp_ms
+
+
+class LauncherTimelineTest(unittest.TestCase):
+    """UE 시계가 다시 시작되면 런처 시간 기준을 다시 잡는다."""
+
+    def setUp(self):
+        self.now = 1000.0
+        self._real = aimbot_main.time.time
+        aimbot_main.time.time = lambda: self.now
+        self.tl = aimbot_main.LauncherTimeline(t0=990.0)       # 세션 시작 10초 뒤부터
+
+    def tearDown(self):
+        aimbot_main.time.time = self._real
+
+    def align(self, session, ms):
+        e = _Ev(session, ms)
+        self.tl.align(e)
+        return e
+
+    def test_first_event_anchored_and_intervals_kept(self):
+        a = self.align("S1", 5000)
+        b = self.align("S1", 6500)
+        self.assertEqual((a.timestamp_ms, b.timestamp_ms), (10000, 11500))
+        self.assertEqual((a.source_timestamp_ms, b.source_timestamp_ms), (5000, 6500))
+
+    def test_new_ue_session_reanchors(self):
+        self.align("S1", 80000)
+        self.now = 1030.0                                      # 30초 뒤 모드 재로드
+        e = self.align("S2", 500)                              # 새 세션, 시계 처음부터
+        self.assertEqual(e.timestamp_ms, 40000)                # 그 순간(t0+40초)에 맞춘다
+        self.assertEqual(self.tl.rebased, 1)
+
+    def test_backward_jump_in_same_session_reanchors(self):
+        self.align("S1", 80000)
+        self.now = 1020.0
+        e = self.align("S1", 2000)                             # 같은 세션인데 78초 거꾸로
+        self.assertEqual(e.timestamp_ms, 30000)
+        self.assertEqual(self.tl.rebased, 1)
+
+    def test_small_backward_jitter_is_not_a_restart(self):
+        self.align("S1", 5000)
+        e = self.align("S1", 4500)                             # 0.5초 역전 — 같은 순간 기록
+        self.assertEqual(self.tl.rebased, 0)
+        self.assertEqual(e.timestamp_ms, 9500)
+
+    def test_never_negative(self):
+        self.now = 990.0                                       # t0 와 같은 순간에 첫 이벤트
+        self.align("S1", 5000)
+        e = self.align("S1", 4200)                             # 기준보다 0.8초 이르다
+        self.assertGreaterEqual(e.timestamp_ms, 0)
+
+    def test_without_t0_leaves_ue_time(self):
+        tl = aimbot_main.LauncherTimeline(t0=None)
+        e = _Ev("S1", 5000)
+        tl.align(e)
+        self.assertEqual(e.timestamp_ms, 5000)
+
+
 RAW = REPLAY / "aimbot_002" / "raw" / "meccha_aim_telemetry.jsonl"
 
 

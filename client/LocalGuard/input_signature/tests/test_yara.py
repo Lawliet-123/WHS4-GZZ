@@ -1,3 +1,8 @@
+"""YARA 규칙·프로세스 식별·검사 실패 처리의 회귀 테스트.
+
+임시 프로세스/합성 marker는 탐지 파이프라인을 재현하기 위한 것이며 실제
+게임에서의 정상·핵 분류 정확도를 측정하지 않는다.
+"""
 import importlib.util
 import io
 import json
@@ -21,33 +26,40 @@ HAS_YARA = importlib.util.find_spec('yara') is not None
 
 @unittest.skipUnless(HAS_YARA,'yara-python not installed')
 class Tests(unittest.TestCase):
+    """0점의 의미, 민감 바이트 비공개, 후보 범위를 일관되게 검증한다."""
     def setUp(self):
+        """각 테스트에 격리된 합성 세션과 가짜 프로세스를 준비한다."""
         self.temp = tempfile.TemporaryDirectory()
         self.session = ReplaySession(self.temp.name,'test',data_origin='controlled_fixture',modules=['localguard_yara'])
         self.process = SimpleNamespace(pid=123,check=lambda:None)
         self.raw = io.StringIO()
     def tearDown(self): self.session.finish(); self.temp.cleanup()
     def test_success_no_match_emits_zero(self):
+        """검사가 성공했을 때만 범위를 명시한 0점 Event를 남긴다."""
         rules = SimpleNamespace(match=lambda **kw:[])
         event = scan_once(rules,self.process,self.session,self.raw)
         self.assertEqual(event['raw_score'],0)
         self.assertFalse(event['evidence']['active_cheat_proven'])
     def test_failure_no_zero(self):
+        """접근 거부는 검사 실패로 기록하고 정상 0점으로 바꾸지 않는다."""
         def fail(**kw): raise PermissionError('denied')
         event = scan_once(SimpleNamespace(match=fail),self.process,self.session,self.raw)
         self.assertIsNone(event)
         self.assertEqual(self.session.counts,{})
         self.assertIn('scan_error',self.raw.getvalue())
     def test_timeout_no_zero(self):
+        """YARA 시간 제한에 걸린 검사는 불완전하므로 점수를 내지 않는다."""
         import yara
         def fail(**kw): raise yara.TimeoutError('timeout')
         self.assertIsNone(scan_once(SimpleNamespace(match=fail),self.process,self.session,self.raw))
     def test_yara_warning_not_success(self):
+        """YARA 부분 검사 경고가 있으면 겉보기 빈 일치도 정상으로 취급하지 않는다."""
         def partial(**kw):
             kw['warnings_callback'](1,'too many matches')
             return []
         self.assertIsNone(scan_once(SimpleNamespace(match=partial),self.process,self.session,self.raw))
     def test_identity_change_no_score(self):
+        """스캔 중 PID의 대상이 바뀌면 해당 결과를 버린다."""
         calls = []
         def check():
             calls.append(1)
@@ -55,6 +67,7 @@ class Tests(unittest.TestCase):
         self.process.check=check
         self.assertIsNone(scan_once(SimpleNamespace(match=lambda **kw:[]),self.process,self.session,self.raw))
     def test_no_matched_bytes_in_log(self):
+        """매칭한 원시 메모리 문자열은 raw 로그나 공통 Event에 노출되지 않는다."""
         import yara
         rules = yara.compile(source='rule r { meta: score=3 strings: $a="TOP_SECRET" condition: $a }')
         matches = rules.match(data=b'TOP_SECRET')
@@ -63,6 +76,7 @@ class Tests(unittest.TestCase):
         self.assertNotIn('TOP_SECRET',self.raw.getvalue())
         self.assertNotIn('TOP_SECRET',json.dumps(event))
     def test_known_autopaint_literals_are_reported_without_arbitrary_memory(self):
+        """허용된 고정 문자열만 표시하고 주변의 사적 메모리는 출력하지 않는다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])
         sample = b'|'.join([
             b'mesh_first_pipeline', 'mesh-first-uv-color-'.encode('utf-16le'),
@@ -85,6 +99,7 @@ class Tests(unittest.TestCase):
         self.assertNotIn('PRIVATE_UNRELATED_MEMORY',self.raw.getvalue())
         self.assertNotIn('matched_strings',json.dumps(event['evidence']))
     def test_same_rule_name_with_different_literal_is_not_disclosed(self):
+        """규칙 이름만 같고 내용이 다른 문자열은 허용 목록 출력에서 제외한다."""
         import yara
         rules = yara.compile(source='rule MECCHA_PRReady_AutoPaint_Bridge { '
                              'meta: score=3 strings: $pipeline="PRIVATE_VALUE" '
@@ -96,6 +111,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(record['matches'][0]['matched_strings'],[])
         self.assertNotIn('PRIVATE_VALUE',self.raw.getvalue())
     def test_loaded_bridge_memory_positive(self):
+        """로드된 bridge의 매핑 메모리에서 실제 규칙 일치를 찾아낸다."""
         import yara
         rules = yara.compile(source='rule bridge { meta: score=3 strings: $a="SECRET_BRIDGE_PATTERN" condition: $a }')
         module = {'name':'meccha-direct-bridge-v1-test.dll','path':'C:\\test.dll',
@@ -109,6 +125,7 @@ class Tests(unittest.TestCase):
         self.assertNotIn('SECRET_BRIDGE_PATTERN',self.raw.getvalue())
         read.assert_called_once_with(self.process.pid,module)
     def test_loaded_bridge_no_hit_defers_to_full_scan(self):
+        """기본 모드의 bridge 불일치는 게임 전체 검사로 넘어간다."""
         module = {'name':'runtime-bridge.dll','path':'C:\\test.dll',
                   'base_address':0x1000,'size':64}
         with patch('yara_scanner.list_process_modules',return_value=[module]), \
@@ -119,6 +136,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.session.counts,{})
         self.assertEqual(self.raw.getvalue(),'')
     def test_loaded_bridge_read_error_defers_to_full_scan(self):
+        """bridge 읽기 실패도 기본 모드에서 전체 검사 기회를 남긴다."""
         module = {'name':'runtime-bridge.dll','path':'C:\\test.dll',
                   'base_address':0x1000,'size':64}
         with patch('yara_scanner.list_process_modules',return_value=[module]), \
@@ -129,6 +147,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.session.counts,{})
         self.assertIn('module_scan_error',self.raw.getvalue())
     def test_bridge_only_absent_is_narrow_inventory_zero(self):
+        """bridge-only의 DLL 부재 0점은 모듈 목록 범위에만 한정된다."""
         with patch('yara_scanner.list_process_modules',return_value=[
                 {'name':'game.dll','path':'C:\\game.dll','base_address':0x1000,'size':64}]), \
              patch('yara_scanner.read_process_module') as read:
@@ -142,6 +161,7 @@ class Tests(unittest.TestCase):
         self.assertIn('not_proven_clean',event['evidence']['zero_means'])
         self.assertEqual(json.loads(self.raw.getvalue())['module_inventory_count'],1)
     def test_bridge_only_loaded_no_match_is_module_memory_zero(self):
+        """bridge-only 불일치 0점이 게임 전체 정상처럼 기록되지 않는다."""
         module = {'name':'runtime-bridge.dll','path':'C:\\test.dll',
                   'base_address':0x1000,'size':64}
         with patch('yara_scanner.list_process_modules',return_value=[module]), \
@@ -153,6 +173,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(event['evidence']['scope'],'loaded_autopaint_bridge_module_memory')
         self.assertIn('not_proven_clean',event['evidence']['zero_means'])
     def test_bridge_only_loaded_known_literals_are_positive(self):
+        """bridge-only에서도 알려진 DLL 메모리 조합은 양성으로 기록한다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])
         module = {'name':'meccha-direct-bridge-v1-test.dll','path':'C:\\bridge.dll',
                   'base_address':0x1000,'size':64}
@@ -168,6 +189,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(event['evidence']['scope'],'loaded_autopaint_bridge_module_memory')
         self.assertIn('MECCHA_PRReady_AutoPaint_Bridge',event['evidence']['matched_rules'])
     def test_bridge_only_read_error_is_not_zero(self):
+        """bridge-only의 부분 읽기·오류는 정상 0점이 아니다."""
         module = {'name':'runtime-bridge.dll','path':'C:\\test.dll',
                   'base_address':0x1000,'size':64}
         with patch('yara_scanner.list_process_modules',return_value=[module]), \
@@ -180,6 +202,7 @@ class Tests(unittest.TestCase):
         self.assertIn('scan_error',self.raw.getvalue())
         self.assertIn('yara_scan_failed',self.session.errors)
     def test_repository_rules_match_each_known_family_sample(self):
+        """팀 저장소에서 뽑은 각 핵 계열의 알려진 조합에 규칙이 일치한다."""
         rules,info = load_rules([ROOT/'rules/repository_cheats.yar'])
         wide = lambda value: value.encode('utf-16le')
         samples = {
@@ -252,6 +275,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual({m.rule for m in rules.match(data=data)}, {expected})
 
     def test_autopaint_bridge_requires_full_combination(self):
+        """Auto Paint 단어 하나만으로 양성 처리되지 않도록 조합을 요구한다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])
         a = b'mesh-first paint requires the async queued dispatcher'
         b = b'mesh-first paint completed'
@@ -262,6 +286,7 @@ class Tests(unittest.TestCase):
                          {'MECCHA_Repo_AutoPaint_Bridge'})
 
     def test_pr_ready_bridge_requires_full_combination(self):
+        """PR-ready Auto Paint 규칙도 모든 핵심 리터럴이 함께 있어야 일치한다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])
         parts = [b'mesh_first_pipeline', 'mesh-first-uv-color-'.encode('utf-16le'),
                  b'ServerCompactPaintBatch', b'PaintAtUVWithBrush']
@@ -274,6 +299,7 @@ class Tests(unittest.TestCase):
         self.assertEqual({m.rule for m in rules.match(data=b'|'.join(parts))}, expected)
     @unittest.skipUnless(sys.platform=='win32','Windows process test')
     def test_pr_ready_bridge_matches_controlled_process_memory(self):
+        """통제된 프로세스 메모리에 올린 bridge marker를 PID 스캔으로 찾는다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])
         marker = b'|'.join([
             b'mesh_first_pipeline', 'mesh-first-uv-color-'.encode('utf-16le'),
@@ -292,18 +318,22 @@ class Tests(unittest.TestCase):
                              negative['evidence']['matched_rules'])
 
     def test_generic_injection_api_names_do_not_match(self):
+        """일반적인 주입 API 이름만으로 알려진 핵 규칙이 맞지 않는다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])
         generic = b'OpenProcess VirtualAllocEx WriteProcessMemory CreateRemoteThread LoadLibraryW ProcessEvent'
         self.assertFalse(rules.match(data=generic))
     def test_invalid_score_rejected(self):
+        """규칙 점수가 허용 범위를 벗어나면 파일을 컴파일해도 사용하지 않는다."""
         path = Path(self.temp.name)/'bad.yar'
         path.write_text('rule bad { meta: score=99 condition: true }',encoding='utf-8')
         with self.assertRaises(ValueError): load_rules([path])
     def test_includes_disabled(self):
+        """기록되지 않은 외부 YARA include가 규칙에 끼어들지 못한다."""
         path = Path(self.temp.name)/'bad.yar'
         path.write_text('include "elsewhere.yar"',encoding='utf-8')
         with self.assertRaises(Exception): load_rules([path])
     def test_cli_missing_game_emits_no_false_clean_result(self):
+        """게임이 없으면 검사를 실패로 남기고 정상 0점 Event를 만들지 않는다."""
         with patch('yara_scanner.find_processes',return_value=[]), redirect_stdout(io.StringIO()):
             code = main(['--log-root',self.temp.name,'--session-id','no_game','--label','normal'])
         self.assertEqual(code,1)
@@ -318,9 +348,11 @@ class Tests(unittest.TestCase):
         self.assertEqual(heartbeat_rows[-1]['components']['localguard_input_signature']['stale_after_ms'],
                          110000)
     def test_scanner_heartbeat_freshness_covers_full_scan_schedule(self):
+        """YARA 제한 시간과 주기를 포함하는 stale 한도를 사용한다."""
         self.assertEqual(scanner_stale_window_ms(60, 45, 5), 110000)
         self.assertEqual(scanner_stale_window_ms(0.1, 3, 5), 15000)
     def test_external_candidates_are_same_session_python_only(self):
+        """게임과 같은 Windows 세션의 Python 후보만 자동 선택한다."""
         rows = [
             {'pid': 10, 'name': 'PenguinHotel-Win64-Shipping.exe', 'parent_pid': 1},
             {'pid': 19, 'name': 'python.exe', 'parent_pid': 1},
@@ -339,6 +371,7 @@ class Tests(unittest.TestCase):
         self.assertEqual([row['pid'] for row in candidates], [21])
         self.assertEqual(skipped, [{'pid': 40, 'error_type': 'OSError'}])
     def test_external_candidate_batch_rotates(self):
+        """한 주기의 후보 수를 제한하면서 다음 주기에는 이어서 검사한다."""
         rows = [{'pid': pid} for pid in (1, 2, 3, 4, 5)]
         first, cursor = candidate_batch(rows, 0, 2)
         second, cursor = candidate_batch(rows, cursor, 2)
@@ -346,6 +379,7 @@ class Tests(unittest.TestCase):
         self.assertEqual([row['pid'] for row in first + second + third],
                          [1, 2, 3, 4, 5, 1])
     def test_no_external_candidate_is_not_a_clean_scan(self):
+        """Python 후보가 없다는 사실을 외부 핵이 없다는 0점 증거로 만들지 않는다."""
         game = SimpleNamespace(pid=10, check=lambda: None)
         output = io.StringIO()
         with patch('yara_scanner.list_processes', return_value=[]), \
@@ -361,6 +395,7 @@ class Tests(unittest.TestCase):
         self.assertNotIn('scan_result', [record['type'] for record in records])
         self.assertIn('Python PID (0개): 없음', output.getvalue())
     def test_unreadable_external_candidate_is_not_zero(self):
+        """후보 접근 실패는 기록하되 정상 0점으로 처리하지 않는다."""
         game = SimpleNamespace(pid=10, check=lambda: None)
         row = {'pid': 22, 'name': 'python.exe', 'parent_pid': 1}
         output = io.StringIO()
@@ -378,6 +413,7 @@ class Tests(unittest.TestCase):
         self.assertIn('이번 주기 검사 PID: 22', output.getvalue())
     @unittest.skipUnless(sys.platform == 'win32', 'Windows process test')
     def test_auto_external_scans_live_python_memory(self):
+        """통제된 실제 Python 자식 프로세스 메모리를 자동 발견해 검사한다."""
         rules, _ = load_rules([ROOT/'rules/repository_cheats.yar'])
         marker = b'|'.join([
             b'MECCHA // VISION',
@@ -407,12 +443,14 @@ class Tests(unittest.TestCase):
                       [match['rule'] for match in scans[0]['matches']])
         self.assertIn(f"Python PID (1개): {row['pid']}", output.getvalue())
     def test_cli_preserves_existing_folder(self):
+        """같은 세션 이름으로 다시 실행해도 기존 증거 파일을 덮지 않는다."""
         with redirect_stdout(io.StringIO()):
             code = main(['--log-root',self.temp.name,'--session-id','test'])
         self.assertEqual(code,1)
         self.assertTrue(self.session.path.is_dir())
     @unittest.skipUnless(sys.platform=='win32','Windows process test')
     def test_actual_process_memory_normal_on_off(self):
+        """무해한 marker ON/OFF와 YARA 양성·음성 구간이 일치하는지 본다."""
         results = generate(Path(self.temp.name)/'fixtures')
         self.assertEqual([r['event_count'] for r in results],[10,10])
         self.assertEqual([r['zero_score_count'] for r in results],[10,6])

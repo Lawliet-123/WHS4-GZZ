@@ -112,23 +112,50 @@ class LauncherTimeline:
 
     첫 UE4SS 원본 이벤트가 실제로 관찰된 시각을 런처의 ``t0`` 기준으로
     고정한다. 이후에는 UE 시계의 밀리초 간격을 그대로 보존한다.
+
+    UE 시계가 새로 시작되면 기준을 다시 잡는다. 모드가 다시 로드되면 텔레메트리
+    파일이 새로 쓰이고(UE 세션 id 가 바뀐다), 월드가 바뀌면 게임 시계가 0 부터
+    다시 셀 수 있다. 예전 기준을 그대로 쓰면 시간이 크게 앞당겨지고, 음수가 되면
+    shared 가 로컬에서 거절한다(9/30 재현: 새로 쓴 19건 중 3건 거절, 나머지는
+    약 8초 이르게 찍힘).
     """
+
+    # 같은 UE 세션 안에서 이만큼 넘게 거꾸로 가면 시계가 새로 시작된 것으로 본다.
+    # 같은 순간에 기록되는 발사·처치 사이의 작은 역전까지 재기준으로 보지 않게 한다.
+    RESTART_BACKWARD_MS = 1000
 
     def __init__(self, t0: float | None):
         self.t0 = t0
         self._offset_ms: int | None = None
+        self._source_session = None
+        self._last_source_ms: int | None = None
+        self.rebased = 0
 
     def align(self, event) -> None:
         if self.t0 is None:
             return
 
         source_ms = event.timestamp_ms
-        if self._offset_ms is None:
+        session = getattr(event, "session_id", None)
+        restarted = self._offset_ms is not None and (
+            session != self._source_session
+            or source_ms < self._last_source_ms - self.RESTART_BACKWARD_MS
+        )
+        if self._offset_ms is None or restarted:
             observed_ms = round((time.time() - self.t0) * 1000)
             self._offset_ms = observed_ms - source_ms
+            self._last_source_ms = source_ms
+            if restarted:
+                self.rebased += 1
+                print(f"[INFO] UE clock restarted (session {session}); "
+                      f"re-anchored launcher timeline ({self.rebased})")
+        else:
+            self._last_source_ms = max(self._last_source_ms, source_ms)
+        self._source_session = session
 
         event.source_timestamp_ms = source_ms
-        event.timestamp_ms = source_ms + self._offset_ms
+        # 기준을 다시 잡으면 음수는 나오지 않지만, shared 가 음수를 거절하므로 막아 둔다.
+        event.timestamp_ms = max(0, source_ms + self._offset_ms)
 
 
 def main():
@@ -176,7 +203,7 @@ def main():
                     result = to_launcher_ids(result, args.session_id, args.player_id)
                     print("-" * 60)
                     print(json.dumps(result, ensure_ascii=False, indent=2))
-                    if client_configured:
+                    if client_configured and result["raw_score"] > 0:
                         try:
                             receipt = send_detection(result)
                             # 'queued'는 로컬 outbox에 저장됐다는 뜻이며,
