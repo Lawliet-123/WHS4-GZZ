@@ -503,7 +503,8 @@ def main(argv=None):
     # 반복하며, 한 주기 안의 실패와 부분 검사는 0점으로 채우지 않는다.
     parser.add_argument('--interval', type=float, default=60, help='Minimum seconds between scan starts')
     parser.add_argument('--timeout', type=int, default=45, help='YARA timeout for each scan, seconds')
-    parser.add_argument('--seconds', type=float, default=0, help='0 until Ctrl+C; elapsed session duration')
+    parser.add_argument('--seconds', type=float, default=0,
+                        help='0 until Ctrl+C; otherwise scanner runtime, independent of --t0')
     parser.add_argument('--log-root', type=Path, default=ROOT / 'sessions')
     # 하트비트 설정은 탐지 Event용 GZZ_TELEMETRY_* 설정과 독립이다.
     # 실제 /api/heartbeat 수신 계약과 HWID 생산 형식은 아직 임시다.
@@ -568,7 +569,7 @@ def main(argv=None):
     print('세션:', session.path)
     print('규칙 일치는 코드/패턴 존재의 단서이며 핵 ON/OFF 판정이 아닙니다.')
     if args.seconds:
-        print(f'종료 기준: 시작 후 {args.seconds:g}초 경과, 현재 검사 주기 완료 후 종료')
+        print(f'종료 기준: 검사기 시작 후 {args.seconds:g}초 경과, 현재 검사 주기 완료 후 종료')
     else:
         print('종료 기준: Ctrl+C (게임 종료 또는 반복 검사 실패 시 오류 종료)')
     try:
@@ -689,7 +690,7 @@ def main(argv=None):
             if args.hotkeys: markers.start()
             failed = 0
             external_cursor = 0
-            while not args.seconds or session.elapsed() < args.seconds * 1000:
+            while not args.seconds or session.run_elapsed() < args.seconds * 1000:
                 # 백그라운드 검사기의 치명적 오류를 먼저 확인하고 이번 주기 시작.
                 heartbeat.check_background()
                 if hash_monitor: hash_monitor.check_background()
@@ -754,7 +755,7 @@ def main(argv=None):
                     heartbeat.check_background()
                     if hash_monitor: hash_monitor.check_background()
                     markers.check()
-                    if args.seconds and session.elapsed() >= args.seconds * 1000: break
+                    if args.seconds and session.run_elapsed() >= args.seconds * 1000: break
                     time.sleep(.05)
     except KeyboardInterrupt:
         if heartbeat:
