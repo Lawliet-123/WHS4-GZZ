@@ -26,33 +26,75 @@ class GodModeDetector:
     NORMAL_MAX_SCORE = 4
     SUSPICIOUS_MAX_SCORE = 9
 
+    # -----------------------------------------------------
+    # Invincible persistence thresholds
+    # -----------------------------------------------------
+    #
+    # 짧은 정상 무적 구간 때문에 바로 DETECTED가 되는 것을
+    # 피하면서, GodMode처럼 Invincible이 계속 유지되는 경우
+    # 죽지 않더라도 최종적으로 탐지할 수 있도록 단계화한다.
+    #
+    # 1.5초 -> +2
+    # 4.0초 -> +3
+    # 8.0초 -> +5
+    #
+    # Invincible 지속만으로:
+    #   2점  -> NORMAL
+    #   5점  -> SUSPICIOUS
+    #   10점 -> DETECTED
+    # -----------------------------------------------------
+
     INVINCIBLE_DURATION_THRESHOLD = 1.5
+    INVINCIBLE_SUSPICIOUS_THRESHOLD = 4.0
+    INVINCIBLE_DETECTED_THRESHOLD = 8.0
+
     DEATH_GRACE_PERIOD = 0.5
     HEALTH_EPSILON = 0.01
 
     def __init__(self):
         self.previous: Optional[PlayerSnapshot] = None
 
-        # 세션 전체 누적
+        # -------------------------------------------------
+        # 세션 전체 누적 결과
+        # -------------------------------------------------
+
         self.score = 0
         self.reasons: List[str] = []
 
-        # 현재 Snapshot 신규 탐지
+        # -------------------------------------------------
+        # 현재 Snapshot 신규 탐지 결과
+        # -------------------------------------------------
+
         self.new_score = 0
         self.new_reasons: List[str] = []
 
+        # -------------------------------------------------
         # Invincible 지속 검사
+        # -------------------------------------------------
+
         self.invincible_start: Optional[float] = None
+
+        # 기존 1단계 플래그 이름은 유지
         self.invincible_flagged = False
 
+        # 장기 지속 추가 단계
+        self.invincible_suspicious_flagged = False
+        self.invincible_detected_flagged = False
+
+        # -------------------------------------------------
         # Kill 이후 사망 여부 검사
+        # -------------------------------------------------
+
         self.kill_pending = False
         self.kill_time: Optional[float] = None
 
         self.kill_no_death_flagged = False
         self.kill_survival_flagged = False
 
+        # -------------------------------------------------
         # 중복 탐지 시간 관리
+        # -------------------------------------------------
+
         self.last_abnormal_heal_time: Optional[float] = None
         self.last_forced_restore_time: Optional[float] = None
 
@@ -103,48 +145,113 @@ class GodModeDetector:
             <= self.HEALTH_EPSILON
         )
 
+    def _reset_invincible_tracking(self):
+        """
+        Invincible 지속 추적 상태를 초기화한다.
+
+        Invincible이 정상적으로 해제되거나
+        Respawn 구간에 진입했을 때 호출한다.
+        """
+
+        self.invincible_start = None
+
+        self.invincible_flagged = False
+        self.invincible_suspicious_flagged = False
+        self.invincible_detected_flagged = False
+
     def _check_invincible(
         self,
         snapshot: PlayerSnapshot
     ):
         """
-        Invincible 값이 일정 시간 이상
-        True로 유지되는지 검사한다.
+        Invincible 값이 장시간 True로 유지되는지 단계적으로 검사한다.
+
+        1.5초 이상:
+            +2
+            초기 비정상 지속 징후
+
+        4초 이상:
+            추가 +3
+            누적 5점 이상으로 SUSPICIOUS
+
+        8초 이상:
+            추가 +5
+            누적 10점 이상으로 DETECTED
+
+        이를 통해 Damage/Kill 이벤트가 잡히지 않더라도
+        GodMode의 장시간 Invincible 상태 자체로 탐지가 가능하다.
         """
 
         # 정상 Respawn 구간은 제외
         if snapshot.respawn_event:
-            self.invincible_start = None
-            self.invincible_flagged = False
+            self._reset_invincible_tracking()
             return
 
-        if snapshot.invincible:
+        if not snapshot.invincible:
+            self._reset_invincible_tracking()
+            return
 
-            if self.invincible_start is None:
-                self.invincible_start = (
-                    snapshot.timestamp
-                )
-
-            duration = (
+        # Invincible 시작 시각 기록
+        if self.invincible_start is None:
+            self.invincible_start = (
                 snapshot.timestamp
-                - self.invincible_start
             )
 
-            if (
-                duration
-                >= self.INVINCIBLE_DURATION_THRESHOLD
-                and not self.invincible_flagged
-            ):
-                self._add_score(
-                    2,
-                    "Invincible abnormal persistence"
-                )
+        duration = (
+            snapshot.timestamp
+            - self.invincible_start
+        )
 
-                self.invincible_flagged = True
+        # -------------------------------------------------
+        # Stage 1
+        # 1.5초 이상 지속
+        # -------------------------------------------------
 
-        else:
-            self.invincible_start = None
-            self.invincible_flagged = False
+        if (
+            duration
+            >= self.INVINCIBLE_DURATION_THRESHOLD
+            and not self.invincible_flagged
+        ):
+            self._add_score(
+                2,
+                "Invincible abnormal persistence"
+            )
+
+            self.invincible_flagged = True
+
+        # -------------------------------------------------
+        # Stage 2
+        # 4초 이상 지속
+        # -------------------------------------------------
+
+        if (
+            duration
+            >= self.INVINCIBLE_SUSPICIOUS_THRESHOLD
+            and not self.invincible_suspicious_flagged
+        ):
+            self._add_score(
+                3,
+                "Invincible extended persistence"
+            )
+
+            self.invincible_suspicious_flagged = True
+
+        # -------------------------------------------------
+        # Stage 3
+        # 8초 이상 지속
+        # -------------------------------------------------
+
+        if (
+            duration
+            >= self.INVINCIBLE_DETECTED_THRESHOLD
+            and not self.invincible_detected_flagged
+        ):
+            self._add_score(
+                5,
+                "Invincible extreme persistence"
+            )
+
+            self.invincible_detected_flagged = True
 
     def _check_damage_while_invincible(
         self,
@@ -155,8 +262,13 @@ class GodModeDetector:
         플레이어가 Invincible 상태로 살아 있는지 검사한다.
 
         단순 피격은 정상 플레이에서도 발생하므로 점수를 주지 않는다.
+
         damage_event + invincible + alive 조합일 때만
         GodMode 의심 근거로 사용한다.
+
+        현재 MECCHA 4.0.2 실험 환경에서는
+        damage_event Hook이 항상 발생하지 않을 수 있으므로,
+        Invincible 지속 탐지와 별개의 추가 근거로 사용한다.
         """
 
         if not snapshot.damage_event:

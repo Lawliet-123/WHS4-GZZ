@@ -218,7 +218,6 @@ def test_godmode_forced_health_restore():
             change_before_health=100
         ),
 
-        # 어떤 이유로 체력이 감소했다고 가정
         PlayerSnapshot(
             timestamp=0.5,
             health=40,
@@ -228,7 +227,6 @@ def test_godmode_forced_health_restore():
             change_before_health=100
         ),
 
-        # GodMode Lua가 다시 두 값을 MaxHealth로 복구
         PlayerSnapshot(
             timestamp=1.0,
             health=100,
@@ -259,9 +257,76 @@ def test_godmode_forced_health_restore():
     )
 
 
+def test_long_invincible_persistence():
+    """
+    Damage / Kill 이벤트가 없어도
+    Invincible 상태가 장시간 지속되면
+    단계적으로 탐지되는지 확인한다.
+
+    기대:
+        1.5초 이상 -> +2
+        4.0초 이상 -> 추가 +3
+        8.0초 이상 -> 추가 +5
+
+    최종:
+        DETECTED / 10
+    """
+
+    detector = GodModeDetector()
+
+    samples = [
+        PlayerSnapshot(
+            timestamp=0.0,
+            health=100,
+            max_health=100,
+            dead=False,
+            invincible=True,
+            change_before_health=100
+        ),
+
+        PlayerSnapshot(
+            timestamp=1.5,
+            health=100,
+            max_health=100,
+            dead=False,
+            invincible=True,
+            change_before_health=100
+        ),
+
+        PlayerSnapshot(
+            timestamp=4.0,
+            health=100,
+            max_health=100,
+            dead=False,
+            invincible=True,
+            change_before_health=100
+        ),
+
+        PlayerSnapshot(
+            timestamp=8.0,
+            health=100,
+            max_health=100,
+            dead=False,
+            invincible=True,
+            change_before_health=100
+        ),
+    ]
+
+    result = None
+
+    for sample in samples:
+        result = detector.process(sample)
+
+    print_result(
+        "TEST F - Long Invincible Persistence",
+        result
+    )
+
+
 if __name__ == "__main__":
     test_normal_death()
     test_godmode_survival()
     test_normal_heal()
     test_normal_respawn()
     test_godmode_forced_health_restore()
+    test_long_invincible_persistence()
