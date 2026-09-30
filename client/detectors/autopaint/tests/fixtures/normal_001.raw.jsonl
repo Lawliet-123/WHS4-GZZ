@@ -1,0 +1,2 @@
+{"schema_version":1,"sensor":"windows_client_integrity","session_id":"normal_001","player_id":"player_042","timestamp_ms":1000,"target":{"found":true,"name":"PenguinHotel-Win64-Shipping.exe","pid":4242},"processes":[],"modules":[],"threads":[],"tcp_endpoints":[],"artifacts":[],"sensor_errors":[],"sensor_healthy":true}
+
