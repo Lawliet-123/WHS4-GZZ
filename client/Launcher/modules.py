@@ -193,12 +193,14 @@ MODULES: List[Module] = [
         argv=[PY, "client/detectors/aimbot/main.py",
               "--session-id", "{session}", "--player-id", "{player}", "--from-end",
               "--t0", "{t0}",
+              "--event-log", "client/detectors/aimbot/logs/detection/{session}.jsonl",
               # 기본값이 C:\Program Files (x86)\... 고정이라 게임이 다른 곳에 있으면
               # 영영 기다린다. 런처가 찾은 게임 폴더로 준다. DamageLogger Lua 는 #43 부터
               # 스크립트 위치 기준으로 <game_bin>\ue4ss\Mods\DamageLogger\ 에 써서
               # 이 경로와 파일 이름까지 같다.
               "--log-path", r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"],
         mode=CONTINUOUS,
+        session_log_dir="client/detectors/aimbot/logs/detection",
         # 결과의 session_id/player_id 를 이 값으로 바꾸고 UE 값은 evidence 로 옮긴다.
         # 안 넘기면 UE 액터 경로가 player_id 에 들어가 중앙 전송이 로컬에서 거절된다.
         # --from-end: 텔레메트리 파일은 모드가 로드될 때만 비워져서 이전 게임 기록이

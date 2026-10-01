@@ -40,6 +40,7 @@ DEFAULT_LOG_PATH = Path(
     r"\Chameleon\Binaries\Win64\ue4ss\Mods\DamageLogger"
     r"\meccha_aim_telemetry.jsonl"
 )
+DEFAULT_EVENT_LOG_PATH = Path(__file__).resolve().parent / "logs" / "detection" / "events.jsonl"
 POLL_SECONDS = 0.1
 
 
@@ -50,6 +51,12 @@ def parse_args():
         type=Path,
         default=DEFAULT_LOG_PATH,
         help="main.lua가 기록하는 meccha_aim_telemetry.jsonl 경로",
+    )
+    parser.add_argument(
+        "--event-log",
+        type=Path,
+        default=DEFAULT_EVENT_LOG_PATH,
+        help="공통 7필드 탐지 결과를 먼저 기록할 로컬 JSONL 경로",
     )
     # 런처가 넘기는 세션·PC 식별자. 없으면(직접 실행) 예전처럼 UE 값 그대로 낸다.
     parser.add_argument("--session-id", help="런처 세션 id. 결과의 session_id 로 쓴다")
@@ -66,6 +73,15 @@ def parse_args():
              "지금 세션 이름으로 나가지 않게 한다",
     )
     return parser.parse_args()
+
+
+def append_result_jsonl(path: Path, result: dict) -> None:
+    """공통 결과를 중앙 전송보다 먼저 로컬 JSONL에 보존한다."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+        stream.flush()
 
 
 def to_launcher_ids(result, session_id=None, player_id=None):
@@ -169,6 +185,7 @@ def main():
     print("MECCHA CHAMELEON - Aimbot Anti-Cheat")
     print("=" * 50)
     print(f"[INFO] Telemetry path: {args.log_path}")
+    print(f"[INFO] Detection event log: {args.event_log}")
     print("[INFO] Waiting for MECCHA telemetry...")
 
     sensor = MecchaAimTelemetrySensor(args.log_path)
@@ -203,7 +220,19 @@ def main():
                     result = to_launcher_ids(result, args.session_id, args.player_id)
                     print("-" * 60)
                     print(json.dumps(result, ensure_ascii=False, indent=2))
-                    if client_configured and result["raw_score"] > 0:
+                    try:
+                        # ReplayAnalyzer가 정상/핵 점수 분포를 비교할 수 있도록
+                        # raw_score=0도 점수를 계산한 시점에는 빠짐없이 기록한다.
+                        append_result_jsonl(args.event_log, result)
+                    except OSError as exc:
+                        # 로컬 기록에 실패한 결과를 중앙에만 보내지 않는다.
+                        print(
+                            f"[WARNING] Detection result was not recorded locally: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if client_configured:
                         try:
                             receipt = send_detection(result)
                             # 'queued'는 로컬 outbox에 저장됐다는 뜻이며,
