@@ -40,10 +40,20 @@ Module(
 )
 ```
 
-자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` 는 런처가 채운다.
+자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` `{telemetry}` 는 런처가 채운다.
 `{game_bin}` 은 런처가 찾은 게임 실행 폴더(`...\Chameleon\Binaries\Win64`)다. UE4SS 모드가
 쓰는 로그처럼 게임 폴더 아래 파일을 읽는 모듈은 경로를 박지 말고 이걸로 받는다
 (예: `r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"`).
+`{telemetry}` 는 `GZZ_TELEMETRY_URL` 이 설정돼 있으면 `managed`, 없으면 `off` 다. 서버 설정이
+없을 때 시작을 거부하는 모듈(autopaint)에 쓴다.
+
+PC 마다 있을 수도 없을 수도 있는 경로(게임 쪽 UE4SS 모드 폴더 등)를 넘겨야 하는데, 없는
+경로를 주면 모듈이 시작을 거부한다면 `argv` 대신 `optional_paths` 에 적는다. 경로가 실제로
+있을 때만 붙고, 없으면 빼고 띄운 뒤 상태 화면 비고에 `경로가 없어 뺌: <옵션>` 으로 남긴다.
+
+```python
+optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
+```
 
 | 항목 | 뜻 |
 |---|---|
@@ -54,7 +64,9 @@ Module(
 
 **실행 방식이 모듈마다 다르니 확인하고 적어야 한다.** 예를 들어 `external_access`
 는 상대 import 를 써서 `python -m client.LocalGuard...` 로만 돌고, 직접 실행하면
-`ImportError` 가 난다. 등록하기 전에 그 명령을 손으로 한 번 돌려보는 게 빠르다.
+`ImportError` 가 난다. `autopaint` 도 `python -m client.detectors.autopaint.main` 으로
+띄운다 — 스크립트로 띄우면 레포 루트의 `shared` 를 못 찾는다. 등록하기 전에 그 명령을
+손으로 한 번 돌려보는 게 빠르다.
 
 ### 주기 실행 모듈이라면 `{t0}` 를 꼭 받아 주세요
 
