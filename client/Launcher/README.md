@@ -18,8 +18,8 @@ python client/Launcher/main.py
 
 커널 모듈을 쓰려면 **관리자 권한**으로 실행해야 한다. 아니면 그 모듈만 건너뛴다.
 
-에임봇·오토페인트 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고 확인할지는
-**[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
+에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
+확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 
 ---
 
@@ -210,7 +210,7 @@ client/Launcher/logs/<모듈>.log
 
 ## 안 만들어진 모듈이 있어도 멈추지 않는다
 
-2026-09-27 기준 `SelfDefense`, `KernelWatcher`, `input_signature` 는 폴더만 있다.
+2026-10-01 기준 `SelfDefense`(4번), `KernelWatcher`(5번) 는 등록된 경로에 코드가 없다.
 런처는 이 모듈들을 `MISSING` 으로 보여주고 나머지를 계속 띄운다. 조용히 넘기지도
 않는다 — 아직 안 만든 것과, 만들었는데 안 붙는 것은 원인이 다르기 때문이다.
 
@@ -233,10 +233,12 @@ client/Launcher/logs/<모듈>.log
 `modules` 는 예전 형식 그대로다(살아 있는 것만). 새로 쓰는 쪽은 `entries` 의
 `create_time` 까지 보면 PID 재사용을 가려낼 수 있다. 전체 모양은 `registry.py` 맨 위.
 
-**왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽으려고
-`PROCESS_VM_READ`/`VM_WRITE` 핸들을 연다. 밖에서 보면 Cheat Engine 과 구분되지 않는다.
-2026-09-27 첫 실전에서 은지님 `external_access` 가 우리 `python.exe` 를
-`raw_score 8` 로 잡았다. 배포하면 안티치트가 자기 자신을 신고하게 된다.
+**왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽는다.
+처음엔 pymem 기본값대로 전체 권한(`0x001F3FFF`)으로 열어서 밖에서 보면 Cheat Engine 과
+구분되지 않았고, 2026-09-27 첫 실전에서 은지님 `external_access` 가 우리 `python.exe` 를
+`raw_score 8` 로 잡았다. 지금은 읽기 전용(`0x0410`, `memory_integrity/core/procopen.py`)
+으로만 열어서 1번에 안 잡힌다. 다만 1번이 나중에 읽기 단독 핸들에도 점수를 주면 다시
+잡히므로, 그때 "우리 프로세스" 를 가려낼 근거로 이 파일이 필요하다.
 
 **allowlist 에 `python.exe` 를 넣는 것은 답이 아니다.** 이름+해시로 통과시키면
 같은 파이썬으로 짠 핵도 전부 통과한다. "우리가 방금 띄운 이 PID" 만 빼는 것이 정확하다.
