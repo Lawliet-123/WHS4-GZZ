@@ -12,9 +12,11 @@ RPC 호출 시점은 외부에서 볼 수 없어서 후킹이 아니면 방법�
     python rpc_report.py <ac-whistle.jsonl>
 """
 
+import ctypes
 import json
 import os
 import sys
+import time
 
 # core/ 는 2번 모듈(LocalGuard/memory_integrity) 이 갖고 있다. 이 파일은
 # 휘파람 핵 담당(TelemetryServer) 쪽이라 부모 폴더에 core/ 가 없다.
@@ -227,6 +229,70 @@ def _score(r, violations):
 _WATCH = None
 _STATE_FILE = None
 
+# ── 후크가 **지금 게임에** 붙어 있는가 ──────────────────────────────────
+#
+# 후크 연결 상태(start)는 기준점 앞에서 한 번 읽어 들고 있는데, 로그는 게임을
+# 다시 켜도 이어 쓰인다. 그래서 **지난 게임의 start 줄만으로 "붙었다" 가 됐다.**
+# 이번 게임에 후크를 안 넣었어도 바퀴마다 NORMAL "이 구간 도발 호출 없음" 이
+# 나왔다 — 조용한 미탐지(10/1 재현: 게임 꺼짐, 9/27 로그로 NORMAL 2바퀴).
+#
+# 후크는 살아 있는 동안 ProcessEvent 를 지날 때마다 3초 간격으로 stats 를 남긴다
+# (main.cpp ReportStats, kStatsIntervalMs). 그래서 로그가
+#   - 지금 게임이 켜지기 **전에** 마지막으로 쓰였거나
+#   - HOOK_STALE_S 넘게 안 바뀌었으면
+# 이번 게임에는 후크가 없거나 멈춘 것이다. 단발 scan() 은 저장된 로그를 나중에
+# 분석하는 용도라 이 검사를 하지 않는다.
+HOOK_STALE_S = 15.0
+GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _game_started_at(exe=GAME_EXE):
+    """게임 프로세스가 켜진 시각(epoch 초). 게임이 없거나 못 읽으면 None.
+
+    조회 권한(0x1000)만 쓴다. 메모리 읽기도 안 하니 1번에 잡힐 일이 없다.
+    """
+    try:
+        import pymem.process
+        entry = pymem.process.process_from_name(exe, exact_match=True)
+    except Exception:
+        return None
+    if not entry:
+        return None
+    k32 = ctypes.windll.kernel32
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    k32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 4
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    h = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID)
+    if not h:
+        return None
+    try:
+        t = [ctypes.c_ulonglong() for _ in range(4)]
+        if not k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+            return None
+        return t[0].value / 1e7 - 11644473600      # FILETIME(1601년 기준 100ns) -> epoch
+    finally:
+        k32.CloseHandle(h)
+
+
+def _hook_not_live(path, now=None):
+    """후크가 지금 게임에 살아 있지 않으면 그 이유, 살아 있으면 None."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None             # 파일 없음은 호출부가 따로 알린다
+    now = time.time() if now is None else now
+    game = _game_started_at()
+    if game is not None and mtime < game:
+        return (f"후크 로그가 지금 게임이 켜지기 전({game - mtime:,.0f}초 전)에 "
+                f"마지막으로 쓰였습니다. 이번 게임에는 후크가 없습니다.")
+    age = now - mtime
+    if age > HOOK_STALE_S:
+        return (f"후크 로그가 {age:,.0f}초째 갱신되지 않았습니다. 후크는 살아 있으면 "
+                f"3초마다 기록합니다 — 이번 게임에 후크가 없거나 멈췄습니다.")
+    return None
+
 
 def begin_watch(path=None, state_file=None):
     """반복 관측을 시작한다. 지금 로그 끝을 기준점으로 잡는다.
@@ -337,6 +403,10 @@ def _scan_window(st):
 
     if not st["started"]:
         return r.fail("후크 시작 기록이 없습니다. DLL 이 로드되지 않았습니다.")
+    # start 줄은 지난 게임 것일 수 있다. 지금 살아 있는지 따로 본다(위 HOOK_STALE_S).
+    dead = _hook_not_live(st["path"])
+    if dead:
+        return r.fail(dead + "\n    ac_whistle DLL 을 이번 게임에 주입했는지 확인하세요.")
     if not st["exec_hooks"]:
         return r.fail("도발 UFunction 의 ExecFunction 을 하나도 걸지 못했습니다. "
                       "게임이 로비이거나 함수 이름이 다릅니다.")
