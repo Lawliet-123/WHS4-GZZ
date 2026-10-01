@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import math
 from dataclasses import dataclass
 
 from ._sqlite import database
@@ -62,9 +63,23 @@ class SQLiteOutbox:
         with database(self.path) as db:
             db.execute("DELETE FROM pending WHERE event_id=?", (event_id,))
 
-    def retry_later(self, event_id: str, delay: float, error: str) -> None:
+    def retry_delay(self) -> float:
+        """Persistent-mode sender-wide cooldown, also honored after a restart."""
         with database(self.path) as db:
-            db.execute("UPDATE pending SET next_at=?, last_error=? WHERE event_id=?", (time.time() + delay, error, event_id))
+            row = db.execute("SELECT value FROM metadata WHERE key='sender_retry_not_before'").fetchone()
+            if not row:
+                return 0.0
+            next_at = float(row[0])
+            if not math.isfinite(next_at) or next_at < 0:
+                raise ValueError("invalid sender cooldown metadata")
+            return max(0.0, next_at - time.time())
+
+    def retry_later(self, event_id: str, delay: float, error: str, *, pause_sender: bool = False) -> None:
+        with database(self.path) as db:
+            next_at = time.time() + delay
+            db.execute("UPDATE pending SET next_at=?, last_error=? WHERE event_id=?", (next_at, error, event_id))
+            if pause_sender:
+                db.execute("INSERT OR REPLACE INTO metadata VALUES ('sender_retry_not_before', ?)", (str(next_at),))
 
     def fail(self, event_id: str, error: str) -> None:
         with database(self.path) as db:
