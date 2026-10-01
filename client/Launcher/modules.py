@@ -10,6 +10,9 @@
 
   external_access   상대 import(`from ..common import`)를 써서 **`-m` 으로만** 돈다.
                     `python runner.py` 로 직접 실행하면 ImportError 가 난다.
+  autopaint         `-m` 으로 띄운다. 스크립트로 띄우면 sys.path[0] 이 모듈 폴더라
+                    레포 루트의 shared 를 못 찾고, 서버 설정이 있으면 시작을 거부한다.
+                    `-m` 은 실행 위치(레포 루트)를 sys.path 에 넣어 준다.
   나머지            `python <경로>/main.py` 로 돈다. 파이썬이 스크립트 폴더를
                     sys.path[0] 에 넣어주기 때문에 자기 옆 모듈을 찾는다.
 
@@ -19,7 +22,7 @@
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # 이 파일은 client/Launcher/ 에 있다. 레포 루트는 두 단계 위.
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,7 +44,9 @@ CONTINUOUS = "continuous"  # 자기가 알아서 계속 돈다
 class Module:
     name: str
     owner: str                      # 누구 담당인지. 안 붙을 때 물어볼 사람
-    argv: List[str]                 # {session} {player} {t0} {window} {game_bin} 을 쓸 수 있다
+    # {session} {player} {t0} {window} {game_bin} {telemetry} 를 쓸 수 있다.
+    # {telemetry} 는 GZZ_TELEMETRY_URL 이 있으면 "managed", 없으면 "off".
+    argv: List[str]
     mode: str = CONTINUOUS
     cwd: Optional[str] = None       # None 이면 레포 루트
     needs_game: bool = True         # 게임이 떠 있어야 의미가 있는가
@@ -57,7 +62,17 @@ class Module:
     # 이 모듈이 세션 로그(<세션>.jsonl)를 쓰는 폴더. 런처가 시작 전에
     # "그 세션 이름이 이미 있는지" 를 보려고 쓴다. 레포 루트 기준 상대경로.
     session_log_dir: str = ""
+    # (옵션, 경로) — 자리표시자를 채운 경로가 실제로 있을 때만 argv 끝에 붙인다.
+    # 게임 쪽 UE4SS 모드 폴더처럼 PC 마다 깔렸을 수도 안 깔렸을 수도 있는데,
+    # 없는 경로를 넘기면 모듈이 시작을 거부하는 경우에 쓴다.
+    optional_paths: List[Tuple[str, str]] = field(default_factory=list)
     note: str = ""
+
+    @staticmethod
+    def _fill(a: str, ctx: Dict[str, object]) -> str:
+        for k, v in ctx.items():
+            a = a.replace("{" + k + "}", str(v))
+        return a
 
     def resolved(self, ctx: Dict[str, object]) -> List[str]:
         """자리표시자를 채운 실제 명령.
@@ -66,12 +81,17 @@ class Module:
         `{t0}` 는 세션 전체가 같은 시계를 쓰게 하려고 넘긴다 — 주기 검사는
         실행마다 새 프로세스라, 안 넘기면 시각이 매번 0 으로 되돌아간다.
         """
-        out = []
-        for a in self.argv:
-            for k, v in ctx.items():
-                a = a.replace("{" + k + "}", str(v))
-            out.append(a)
+        out = [self._fill(a, ctx) for a in self.argv]
+        for opt, path in self.optional_paths:
+            p = self._fill(path, ctx)
+            if os.path.exists(p):
+                out += [opt, p]
         return out
+
+    def missing_optional(self, ctx: Dict[str, object]) -> List[str]:
+        """경로가 없어서 resolved() 가 뺀 옵션 이름들."""
+        return [opt for opt, path in self.optional_paths
+                if not os.path.exists(self._fill(path, ctx))]
 
     def script_path(self) -> Optional[str]:
         """존재 여부를 확인할 파일. `-m` 실행이면 모듈 경로로 바꿔 본다."""
@@ -129,11 +149,12 @@ MODULES: List[Module] = [
         owner="3번 (동효)",
         argv=[PY, "client/LocalGuard/input_signature/yara_scanner.py",
               "--session-id", "{session}", "--player-id", "{player}",
+              # 동효님 #51 부터 받는다. Event·하트비트·ON/OFF 표식이 런처 세션 시작
+              # 기준으로 찍힌다. --seconds 는 여전히 이 검사기 자체 실행 시간이다.
+              "--t0", "{t0}",
               "--timeout", str(YARA_TIMEOUT_S)],
         # 검사 한 번 + manifest 마무리(하트비트 전송 제한 3초 등) 여유.
         stop_grace_s=YARA_TIMEOUT_S + 10,
-        # --t0 는 아직 안 넘긴다. yara_scanner 가 받게 되면(동효님 9/30 답변 5번) 붙인다.
-        # 지금 넘기면 argparse 가 unrecognized 로 죽인다.
         # 세션 폴더를 exist_ok=False 로 만든다(replay_events.py ReplaySession).
         # 같은 --session-id 로 되살리면 반드시 FileExistsError 로 다시 죽어서,
         # 되살릴수록 재시작 예산만 태운다. 경로 설계가 바뀌면 True 로 되돌린다.
@@ -228,6 +249,29 @@ MODULES: List[Module] = [
         restart=False,
         session_log_dir="client/Launcher/logs/noclip",
         note="UE4SS NoclipLogger CSV 를 읽어 점수로 판정",
+    ),
+    Module(
+        name="autopaint",
+        owner="AutoPaint (성민)",
+        # -m 으로 띄워야 레포 루트의 shared 를 찾는다(맨 위 설명).
+        argv=[PY, "-m", "client.detectors.autopaint.main",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--process-name", GAME_EXE,
+              # 기본값 managed 는 서버 설정이 없으면 시작을 거부한다. 설정이 없을 때는
+              # 다른 모듈처럼 로컬 기록만 하도록 off 를 준다.
+              "--telemetry", "{telemetry}",
+              # 기본값 logs/ 는 실행 위치 기준이라 그대로면 레포 루트에 생긴다.
+              "--output-dir", "client/Launcher/logs/autopaint"],
+        # GZZPaintObserver 가 안 깔린 PC 에서 이 옵션을 주면 시작을 거부한다
+        # (Scripts/main.lua 확인). 빼면 행동 탐지 없이 DLL·런타임 검사만 한다.
+        optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
+        mode=CONTINUOUS,
+        # <output-dir>/<세션>/ 을 exist_ok=False 로 만든다. 같은 세션으로 되살리면
+        # FileExistsError 로 바로 다시 죽는다.
+        restart=False,
+        session_log_dir="client/Launcher/logs/autopaint",
+        # --t0 는 아직 못 받는다. timestamp_ms 는 이 탐지기 자체 시작 기준이다.
+        note="AutoPaint DLL·런타임 + GZZPaintObserver 행동 판정",
     ),
 ]
 
