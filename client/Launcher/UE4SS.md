@@ -101,9 +101,14 @@ changes detected - reusing last build"). **버전은 zip 이름이 아니라 로
 |---|---|---|
 | 팀 기준(성민님 zip) | 로그 `f6d5f942` | — |
 | 은지님 설치본 | 로그 `f6d5f942` | 없음 |
-| 랑언 PC 설치본 | 로그 `24b12662` | 팀 zip 으로 교체 |
+| 랑언 PC 설치본 | 로그 `24b12662` → 팀 zip 으로 교체함(10/1) | 없음 |
 
-- zip 의 SHA-256 은 **아직 안 적었다.** 받으면 여기 적는다.
+- zip SHA-256 (8,717,962 바이트):
+  `050948bdf6b4aae2ff8d834aaebadbf7535d4cb8478fbb579966a5ca3142f86a`
+- 내용 확인(10/1, 실행하지 않고): 41항목, DLL 은 `dwmapi.dll` 과 `ue4ss/UE4SS.dll` 둘뿐이고
+  나머지는 UE4SS 표준 구성(기본 모드·`Mods/shared/UEHelpers`·설정·`UE4SS_SDK_Backends`)이다.
+  `UE4SS.dll` 안에 `f6d5f942` 문자열이 들어 있어 위 "로그 SHA" 설명과 맞는다.
+  `UE4SS-settings.ini` 는 기본값(`ConsoleEnabled = 0`)이다.
 - 묶음은 지금 **디스코드로 배포**한다. 레포에 커밋할지는 아직 안 정했다(아래).
 
 레포에는 네 모드의 Lua 소스가 있다(위 표). UE4SS 런타임(`UE4SS.dll`, `dwmapi.dll`),
