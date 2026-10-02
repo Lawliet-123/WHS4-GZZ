@@ -108,3 +108,12 @@ raw score를 합치거나 최종 위험도를 조정하지 않는다.
 `get_player_correlation_candidates()`는 SQLite `latest_state`를 사용하므로 모듈별 최신
 1건끼리만 비교한다. 과거 전체 타임라인 상관 분석이나 자동 dedup은 별도 저장/정책이
 필요하며 이 단계에는 포함하지 않는다.
+
+### Player policy snapshot
+
+`server.scoring.get_player_policy_snapshot(session_id, player_id)`는 `latest_state`의
+모듈별 최신 1건을 각각 현재 Registry로 평가해 한 플레이어의 읽기 전용 분석 뷰로
+묶는다. 이 결과는 raw 점수 합산, 가중치, 최종 risk/verdict가 아니다.
+
+Correlation 후보도 함께 보고 싶을 때만 `max_time_distance_ms`를 명시한다. 팀에서
+합의된 기본 시간 창이 아직 없으므로 값을 생략하면 correlation은 계산하지 않는다.
