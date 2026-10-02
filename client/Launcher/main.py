@@ -286,6 +286,7 @@ def main(argv=None):
             ui.line("  게임이 뜨지 않아 종료합니다. 게임을 켜고 다시 실행해 주세요.")
             return 2
         ctx["game_pid"] = pid
+        pm.set_game_pid(pid)
         # 게임이 떴으니 이제 추정이 아니라 프로세스에서 경로를 얻을 수 있다.
         # 게임 관련 모듈을 띄우기 **전에** 갱신해야 그 값을 물려받는다.
         found = publish_game_dir(refresh=True)

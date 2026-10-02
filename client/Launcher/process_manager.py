@@ -112,6 +112,7 @@ class ProcessManager:
         self.session = session
         self.player = player
         self.t0 = t0
+        self.game_pid: Optional[int] = None
         self.say = say
         self.states: Dict[str, ModuleState] = {}
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -131,6 +132,11 @@ class ProcessManager:
                 st.detail = "관리자 권한으로 실행해야 합니다"
             self.states[m.name] = st
 
+    def set_game_pid(self, game_pid: int) -> None:
+        if isinstance(game_pid, bool) or not isinstance(game_pid, int) or game_pid <= 0:
+            raise ValueError("game_pid must be a positive integer")
+        self.game_pid = game_pid
+
     def _restartable(self, st: ModuleState) -> bool:
         return st.module.mode == CONTINUOUS and st.module.restart
 
@@ -145,6 +151,7 @@ class ProcessManager:
         ctx = {
             "session": self.session, "player": self.player,
             "t0": f"{self.t0:.3f}", "window": st.runs,
+            "game_pid": self.game_pid,
             # 런처가 찾은 게임 실행 폴더(main.publish_game_dir 가 채운다). UE4SS 모드
             # 로그처럼 게임 폴더 아래 파일을 읽는 모듈에 넘긴다. 못 찾았으면 기본값.
             "game_bin": os.environ.get("GZZ_GAME_BIN") or GAME_DIR,

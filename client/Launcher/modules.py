@@ -145,6 +145,17 @@ MODULES: List[Module] = [
         note="위험 핸들 감시. 상대 import 라 -m 으로만 돈다",
     ),
     Module(
+        name="module_integrity",
+        owner="1번 (지완)",
+        argv=[PY, "-m", "client.LocalGuard.external_access.module_integrity.runner",
+              "--game-exe", GAME_EXE, "--game-pid", "{game_pid}",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}",
+              "--output", "client/LocalGuard/external_access/logs/module_integrity.jsonl"],
+        mode=CONTINUOUS,
+        note="게임 DLL 기준선·추가·변경 감시. shared 0.2.0 공통 이벤트 전송",
+    ),
+    Module(
         name="input_signature",
         owner="3번 (동효)",
         argv=[PY, "client/LocalGuard/input_signature/yara_scanner.py",
