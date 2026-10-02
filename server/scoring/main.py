@@ -12,6 +12,8 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from .policies.contract import PolicyEvaluation
+from .policies.registry import evaluate_registered_policy
 from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
@@ -60,6 +62,15 @@ def process(
 def get_player_snapshot(session_id: str, player_id: str) -> list[ModuleState]:
     """특정 세션/플레이어의 모듈별 최신 저장 기록을 조회한다(종합 위험도 아님)."""
     return _get_store().get_player_snapshot(session_id, player_id)
+
+
+def evaluate_event_policy(payload: Mapping[str, Any]) -> PolicyEvaluation:
+    """공통 Event를 module에 맞는 등록 정책으로 평가한다.
+
+    저장/점수 합산을 수행하지 않는 읽기 전용 분석 단계다. 미등록 모듈은
+    contract의 안전한 기본 동작에 따라 기존 B2a 상태만 보존한다.
+    """
+    return evaluate_registered_policy(payload)
 
 
 def recover_from_writer(writer, *, batch_size: int = 1000) -> int:
