@@ -20,6 +20,7 @@ from .correlation import (
 from .policies.contract import PolicyEvaluation
 from .policies.registry import evaluate_registered_policy
 from .player_snapshot import PlayerPolicySnapshot, build_player_policy_snapshot
+from .risk_input import PlayerRiskInput, build_player_risk_input
 from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
@@ -96,6 +97,26 @@ def get_player_policy_snapshot(
         player_id=player_id,
         max_time_distance_ms=max_time_distance_ms,
     )
+
+
+def get_player_risk_input(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> PlayerRiskInput:
+    """현재 Policy snapshot을 최종 risk 계산 전의 공통 입력 형태로 정리한다.
+
+    이 함수는 가중치, 점수 합산, 치트 확률, 최종 verdict를 계산하지 않는다.
+    ERROR/OFFLINE, 미확정 정책, event-delta처럼 별도 처리가 필요한 신호를
+    구분해 이후 risk 단계가 정상 0점과 혼동하지 않도록 한다.
+    """
+    snapshot = get_player_policy_snapshot(
+        session_id,
+        player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+    return build_player_risk_input(snapshot)
 
 
 def get_player_correlation_candidates(
