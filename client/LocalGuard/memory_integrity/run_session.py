@@ -306,8 +306,13 @@ def run(session_id=None, only=None, log_dir=None,
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
             # **로컬에 먼저 쓰고 나서 보낸다.** 서버가 죽었다고 관측이 사라지면 안 된다.
             # 전송은 여기서 실패해도 탐지를 막지 않는다(telemetry 가 다 삼킨다).
-            if ev["raw_score"] > 0:
-                tele.send(to_shared_event(ev))
+            #
+            # **0점도 보낸다.** 2026-10-03 은지·송희님 결정: 정상 0점은 서버가 현재
+            # 상태를 0 으로 바꾸는 데 쓰고, ERROR·OFFLINE 은 evidence.status 로
+            # "검사 못 함"을 알린다(서버는 이걸 정상이나 위험 해소로 쓰지 않는다).
+            # 양수만 보내면 서버는 핵을 끈 뒤에도 마지막 탐지 점수를 들고 있고,
+            # 후크가 빠진 세션과 깨끗한 세션을 구분하지 못한다.
+            tele.send(to_shared_event(ev))
             out.append(ev)
             events.append(ev)
         return out
