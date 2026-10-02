@@ -23,6 +23,13 @@ from shared.schema import encode_event, validate_event_id, validate_identifier
 # 다른 모듈을 임의로 이 목록에 넣으면 평가 표본까지 사건으로 잘못 기록될 수 있다.
 EVENT_DELTA_MODULES = frozenset({"godmode"})
 
+# external_access는 같은 module 문자열 아래 두 독립 관측 채널을 사용한다.
+# module-level latest_state와 별도로 각 채널의 최신 상태를 보존한다.
+EXTERNAL_ACCESS_SUBMODULES = (
+    "external_process",
+    "module_integrity",
+)
+
 
 # 이벤트 1건을 처리한 결과: 중복 여부와 최신 상태 변경 여부를 구분한다.
 @dataclass(frozen=True)
@@ -130,6 +137,32 @@ class ScoringStore:
                         PRIMARY KEY(session_id, player_id, module)
                     )"""
                 )
+                # external_access의 두 하위 채널은 같은 module 이름을 공유하므로
+                # module-level latest_state와 별도의 scoped 최신 상태를 보존한다.
+                # 기존 테이블을 변경하지 않는 additive 확장이므로 storage version은 유지한다.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS scoped_latest_state (
+                        session_id TEXT NOT NULL,
+                        player_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        submodule TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        sequence INTEGER NOT NULL,
+                        event_id TEXT NOT NULL,
+                        raw_score REAL NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        PRIMARY KEY(session_id, player_id, module, submodule),
+                        FOREIGN KEY(event_id) REFERENCES processed_events(event_id)
+                    )"""
+                )
+                db.execute(
+                    """CREATE INDEX IF NOT EXISTS ix_scoped_player_module
+                       ON scoped_latest_state(
+                           session_id, player_id, module, submodule
+                       )"""
+                )
+
                 # B2b: Godmode처럼 '새로 발생한 사건'을 보내는 모듈의 기록은
                 # 최신 상태 테이블과 분리하여 모두 보존한다.
                 # 기존 B1 DB에도 이 테이블만 추가되는 호환 가능한 확장이다.
@@ -191,6 +224,247 @@ class ScoringStore:
             ),
         )
 
+    @staticmethod
+    def _external_access_submodule(event: Mapping[str, Any]) -> str | None:
+        """현재 지원하는 external_access 하위 채널을 안전하게 식별한다."""
+
+        evidence = event["evidence"]
+        submodule = evidence.get("submodule")
+
+        # 과거 external_process Event 중 명시적 submodule 없이
+        # source_pid만 있던 형식은 A 정책과 동일하게 읽기 호환한다.
+        if submodule is None and "source_pid" in evidence:
+            return "external_process"
+
+        if submodule in EXTERNAL_ACCESS_SUBMODULES:
+            return submodule
+
+        return None
+
+    @staticmethod
+    def _update_external_access_scoped(
+        db: sqlite3.Connection,
+        event: dict[str, Any],
+        event_id: str,
+        sequence: int,
+        submodule: str,
+    ) -> bool:
+        """external_access 하위 채널 하나의 최신 상태를 갱신한다."""
+
+        key = (
+            event["session_id"],
+            event["player_id"],
+            event["module"],
+            submodule,
+        )
+
+        current = db.execute(
+            """SELECT timestamp_ms, sequence
+               FROM scoped_latest_state
+               WHERE session_id=? AND player_id=?
+                 AND module=? AND submodule=?""",
+            key,
+        ).fetchone()
+
+        should_update = (
+            current is None
+            or event["timestamp_ms"] > current["timestamp_ms"]
+            or (
+                event["timestamp_ms"] == current["timestamp_ms"]
+                and sequence > current["sequence"]
+            )
+        )
+
+        if not should_update:
+            return False
+
+        db.execute(
+            """INSERT INTO scoped_latest_state(
+                   session_id, player_id, module, submodule,
+                   timestamp_ms, sequence, event_id, raw_score,
+                   evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(session_id, player_id, module, submodule)
+               DO UPDATE SET
+                   timestamp_ms=excluded.timestamp_ms,
+                   sequence=excluded.sequence,
+                   event_id=excluded.event_id,
+                   raw_score=excluded.raw_score,
+                   evidence_json=excluded.evidence_json,
+                   reasons_json=excluded.reasons_json""",
+            (
+                event["session_id"],
+                event["player_id"],
+                event["module"],
+                submodule,
+                event["timestamp_ms"],
+                sequence,
+                event_id,
+                float(event["raw_score"]),
+                json.dumps(
+                    event["evidence"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    event["reasons"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+
+        return True
+
+    @staticmethod
+    def _rebuild_external_access_aggregate(
+        db: sqlite3.Connection,
+        session_id: str,
+        player_id: str,
+    ) -> None:
+        """두 scoped state에서 external_access 대표 현재 상태를 파생한다.
+
+        합산하지 않고 scoped raw_score의 최댓값만 보존한다.
+        NORMAL은 두 채널 모두 최신 유효 NORMAL 0일 때만 만든다.
+        한 채널 누락/ERROR/OFFLINE은 WARNING + partial로 표현한다.
+        """
+
+        rows = db.execute(
+            """SELECT *
+               FROM scoped_latest_state
+               WHERE session_id=? AND player_id=?
+                 AND module='external_access'""",
+            (session_id, player_id),
+        ).fetchall()
+
+        by_submodule = {
+            row["submodule"]: row
+            for row in rows
+            if row["submodule"] in EXTERNAL_ACCESS_SUBMODULES
+        }
+
+        missing = [
+            name
+            for name in EXTERNAL_ACCESS_SUBMODULES
+            if name not in by_submodule
+        ]
+
+        unavailable: list[str] = []
+        scoped_summary: dict[str, Any] = {}
+        usable_positive = False
+
+        for name in EXTERNAL_ACCESS_SUBMODULES:
+            row = by_submodule.get(name)
+            if row is None:
+                continue
+
+            evidence = json.loads(row["evidence_json"])
+            status = evidence.get("status")
+            measurement_unavailable = (
+                status in ("ERROR", "OFFLINE")
+                or evidence.get("measurement_valid") is False
+            )
+
+            if measurement_unavailable:
+                unavailable.append(name)
+
+            raw_score = float(row["raw_score"])
+
+            if raw_score > 0 and not measurement_unavailable:
+                usable_positive = True
+
+            scoped_summary[name] = {
+                "raw_score": raw_score,
+                "status": status,
+                "timestamp_ms": row["timestamp_ms"],
+                "sequence": row["sequence"],
+                "event_id": row["event_id"],
+            }
+
+        if not rows:
+            return
+
+        coverage_complete = not missing and not unavailable
+
+        all_normal_zero = (
+            coverage_complete
+            and all(
+                float(by_submodule[name]["raw_score"]) == 0
+                and json.loads(
+                    by_submodule[name]["evidence_json"]
+                ).get("status") == "NORMAL"
+                for name in EXTERNAL_ACCESS_SUBMODULES
+            )
+        )
+
+        if usable_positive:
+            aggregate_status = "SUSPICIOUS"
+        elif all_normal_zero:
+            aggregate_status = "NORMAL"
+        else:
+            aggregate_status = "WARNING"
+
+        aggregate_raw = max(
+            float(row["raw_score"])
+            for row in rows
+        )
+
+        # timestamp는 현재 scoped 상태 중 가장 최신 게임 시각,
+        # sequence/event_id는 현재 뷰를 구성하는 가장 뒤 서버 기록을 사용한다.
+        aggregate_timestamp = max(
+            row["timestamp_ms"]
+            for row in rows
+        )
+        latest_sequence_row = max(
+            rows,
+            key=lambda row: row["sequence"],
+        )
+        aggregate_sequence = latest_sequence_row["sequence"]
+        aggregate_event_id = latest_sequence_row["event_id"]
+
+        aggregate_evidence = {
+            "submodule": "aggregate",
+            "status": aggregate_status,
+            "coverage_complete": coverage_complete,
+            "missing_submodules": missing,
+            "unavailable_submodules": unavailable,
+            "scoped_submodules": scoped_summary,
+            "derived": True,
+        }
+
+        # 실제 detector Event를 복사하는 것이 아니라 서버 내부 파생 상태다.
+        # scoped 상태가 바뀔 때마다 동일 module-level row를 다시 계산한다.
+        db.execute(
+            """INSERT INTO latest_state(
+                   session_id, player_id, module, timestamp_ms, sequence,
+                   event_id, raw_score, evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(session_id, player_id, module) DO UPDATE SET
+                   timestamp_ms=excluded.timestamp_ms,
+                   sequence=excluded.sequence,
+                   event_id=excluded.event_id,
+                   raw_score=excluded.raw_score,
+                   evidence_json=excluded.evidence_json,
+                   reasons_json=excluded.reasons_json""",
+            (
+                session_id,
+                player_id,
+                "external_access",
+                aggregate_timestamp,
+                aggregate_sequence,
+                aggregate_event_id,
+                aggregate_raw,
+                json.dumps(
+                    aggregate_evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "[]",
+            ),
+        )
+
     def process_event(
         self,
         result: Mapping[str, Any],
@@ -245,61 +519,89 @@ class ScoringStore:
                     (event_id, sequence, digest),
                 )
 
-                # 모듈별 현재 상태를 독립 저장한다. 다른 모듈의 raw_score와 합산하지 않는다.
-                key = (event["session_id"], event["player_id"], event["module"])
-                current = db.execute(
-                    """SELECT timestamp_ms, sequence
-                       FROM latest_state
-                       WHERE session_id=? AND player_id=? AND module=?""",
-                    key,
-                ).fetchone()
+                # external_access는 두 submodule을 module 하나로 직접 덮어쓰지 않는다.
+                if event["module"] == "external_access":
+                    submodule = self._external_access_submodule(event)
+                    should_update = False
 
-                # game elapsed timestamp가 우선이다. timestamp가 같으면 서버 저장 sequence로 결정한다.
-                # 뒤늦게 도착한 오래된 결과도 처리 이력은 기록하지만 최신 상태는 덮어쓰지 않는다.
-                should_update = (
-                    current is None
-                    or event["timestamp_ms"] > current["timestamp_ms"]
-                    or (
-                        event["timestamp_ms"] == current["timestamp_ms"]
-                        and sequence > current["sequence"]
-                    )
-                )
-
-                if should_update:
-                    # INSERT 또는 기존 3중 키의 UPSERT. 점수를 누적(+ 연산)하지 않는다.
-                    db.execute(
-                        """INSERT INTO latest_state(
-                               session_id, player_id, module, timestamp_ms, sequence,
-                               event_id, raw_score, evidence_json, reasons_json
-                           ) VALUES(?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT(session_id, player_id, module) DO UPDATE SET
-                               timestamp_ms=excluded.timestamp_ms,
-                               sequence=excluded.sequence,
-                               event_id=excluded.event_id,
-                               raw_score=excluded.raw_score,
-                               evidence_json=excluded.evidence_json,
-                               reasons_json=excluded.reasons_json""",
-                        (
-                            event["session_id"],
-                            event["player_id"],
-                            event["module"],
-                            event["timestamp_ms"],
-                            sequence,
+                    if submodule is not None:
+                        should_update = self._update_external_access_scoped(
+                            db,
+                            event,
                             event_id,
-                            float(event["raw_score"]),
-                            json.dumps(
-                                event["evidence"],
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ),
-                            json.dumps(
-                                event["reasons"],
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            ),
-                        ),
+                            sequence,
+                            submodule,
+                        )
+
+                        if should_update:
+                            self._rebuild_external_access_aggregate(
+                                db,
+                                event["session_id"],
+                                event["player_id"],
+                            )
+
+                else:
+                    # 일반 모듈은 기존 module-level latest_state 계약을 그대로 사용한다.
+                    key = (
+                        event["session_id"],
+                        event["player_id"],
+                        event["module"],
                     )
+
+                    current = db.execute(
+                        """SELECT timestamp_ms, sequence
+                           FROM latest_state
+                           WHERE session_id=? AND player_id=? AND module=?""",
+                        key,
+                    ).fetchone()
+
+                    # game elapsed timestamp가 우선이다.
+                    # timestamp가 같으면 서버 저장 sequence로 결정한다.
+                    should_update = (
+                        current is None
+                        or event["timestamp_ms"] > current["timestamp_ms"]
+                        or (
+                            event["timestamp_ms"] == current["timestamp_ms"]
+                            and sequence > current["sequence"]
+                        )
+                    )
+
+                    if should_update:
+                        db.execute(
+                            """INSERT INTO latest_state(
+                                   session_id, player_id, module,
+                                   timestamp_ms, sequence, event_id,
+                                   raw_score, evidence_json, reasons_json
+                               ) VALUES(?,?,?,?,?,?,?,?,?)
+                               ON CONFLICT(session_id, player_id, module)
+                               DO UPDATE SET
+                                   timestamp_ms=excluded.timestamp_ms,
+                                   sequence=excluded.sequence,
+                                   event_id=excluded.event_id,
+                                   raw_score=excluded.raw_score,
+                                   evidence_json=excluded.evidence_json,
+                                   reasons_json=excluded.reasons_json""",
+                            (
+                                event["session_id"],
+                                event["player_id"],
+                                event["module"],
+                                event["timestamp_ms"],
+                                sequence,
+                                event_id,
+                                float(event["raw_score"]),
+                                json.dumps(
+                                    event["evidence"],
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ),
+                                json.dumps(
+                                    event["reasons"],
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ),
+                            ),
+                        )
 
                 # processed_events + 최신 상태 + 새 사건 이력을 한 트랜잭션으로 묶는다.
                 # 이력 INSERT 실패 시 세 변경 사항 모두 롤백된다.
@@ -315,6 +617,36 @@ class ScoringStore:
                 db.close()
         except sqlite3.Error as exc:
             raise RuntimeError("scoring storage operation failed") from exc
+
+    def get_scoped_module_state(
+        self,
+        session_id: str,
+        player_id: str,
+        module: str,
+        submodule: str,
+    ) -> ModuleState | None:
+        """하위 채널별 최신 저장 기록을 조회한다."""
+
+        try:
+            with closing(self._connect()) as db:
+                row = db.execute(
+                    """SELECT *
+                       FROM scoped_latest_state
+                       WHERE session_id=? AND player_id=?
+                         AND module=? AND submodule=?""",
+                    (
+                        session_id,
+                        player_id,
+                        module,
+                        submodule,
+                    ),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                "cannot read scoped scoring state"
+            ) from exc
+
+        return self._row_to_state(row) if row is not None else None
 
     # 개별 모듈 현재 기록 조회: 정책 계산이나 대시보드가 참조할 수 있다.
     def get_module_state(
