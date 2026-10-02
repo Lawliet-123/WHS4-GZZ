@@ -59,8 +59,15 @@ def detect_noclip(current):
     collision = int(current["collision"])
     blocked_path = int(current["blocked_path"])
 
+    # Lua logger는 관측에 실패하면 -1을 기록한다.
+    # Shared 0.2.0에서는 관측 실패를 정상 0점과 구분해야 하므로,
+    # 유효한 센서 값만 실제 탐지 점수 계산에 사용한다.
+    collision_valid = collision >= 0
+    blocked_path_valid = blocked_path in (0, 1)
+    measurement_complete = collision_valid and blocked_path_valid
+
     # 1. Collision OFF 검사
-    if collision == 0:
+    if collision_valid and collision == 0:
         score += 1
         reasons.append("Collision Disabled")
 
@@ -78,7 +85,7 @@ def detect_noclip(current):
             reasons.append("Collision Disabled Too Long")
 
     # 3. 벽 통과 검사
-    if blocked_path == 1:
+    if blocked_path_valid and blocked_path == 1:
         score += 2
         reasons.append("Blocked Path Detected")
 
@@ -92,13 +99,38 @@ def detect_noclip(current):
     else:
         result = "NORMAL"
 
+    # Shared 0.2.0의 status는 탐지 결과와 측정 유효성을 함께 표현한다.
+    # - 완전한 측정에서 탐지 기준 미달: NORMAL
+    # - 모듈 자체 판정이 의심 상태: SUSPICIOUS
+    # - 의심 판정은 아니지만 센서 관측이 불완전: ERROR
+    if result == "SUSPICIOUS":
+        status = "SUSPICIOUS"
+    elif measurement_complete:
+        status = "NORMAL"
+    else:
+        status = "ERROR"
+
+    error_code = None
+    if not measurement_complete:
+        if not collision_valid and not blocked_path_valid:
+            error_code = "NOCLIP_OBSERVATION_UNAVAILABLE"
+        elif not collision_valid:
+            error_code = "NOCLIP_COLLISION_UNAVAILABLE"
+        else:
+            error_code = "NOCLIP_BLOCKED_PATH_UNAVAILABLE"
+
     return {
         "time": current_time,
         "score": score,
         "reasons": reasons,
         "result": result,
+        "status": status,
         "collision": collision,
         "blocked_path": blocked_path,
+        "collision_valid": collision_valid,
+        "blocked_path_valid": blocked_path_valid,
+        "measurement_complete": measurement_complete,
+        "error_code": error_code,
     }
 
 
@@ -135,6 +167,75 @@ def prepare_output_file(path):
 def write_common_event(event_file, event):
     with event_file.open("a", encoding="utf-8") as file:
         file.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def build_common_event(args, row, result, timestamp_ms):
+    """Noclip 한 샘플을 Shared 공통 7필드 Event로 변환한다."""
+    raw_reasons = [
+        reason
+        for reason in result["reasons"]
+        if reason != "Recent Noclip Detection"
+    ]
+
+    evidence = {
+        "collision": result["collision"],
+        "blocked_path": result["blocked_path"],
+        "status": result["status"],
+        # 일부 센서가 -1을 반환한 경우 정상 0점과 구분하기 위한 유효성 정보다.
+        "measurement_complete": result["measurement_complete"],
+        "collision_valid": result["collision_valid"],
+        "blocked_path_valid": result["blocked_path_valid"],
+        # raw_score와 별개로 기존 5초 의심 유지 상태인지 알 수 있게 한다.
+        "detection_hold_active": "Recent Noclip Detection" in result["reasons"],
+    }
+
+    # Lua의 sample_id는 전송 event_id와 다른 관측 순번이다.
+    # 값이 정상 정수일 때만 evidence에 보존한다.
+    try:
+        sample_id = int(row.get("sample_id", ""))
+        if sample_id >= 0:
+            evidence["sample_id"] = sample_id
+    except (TypeError, ValueError):
+        pass
+
+    if result["error_code"] is not None:
+        evidence["error_code"] = result["error_code"]
+
+    return {
+        "session_id": args.session_id,
+        "player_id": args.player_id,
+        "module": MODULE_NAME,
+        "timestamp_ms": timestamp_ms,
+        "evidence": evidence,
+        "reasons": raw_reasons,
+        "raw_score": result["score"],
+    }
+
+
+def persist_and_send_common_event(event_file, event, telemetry_enabled):
+    """로컬 JSONL에 먼저 기록한 뒤 같은 Event를 Shared outbox에 넣는다.
+
+    로컬 기록 실패 시 중앙 전송만 건너뛰고 detector 자체는 계속 실행한다.
+    send_detection()의 queued는 로컬 outbox 등록 성공이며 서버 ACK가 아니다.
+    """
+    try:
+        write_common_event(event_file, event)
+    except OSError as exc:
+        print(f"[NoclipDetector] local event write failed; telemetry skipped: {exc}")
+        return False
+
+    if telemetry_enabled:
+        try:
+            receipt = send_detection(event)
+            print(
+                f"[Telemetry] queued locally event_id={receipt.event_id} "
+                f"status={receipt.status}"
+            )
+        except SharedError as exc:
+            # 중앙 전송 실패가 detector 자체를 종료시키지 않도록 한다.
+            print(f"[Telemetry] send failed: {type(exc).__name__}: {exc}")
+
+    return True
 
 
 def write_detection_header(result_file):
@@ -385,40 +486,16 @@ def main():
                     t0_session_anchor_ms + (current_time - t0_source_anchor_ms),
                 )
 
-            raw_reasons = [
-                reason
-                for reason in result["reasons"]
-                if reason != "Recent Noclip Detection"
-            ]
+            # Shared 0.2.0: 점수를 계산한 모든 샘플을 0점 포함 공통 Event로 만든다.
+            common_event = build_common_event(args, row, result, timestamp_ms)
 
-            # 기존 공통 7필드 Event 형식 유지
-            common_event = {
-                "session_id": args.session_id,
-                "player_id": args.player_id,
-                "module": MODULE_NAME,
-                "timestamp_ms": timestamp_ms,
-                "evidence": {
-                    "collision": result["collision"],
-                    "blocked_path": result["blocked_path"],
-                },
-                "reasons": raw_reasons,
-                "raw_score": result["score"],
-            }
-
-            # 기존 로컬 JSONL 기록 유지
-            write_common_event(event_file, common_event)
-
-            # 점수가 발생한 탐지 Event만 shared 중앙 전송한다.
-            if telemetry_enabled and common_event["raw_score"] > 0:
-                try:
-                    receipt = send_detection(common_event)
-                    print(
-                        f"[Telemetry] queued event_id={receipt.event_id} "
-                        f"status={receipt.status}"
-                    )
-                except SharedError as exc:
-                    # 중앙 전송 실패가 detector 자체를 종료시키지 않도록 한다.
-                    print(f"[Telemetry] send failed: {type(exc).__name__}: {exc}")
+            # 로컬 공통 JSONL에 먼저 기록한 뒤, 같은 Event를 shared에 전달한다.
+            # raw_score=0인 정상 결과도 전송 대상이다.
+            persist_and_send_common_event(
+                event_file,
+                common_event,
+                telemetry_enabled,
+            )
 
             # 기존 Detection Event 집계 로직 유지
             if result["result"] == "SUSPICIOUS":

@@ -27,12 +27,14 @@ A 담당자:
 
 ## 현재 상태
 
-기존 policy.py에 구현된 점수 분석 기능은 그대로 유지합니다.
+- `contract.py`: A/B 공통 읽기 전용 정책 분석 인터페이스
+- `noclip.py`: Shared 0.2.0 기준 Noclip 스냅샷 주석
+- `aimbot.py`: 라운드 누적 Aimbot 스냅샷 주석
+- `autopaint.py`: integrity/behavior 두 채널 AutoPaint 주석
+- `godmode.py`: Godmode 최신 변경 병합 후 작성 예정
 
-탐지기별 정책 함수의 공통 인터페이스와 등록 방식은
-별도 작업으로 구현합니다.
-
-ESP 및 일부 탐지기의 점수 정책은 실제 코드 확인 후 확정합니다.
+`policy.py`의 B2a 프로필은 실제 전송 의미가 바뀐 경우에만 함께 갱신합니다.
+최종 위험도/가중치/판정은 아직 이 폴더에서 계산하지 않습니다.
 
 ## 공통 정책 분석 계약 (B2b 후속)
 
@@ -77,3 +79,17 @@ print(result.signal, result.annotations)
 - `raw_fraction_pct`는 기존 B2a와 동일하게 **자체 척도 대비 비율**입니다.
   최종 위험도, 점수 정규화, 판정은 테스트 데이터와 팀 기준이 합의된 뒤
   별도 API로 구현합니다.
+
+## 기본 Registry 연결
+
+`registry.py`의 `build_default_registry()`가 현재 구현 완료된 정책을 실제 Shared
+`module` 이름에 연결합니다.
+
+현재 등록:
+- `noclip` -> `noclip.evaluate`
+- `aimbot` -> `aimbot.evaluate`
+- `autopaint` -> `autopaint.evaluate`
+
+Godmode와 A 담당 탐지기 정책은 구현/검증이 끝난 뒤 같은 Registry에 추가합니다.
+등록되지 않은 모듈은 임의의 정상 상태로 처리하지 않고 기존 B2a 분석 결과만
+그대로 반환합니다.

@@ -201,6 +201,17 @@ class AimbotDetector:
             reasons.append("Precise Tracking Maintained While Hidden Target Moved")
             raw_score += 1
 
+        # 라운드 범위를 얻지 못하면 모든 신호를 의도적으로 점수화하지 않는다.
+        # 이 경우의 0점을 정상 플레이 0점과 섞지 않도록 운영 상태를 구분한다.
+        evidence["round_scoped"] = round_scoped
+        if not round_scoped:
+            evidence["status"] = "ERROR"
+            evidence["error_code"] = "ROUND_SCOPE_UNAVAILABLE"
+        elif raw_score > 0:
+            evidence["status"] = "SUSPICIOUS"
+        else:
+            evidence["status"] = "NORMAL"
+
         return {
             "session_id": latest.session_id,
             "player_id": latest.attacker_id,

@@ -8,6 +8,7 @@
 from .main import (
     backfill_event_delta_history_from_writer,
     configure_scoring,
+    evaluate_event_policy,
     get_event_delta_history,
     get_player_signal_inventory,
     get_player_snapshot,
@@ -23,6 +24,7 @@ __all__ = (
     "ScoringStore",
     "backfill_event_delta_history_from_writer",
     "configure_scoring",
+    "evaluate_event_policy",
     "get_event_delta_history",
     "get_player_snapshot",
     "get_player_signal_inventory",
