@@ -76,8 +76,8 @@ _PROFILE_ITEMS = (
             "whistle", "whistle_rpc",
         )
     ),
-    DetectorProfile("esp", "not in audited ZIP", "pending", None, False,
-                    "Wait for ESP implementation and event/score contract."),
+    DetectorProfile("esp", "client/detectors/esp/anti_esp/team_format.py", "positive_only", 3,
+                    False, "Shared-compatible ESP evidence stream; current controller emits positive evidence scores 1..3. Local 0..100 suspicion is not the central raw_score."),
 )
 PROFILES: Mapping[str, DetectorProfile] = {p.module: p for p in _PROFILE_ITEMS}
 
