@@ -139,3 +139,8 @@ external_access의 external_process/module_integrity 저장 분리는 B가 먼�
 A는 필요한 분석 함수·테스트 보완과 Receiver 연동 검증을 맡음.
 최종 위험도·가중치·만료 시간이나 overlap_tags를 A가 임의로 확정하지 않음.
 전송 필터 변경·공통 프로필 반영·실제 수신 성공은 아직 별도 확인이 필요함.
+
+이번 문서 업로드 중 원격 `e95baf3`의 팀 main 병합을 보존하여 합침.
+PR #78 module_integrity·PR #79 ESP는 현재 작업 브랜치에도 포함됨.
+위의 미병합 표기는 최초 검토 시점의 기록임. 병합 후 전체 Scoring 테스트
+201개가 통과했지만 공통 Registry의 A 함수 등록은 아직 수행하지 않음.
