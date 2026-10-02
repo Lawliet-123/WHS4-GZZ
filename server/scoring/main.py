@@ -21,7 +21,16 @@ from .policies.contract import PolicyEvaluation
 from .policies.registry import evaluate_registered_policy
 from .player_snapshot import PlayerPolicySnapshot, build_player_policy_snapshot
 from .risk_input import PlayerRiskInput, build_player_risk_input
-from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
+from .storage import (
+    DeltaEvent,
+    EVENT_DELTA_MODULES,
+    EXTERNAL_ACCESS_SUBMODULES,
+    ModuleState,
+    ProcessReceipt,
+    ScoringStore,
+    WindowConflict,
+    WindowEvent,
+)
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
 _DEFAULT_DB = Path(__file__).resolve().parents[1] / "logs" / "scoring" / "scoring.sqlite3"
@@ -193,6 +202,68 @@ def get_player_signal_inventory(session_id: str, player_id: str):
     from .policy import inspect_player_snapshot
 
     return inspect_player_snapshot(get_player_snapshot(session_id, player_id))
+
+
+def get_external_access_scoped_state(
+    session_id: str,
+    player_id: str,
+    submodule: str,
+) -> ModuleState | None:
+    """external_access 하위 채널 하나의 최신 상태를 조회한다.
+
+    현재 지원 범위는 external_process / module_integrity 두 채널이다.
+    module-level external_access aggregate와 원본 scoped 상태를 구분해 볼 때 사용한다.
+    """
+
+    if submodule not in EXTERNAL_ACCESS_SUBMODULES:
+        raise ValueError(
+            "unsupported external_access submodule"
+        )
+
+    return _get_store().get_scoped_module_state(
+        session_id,
+        player_id,
+        "external_access",
+        submodule,
+    )
+
+
+def get_whistle_window_history(
+    session_id: str,
+    player_id: str,
+    *,
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[WindowEvent]:
+    """whistle_rpc의 window별 원본 관측 이력을 조회한다.
+
+    NORMAL 0, 양수, ERROR/OFFLINE을 모두 보존한다.
+    여기서는 유효시간, 점수 합산, 최종 risk를 계산하지 않는다.
+    """
+
+    return _get_store().get_window_history(
+        session_id,
+        player_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
+def get_whistle_window_conflicts(
+    session_id: str,
+    player_id: str,
+    *,
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[WindowConflict]:
+    """같은 whistle_rpc window에 상충하는 관측이 온 감사 기록을 조회한다."""
+
+    return _get_store().get_window_conflicts(
+        session_id,
+        player_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
 
 
 def get_event_delta_history(

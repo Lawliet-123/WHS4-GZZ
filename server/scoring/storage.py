@@ -70,6 +70,46 @@ class DeltaEvent:
     reasons: list[str]
 
 
+@dataclass(frozen=True)
+class WindowEvent:
+    """whistle_rpc 검사 window 1개의 보존된 관측.
+
+    window_id/sample_id가 유효하지 않아도 원본 Event는 보존한다.
+    그 경우 semantic_key_valid=False이며 의미 중복 키에는 사용하지 않는다.
+    """
+
+    event_id: str
+    sequence: int
+    session_id: str
+    player_id: str
+    module: str
+    window_id: int | None
+    sample_id: int | None
+    semantic_key_valid: bool
+    timestamp_ms: int
+    raw_score: float
+    evidence: dict[str, Any]
+    reasons: list[str]
+
+
+@dataclass(frozen=True)
+class WindowConflict:
+    """같은 whistle_rpc window에 서로 다른 관측 내용이 들어온 경우의 감사 기록."""
+
+    canonical_event_id: str
+    conflict_event_id: str
+    sequence: int
+    session_id: str
+    player_id: str
+    module: str
+    window_id: int
+    sample_id: int
+    timestamp_ms: int
+    raw_score: float
+    evidence: dict[str, Any]
+    reasons: list[str]
+
+
 class ScoringStore:
     """단일 서버가 사용하는 SQLite 기반 처리 이력·최신 상태 저장소."""
 
@@ -160,6 +200,90 @@ class ScoringStore:
                     """CREATE INDEX IF NOT EXISTS ix_scoped_player_module
                        ON scoped_latest_state(
                            session_id, player_id, module, submodule
+                       )"""
+                )
+
+                # whistle_rpc는 약 30초 단위의 새 로그 구간 관측이다.
+                # 최신 snapshot과 별도로 NORMAL/양수/ERROR/OFFLINE window를 보존한다.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS whistle_window_history (
+                        event_id TEXT PRIMARY KEY,
+                        sequence INTEGER NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL,
+                        player_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        window_id INTEGER,
+                        sample_id INTEGER,
+                        semantic_key_valid INTEGER NOT NULL
+                            CHECK(semantic_key_valid IN (0, 1)),
+                        semantic_digest TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        raw_score REAL NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        FOREIGN KEY(event_id)
+                            REFERENCES processed_events(event_id)
+                    )"""
+                )
+
+                # 의미 중복 키는 sender 계약을 만족하는 행에만 적용한다.
+                # 식별값이 없거나 잘못된 과거/비정상 Event는 증거를 버리지 않고
+                # event_id 기준으로만 history에 남긴다.
+                db.execute(
+                    """CREATE UNIQUE INDEX IF NOT EXISTS
+                       ux_whistle_rpc_semantic_window
+                       ON whistle_window_history(
+                           session_id,
+                           player_id,
+                           module,
+                           window_id,
+                           sample_id
+                       )
+                       WHERE semantic_key_valid = 1"""
+                )
+
+                db.execute(
+                    """CREATE INDEX IF NOT EXISTS
+                       ix_whistle_window_player_sequence
+                       ON whistle_window_history(
+                           session_id,
+                           player_id,
+                           sequence
+                       )"""
+                )
+
+                # 동일 window/sample에 서로 다른 관측 내용이 도착한 경우
+                # 정상 history를 덮어쓰거나 서버 전체를 실패시키지 않고 별도 감사 기록으로 보존한다.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS whistle_window_conflicts (
+                        conflict_event_id TEXT PRIMARY KEY,
+                        canonical_event_id TEXT NOT NULL,
+                        sequence INTEGER NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL,
+                        player_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        window_id INTEGER NOT NULL,
+                        sample_id INTEGER NOT NULL,
+                        canonical_semantic_digest TEXT NOT NULL,
+                        conflict_semantic_digest TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        raw_score REAL NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        FOREIGN KEY(conflict_event_id)
+                            REFERENCES processed_events(event_id),
+                        FOREIGN KEY(canonical_event_id)
+                            REFERENCES processed_events(event_id)
+                    )"""
+                )
+
+                db.execute(
+                    """CREATE INDEX IF NOT EXISTS
+                       ix_whistle_conflict_player_sequence
+                       ON whistle_window_conflicts(
+                           session_id,
+                           player_id,
+                           sequence
                        )"""
                 )
 
@@ -465,6 +589,223 @@ class ScoringStore:
             ),
         )
 
+    @staticmethod
+    def _whistle_rpc_identity(
+        event: Mapping[str, Any],
+    ) -> tuple[int | None, int | None, bool]:
+        """Shared evidence에서 현재 whistle_rpc 의미 식별자를 읽는다.
+
+        현 sender 계약:
+        - window_id: 0부터 증가하는 비음수 정수
+        - whistle_rpc sample_id: 1
+
+        bool은 int의 하위 타입이므로 type(value) is int로 엄격히 검사한다.
+        """
+
+        evidence = event["evidence"]
+
+        window_id = evidence.get("window_id")
+        sample_id = evidence.get("sample_id")
+
+        valid = (
+            type(window_id) is int
+            and window_id >= 0
+            and type(sample_id) is int
+            and sample_id == 1
+        )
+
+        if not valid:
+            return None, None, False
+
+        return window_id, sample_id, True
+
+    @staticmethod
+    def _whistle_rpc_semantic_digest(
+        event: Mapping[str, Any],
+    ) -> str:
+        """같은 window 관측의 의미 내용 비교용 digest.
+
+        timestamp_ms는 Event 생성 시각이므로 의미 중복 비교에서는 제외한다.
+        점수, 이유, evidence 및 식별 범위는 그대로 비교한다.
+        """
+
+        semantic_payload = {
+            "session_id": event["session_id"],
+            "player_id": event["player_id"],
+            "module": event["module"],
+            "evidence": event["evidence"],
+            "reasons": event["reasons"],
+            "raw_score": event["raw_score"],
+        }
+
+        encoded = json.dumps(
+            semantic_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def _remember_whistle_window(
+        cls,
+        db: sqlite3.Connection,
+        event: dict[str, Any],
+        event_id: str,
+        sequence: int,
+    ) -> bool:
+        """whistle_rpc window를 history에 보존한다.
+
+        반환값:
+        - True: 새로운 window history가 실제 삽입됨
+        - False: 이미 같은 event_id이거나 같은 의미 window/동일 본문임
+
+        같은 의미 window인데 본문이 다르면 임의 선택하지 않고 실패시켜
+        process_event() 전체 transaction을 rollback한다.
+        """
+
+        if event["module"] != "whistle_rpc":
+            return False
+
+        semantic_digest = cls._whistle_rpc_semantic_digest(event)
+
+        # 동일 event_id history가 이미 있으면 재삽입하지 않는다.
+        existing_event = db.execute(
+            """SELECT semantic_digest
+               FROM whistle_window_history
+               WHERE event_id=?""",
+            (event_id,),
+        ).fetchone()
+
+        if existing_event is not None:
+            if existing_event["semantic_digest"] != semantic_digest:
+                raise RuntimeError(
+                    "whistle_rpc event_id history digest conflict"
+                )
+            return False
+
+        window_id, sample_id, semantic_key_valid = (
+            cls._whistle_rpc_identity(event)
+        )
+
+        # 의미 식별자가 정상일 때만 별도 event_id 간 의미 중복을 검사한다.
+        if semantic_key_valid:
+            existing_window = db.execute(
+                """SELECT event_id, semantic_digest
+                   FROM whistle_window_history
+                   WHERE session_id=?
+                     AND player_id=?
+                     AND module='whistle_rpc'
+                     AND window_id=?
+                     AND sample_id=?
+                     AND semantic_key_valid=1""",
+                (
+                    event["session_id"],
+                    event["player_id"],
+                    window_id,
+                    sample_id,
+                ),
+            ).fetchone()
+
+            if existing_window is not None:
+                if existing_window["semantic_digest"] != semantic_digest:
+                    db.execute(
+                        """INSERT INTO whistle_window_conflicts(
+                               conflict_event_id,
+                               canonical_event_id,
+                               sequence,
+                               session_id,
+                               player_id,
+                               module,
+                               window_id,
+                               sample_id,
+                               canonical_semantic_digest,
+                               conflict_semantic_digest,
+                               timestamp_ms,
+                               raw_score,
+                               evidence_json,
+                               reasons_json
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(conflict_event_id) DO NOTHING""",
+                        (
+                            event_id,
+                            existing_window["event_id"],
+                            sequence,
+                            event["session_id"],
+                            event["player_id"],
+                            event["module"],
+                            window_id,
+                            sample_id,
+                            existing_window["semantic_digest"],
+                            semantic_digest,
+                            event["timestamp_ms"],
+                            float(event["raw_score"]),
+                            json.dumps(
+                                event["evidence"],
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            json.dumps(
+                                event["reasons"],
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        ),
+                    )
+
+                    # 최초 정상 history/latest를 유지하고 충돌 Event는 감사 기록에만 보존한다.
+                    return False
+
+                # 새 event_id여도 동일한 window의 동일 관측이면
+                # history/latest에는 다시 반영하지 않는다.
+                return False
+
+        db.execute(
+            """INSERT INTO whistle_window_history(
+                   event_id,
+                   sequence,
+                   session_id,
+                   player_id,
+                   module,
+                   window_id,
+                   sample_id,
+                   semantic_key_valid,
+                   semantic_digest,
+                   timestamp_ms,
+                   raw_score,
+                   evidence_json,
+                   reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event_id,
+                sequence,
+                event["session_id"],
+                event["player_id"],
+                event["module"],
+                window_id,
+                sample_id,
+                1 if semantic_key_valid else 0,
+                semantic_digest,
+                event["timestamp_ms"],
+                float(event["raw_score"]),
+                json.dumps(
+                    event["evidence"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    event["reasons"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+
+        return True
+
     def process_event(
         self,
         result: Mapping[str, Any],
@@ -502,6 +843,14 @@ class ScoringStore:
                     # 업그레이드 전 B1이 이미 처리했던 Godmode 이벤트라도,
                     # 원본 Shared feed로 재전송되면 누락된 사건 이력을 채운다.
                     # 최근 상태나 event_id 처리 이력은 다시 누적하지 않는다.
+                    # 기존 DB에서 이미 processed 처리됐지만 새 history table에는
+                    # 없을 수 있으므로 동일 원본 재처리 시 안전하게 보완한다.
+                    self._remember_whistle_window(
+                        db,
+                        event,
+                        event_id,
+                        sequence,
+                    )
                     self._remember_delta_event(db, event, event_id, sequence)
                     db.commit()
                     return ProcessReceipt(event_id, sequence, "duplicate", False)
@@ -518,6 +867,18 @@ class ScoringStore:
                     "INSERT INTO processed_events(event_id, sequence, digest) VALUES(?,?,?)",
                     (event_id, sequence, digest),
                 )
+
+                # whistle_rpc는 latest_state 갱신 전에 window history/의미 중복을
+                # 먼저 판정한다. 충돌이면 processed_events INSERT까지 rollback된다.
+                whistle_window_inserted = True
+
+                if event["module"] == "whistle_rpc":
+                    whistle_window_inserted = self._remember_whistle_window(
+                        db,
+                        event,
+                        event_id,
+                        sequence,
+                    )
 
                 # external_access는 두 submodule을 module 하나로 직접 덮어쓰지 않는다.
                 if event["module"] == "external_access":
@@ -539,6 +900,15 @@ class ScoringStore:
                                 event["session_id"],
                                 event["player_id"],
                             )
+
+                elif (
+                    event["module"] == "whistle_rpc"
+                    and not whistle_window_inserted
+                ):
+                    # event_id는 새롭지만 이미 저장된 동일 의미 window/동일 본문이다.
+                    # 수신 처리 이력은 남기되 window history와 latest_state를
+                    # 다시 반영하지 않는다.
+                    should_update = False
 
                 else:
                     # 일반 모듈은 기존 module-level latest_state 계약을 그대로 사용한다.
@@ -617,6 +987,140 @@ class ScoringStore:
                 db.close()
         except sqlite3.Error as exc:
             raise RuntimeError("scoring storage operation failed") from exc
+
+    def get_window_conflicts(
+        self,
+        session_id: str,
+        player_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[WindowConflict]:
+        """whistle_rpc 동일 window의 상충 관측을 감사 목적으로 조회한다."""
+
+        validate_identifier(session_id)
+        validate_identifier(player_id)
+
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError(
+                "after_sequence must be a nonnegative integer"
+            )
+
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError(
+                "limit must be between 1 and 1000"
+            )
+
+        try:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    """SELECT *
+                       FROM whistle_window_conflicts
+                       WHERE session_id=?
+                         AND player_id=?
+                         AND module='whistle_rpc'
+                         AND sequence>?
+                       ORDER BY sequence
+                       LIMIT ?""",
+                    (
+                        session_id,
+                        player_id,
+                        after_sequence,
+                        limit,
+                    ),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                "cannot read whistle window conflicts"
+            ) from exc
+
+        return [
+            WindowConflict(
+                canonical_event_id=row["canonical_event_id"],
+                conflict_event_id=row["conflict_event_id"],
+                sequence=row["sequence"],
+                session_id=row["session_id"],
+                player_id=row["player_id"],
+                module=row["module"],
+                window_id=row["window_id"],
+                sample_id=row["sample_id"],
+                timestamp_ms=row["timestamp_ms"],
+                raw_score=row["raw_score"],
+                evidence=json.loads(row["evidence_json"]),
+                reasons=json.loads(row["reasons_json"]),
+            )
+            for row in rows
+        ]
+
+    def get_window_history(
+        self,
+        session_id: str,
+        player_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[WindowEvent]:
+        """whistle_rpc window 이력을 서버 저장 sequence 순으로 조회한다.
+
+        여기서는 TTL, 합산 점수, 최종 risk를 계산하지 않는다.
+        NORMAL/양수/ERROR/OFFLINE 원본 의미를 그대로 반환한다.
+        """
+
+        validate_identifier(session_id)
+        validate_identifier(player_id)
+
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError(
+                "after_sequence must be a nonnegative integer"
+            )
+
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError(
+                "limit must be between 1 and 1000"
+            )
+
+        try:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    """SELECT *
+                       FROM whistle_window_history
+                       WHERE session_id=?
+                         AND player_id=?
+                         AND module='whistle_rpc'
+                         AND sequence>?
+                       ORDER BY sequence
+                       LIMIT ?""",
+                    (
+                        session_id,
+                        player_id,
+                        after_sequence,
+                        limit,
+                    ),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                "cannot read whistle window history"
+            ) from exc
+
+        return [
+            WindowEvent(
+                event_id=row["event_id"],
+                sequence=row["sequence"],
+                session_id=row["session_id"],
+                player_id=row["player_id"],
+                module=row["module"],
+                window_id=row["window_id"],
+                sample_id=row["sample_id"],
+                semantic_key_valid=bool(
+                    row["semantic_key_valid"]
+                ),
+                timestamp_ms=row["timestamp_ms"],
+                raw_score=row["raw_score"],
+                evidence=json.loads(row["evidence_json"]),
+                reasons=json.loads(row["reasons_json"]),
+            )
+            for row in rows
+        ]
 
     def get_scoped_module_state(
         self,

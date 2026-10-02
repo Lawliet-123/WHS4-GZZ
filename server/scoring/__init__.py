@@ -10,6 +10,9 @@ from .main import (
     configure_scoring,
     evaluate_event_policy,
     get_event_delta_history,
+    get_external_access_scoped_state,
+    get_whistle_window_conflicts,
+    get_whistle_window_history,
     get_player_correlation_candidates,
     get_player_policy_snapshot,
     get_player_signal_inventory,
@@ -19,7 +22,14 @@ from .main import (
 )
 from .correlation import CorrelationCandidate
 from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
-from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore
+from .storage import (
+    DeltaEvent,
+    ModuleState,
+    ProcessReceipt,
+    ScoringStore,
+    WindowConflict,
+    WindowEvent,
+)
 
 __all__ = (
     "CorrelationCandidate",
@@ -29,10 +39,15 @@ __all__ = (
     "PlayerPolicySnapshot",
     "ProcessReceipt",
     "ScoringStore",
+    "WindowConflict",
+    "WindowEvent",
     "backfill_event_delta_history_from_writer",
     "configure_scoring",
     "evaluate_event_policy",
     "get_event_delta_history",
+    "get_external_access_scoped_state",
+    "get_whistle_window_conflicts",
+    "get_whistle_window_history",
     "get_player_correlation_candidates",
     "get_player_policy_snapshot",
     "get_player_snapshot",
