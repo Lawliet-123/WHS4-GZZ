@@ -1,5 +1,8 @@
 # LocalGuard 중앙 해석 정책 — A 담당
 
+> 아래는 구현 당시 조사 기록임. 후속 상태와 정상 0점 전송 합의는 마지막 절 및
+> [전체 조사 문서 9절](../A_DETECTOR_INVENTORY.md)을 우선 참조함.
+
 ## 1차 작업: 외부 접근 채널 분리
 
 `localguard.evaluate(event, baseline)`은 Shared 7필드 Event와 기존 Scoring
@@ -115,3 +118,24 @@ for module in localguard.SUPPORTED_MODULES:
 
 후속 A 정책 작성 대상은 Hide Anywhere와 ESP임. 원본 탐지기의 전송 문제 수정,
 자기 탐지 예외 확정, 실게임 임계치 보정은 이번 정책 주석 작업과 구분함.
+
+## 2026-10-03 후속 상태·담당 범위
+
+Hide Anywhere와 ESP 분석 함수·테스트도 후속 커밋에서 구현함. 위의 미착수
+설명은 2차 작업 당시 기록임. 네 파일 모두 공통 계약의 읽기 전용 분석이며
+최종 점수 정책·저장 분리·Registry 연결 완료를 뜻하지 않음.
+
+상태형 결과는 정상 0점도 전송하고 ERROR/OFFLINE은 정상과 구분하는 방향을
+송희(B)와 합의함. heartbeat는 검사 결과를 대신하지 않음.
+2번 런처 검사 주기 30초·Shared 0.2.0 가짜 수신기 성공은 담당자 보고로 확인함.
+Runtime 3종의 실제 상한 5/1/1은 후속 소스에서도 확인함. 내부 0~100 등급
+범위와 실제 단일 검사 점수 상한을 구분함.
+
+external_access의 external_process/module_integrity 저장 분리는 B가 먼저
+정리하기로 함. DLL 무변화 0점은 과거 DLL 제거의 증거가 아니므로 같은 module의
+모든 대상·두 채널을 일괄 정상화하지 않음. 구체적 저장·갱신 범위는 B와 맞춤.
+
+공통 Registry 등록·프로필·저장 구조·최종 통합은 B 담당임.
+A는 필요한 분석 함수·테스트 보완과 Receiver 연동 검증을 맡음.
+최종 위험도·가중치·만료 시간이나 overlap_tags를 A가 임의로 확정하지 않음.
+전송 필터 변경·공통 프로필 반영·실제 수신 성공은 아직 별도 확인이 필요함.
