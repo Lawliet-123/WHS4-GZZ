@@ -11,18 +11,22 @@ from .main import (
     evaluate_event_policy,
     get_event_delta_history,
     get_player_correlation_candidates,
+    get_player_policy_snapshot,
     get_player_signal_inventory,
     get_player_snapshot,
     process,
     recover_from_writer,
 )
 from .correlation import CorrelationCandidate
+from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
 from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore
 
 __all__ = (
     "CorrelationCandidate",
     "DeltaEvent",
+    "ModulePolicySnapshot",
     "ModuleState",
+    "PlayerPolicySnapshot",
     "ProcessReceipt",
     "ScoringStore",
     "backfill_event_delta_history_from_writer",
@@ -30,6 +34,7 @@ __all__ = (
     "evaluate_event_policy",
     "get_event_delta_history",
     "get_player_correlation_candidates",
+    "get_player_policy_snapshot",
     "get_player_snapshot",
     "get_player_signal_inventory",
     "process",

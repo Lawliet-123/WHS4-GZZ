@@ -19,6 +19,7 @@ from .correlation import (
 )
 from .policies.contract import PolicyEvaluation
 from .policies.registry import evaluate_registered_policy
+from .player_snapshot import PlayerPolicySnapshot, build_player_policy_snapshot
 from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
@@ -76,6 +77,25 @@ def evaluate_event_policy(payload: Mapping[str, Any]) -> PolicyEvaluation:
     contract의 안전한 기본 동작에 따라 기존 B2a 상태만 보존한다.
     """
     return evaluate_registered_policy(payload)
+
+
+def get_player_policy_snapshot(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> PlayerPolicySnapshot:
+    """플레이어의 현재 모듈별 상태를 등록 Policy로 한 번에 해석한다.
+
+    latest_state의 최신 1건씩만 사용하며 점수 합산/가중치/최종 판정을 만들지 않는다.
+    correlation 시간 창을 명시한 경우에만 후보 목록도 같은 평가 결과에서 계산한다.
+    """
+    return build_player_policy_snapshot(
+        get_player_snapshot(session_id, player_id),
+        session_id=session_id,
+        player_id=player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
 
 
 def get_player_correlation_candidates(
