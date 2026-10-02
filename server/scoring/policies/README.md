@@ -79,3 +79,17 @@ print(result.signal, result.annotations)
 - `raw_fraction_pct`는 기존 B2a와 동일하게 **자체 척도 대비 비율**입니다.
   최종 위험도, 점수 정규화, 판정은 테스트 데이터와 팀 기준이 합의된 뒤
   별도 API로 구현합니다.
+
+## 기본 Registry 연결
+
+`registry.py`의 `build_default_registry()`가 현재 구현 완료된 정책을 실제 Shared
+`module` 이름에 연결합니다.
+
+현재 등록:
+- `noclip` -> `noclip.evaluate`
+- `aimbot` -> `aimbot.evaluate`
+- `autopaint` -> `autopaint.evaluate`
+
+Godmode와 A 담당 탐지기 정책은 구현/검증이 끝난 뒤 같은 Registry에 추가합니다.
+등록되지 않은 모듈은 임의의 정상 상태로 처리하지 않고 기존 B2a 분석 결과만
+그대로 반환합니다.
