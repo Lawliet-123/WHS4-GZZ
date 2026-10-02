@@ -86,11 +86,20 @@ class PolicyDraftTests(unittest.TestCase):
         self.assertEqual(preview.state, "OUT_OF_AUDITED_RANGE")
         self.assertIsNone(preview.raw_fraction_pct)
 
-    def test_positive_only_does_not_mean_current_cleanliness(self):
-        """양수만 중앙에 전송하는 모듈의 최근 기록을 건강 신호로 해석하지 않음."""
-        preview = inspect_event(event("noclip", 0))
-        self.assertEqual(preview.state, "RAW_FRACTION_ONLY")
-        self.assertEqual(preview.raw_fraction_pct, 0)
+    def test_noclip_and_aimbot_are_snapshot_feeds_after_shared_02(self):
+        """0점도 전송하는 최신 Noclip/Aimbot을 positive-only로 남겨두지 않음."""
+        for module in ("noclip", "aimbot"):
+            with self.subTest(module=module):
+                preview = inspect_event(event(module, 0, {"status": "NORMAL"}))
+                self.assertEqual(preview.emission, "snapshot")
+                self.assertEqual(preview.state, "RAW_FRACTION_ONLY")
+                self.assertEqual(preview.raw_fraction_pct, 0)
+                self.assertNotIn("not current health", " ".join(preview.issues))
+
+    def test_remaining_positive_only_feed_still_warns_about_silence(self):
+        """실제로 양수만 보내는 모듈의 침묵은 정상 상태로 바꾸지 않음."""
+        preview = inspect_event(event("localguard_executable_hash", 1))
+        self.assertEqual(preview.emission, "positive_only")
         self.assertIn("not current health", " ".join(preview.issues))
 
     def test_storage_remains_idempotent_and_preview_does_not_mutate(self):

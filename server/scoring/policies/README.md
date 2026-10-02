@@ -27,12 +27,14 @@ A 담당자:
 
 ## 현재 상태
 
-기존 policy.py에 구현된 점수 분석 기능은 그대로 유지합니다.
+- `contract.py`: A/B 공통 읽기 전용 정책 분석 인터페이스
+- `noclip.py`: Shared 0.2.0 기준 Noclip 스냅샷 주석
+- `aimbot.py`: 라운드 누적 Aimbot 스냅샷 주석
+- `autopaint.py`: integrity/behavior 두 채널 AutoPaint 주석
+- `godmode.py`: Godmode 최신 변경 병합 후 작성 예정
 
-탐지기별 정책 함수의 공통 인터페이스와 등록 방식은
-별도 작업으로 구현합니다.
-
-ESP 및 일부 탐지기의 점수 정책은 실제 코드 확인 후 확정합니다.
+`policy.py`의 B2a 프로필은 실제 전송 의미가 바뀐 경우에만 함께 갱신합니다.
+최종 위험도/가중치/판정은 아직 이 폴더에서 계산하지 않습니다.
 
 ## 공통 정책 분석 계약 (B2b 후속)
 
