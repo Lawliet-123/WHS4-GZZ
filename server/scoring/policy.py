@@ -48,6 +48,7 @@ class SignalPreview:
 # - snapshot: 특정 시점의 평가값
 # - positive_only: 양수 탐지 시 전송. 새 기록이 없다고 정상인 것은 아니다.
 # - event_delta: 새로 발생한 사건의 점수. 최근 1개만으로 누적 사건을 알 수 없다.
+# - window_history: 검사 window 결과. 최신 0점만으로 직전 양수 이력을 즉시 지우지 않는다.
 # - per_entity_positive_only: PID 등 원인 엔터티별로 구분해야 한다.
 # - pending: 규격이 아직 없는 모듈.
 _PROFILE_ITEMS = (
@@ -66,16 +67,22 @@ _PROFILE_ITEMS = (
     DetectorProfile("localguard_executable_hash", "client/LocalGuard/input_signature/hash_monitor.py", "positive_only", 1,
                     False, "Presence of exact known EXE hash is not proof of activation."),
     DetectorProfile("localguard_yara", "client/LocalGuard/input_signature/yara_scanner.py", "per_entity_positive_only", 3,
-                    False, "Current signature metadata max=3; scan coverage and test_only vary."),
+                    False, "Current audited default signature metadata max=3; custom rules can exceed this and require profile review. Sender is still positive-only."),
     *(
-        DetectorProfile(name, "client/LocalGuard/memory_integrity/run_session.py", "positive_only", 100,
-                        False, "Internal 0..100 capped score, potential coverage/status caveats.")
+        DetectorProfile(name, "client/LocalGuard/memory_integrity/run_session.py", "snapshot", 100,
+                        False, "PR #82 sends NORMAL 0 and explicit ERROR/OFFLINE 0; latest successful sample is a state snapshot.")
         for name in (
-            "filesystem", "injection", "value_tamper", "overlay_hook",
-            "godmode_runtime", "noclip_runtime", "aimbot_runtime",
-            "whistle", "whistle_rpc",
+            "filesystem", "injection", "value_tamper", "overlay_hook", "whistle",
         )
     ),
+    DetectorProfile("godmode_runtime", "client/LocalGuard/memory_integrity/run_session.py", "snapshot", 5,
+                    False, "Current runtime source bound is 5; PR #82 sends NORMAL 0 and ERROR/OFFLINE 0."),
+    DetectorProfile("noclip_runtime", "client/LocalGuard/memory_integrity/run_session.py", "snapshot", 1,
+                    False, "Current runtime source bound is 1; PR #82 sends NORMAL 0 and ERROR/OFFLINE 0."),
+    DetectorProfile("aimbot_runtime", "client/LocalGuard/memory_integrity/run_session.py", "snapshot", 1,
+                    False, "Current runtime source bound is 1; PR #82 sends NORMAL 0 and ERROR/OFFLINE 0."),
+    DetectorProfile("whistle_rpc", "client/LocalGuard/memory_integrity/run_session.py", "window_history", 100,
+                    False, "Each run reports a new log window; NORMAL 0 means no new violation in that window, not immediate erasure of prior positive history."),
     DetectorProfile("esp", "client/detectors/esp/anti_esp/team_format.py", "positive_only", 3,
                     False, "Shared-compatible ESP evidence stream; current controller emits positive evidence scores 1..3. Local 0..100 suspicion is not the central raw_score."),
 )
@@ -121,6 +128,8 @@ def inspect_event(event: Mapping[str, Any]) -> SignalPreview:
         issues.append("partial coverage; do not infer clean status")
     if profile.emission == "event_delta":
         issues.append("requires idempotent history of NEW events; latest raw_score is insufficient")
+    elif profile.emission == "window_history":
+        issues.append("requires window-scoped history; latest NORMAL 0 does not immediately erase prior positive windows")
     elif profile.emission == "per_entity_positive_only":
         issues.append("multiple source entities can be overwritten by latest module-only state")
     elif profile.emission == "positive_only":

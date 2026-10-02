@@ -89,7 +89,7 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
         measurement_available = (
             signal.state not in _MEASUREMENT_UNAVAILABLE_STATES
         )
-        requires_event_history = signal.emission == "event_delta"
+        requires_event_history = signal.emission in ("event_delta", "window_history")
         requires_entity_scope = signal.emission == "per_entity_positive_only"
 
         if not measurement_available:
