@@ -21,7 +21,7 @@
 
 팀 main `bd66c6524b6dc8d50ded0c052191a70c8b4acf7c` 기준으로 확인함.
 
-- `mecha_detector_v9.py:40`의 Rule은 3회 확인하지만,
+- `mecha_detector_v9.py:37`의 Rule은 3회 확인하지만,
   `mecha_logger.py:778`의 실행 경로는 `make_common_event()`를 직접 호출함.
   따라서 현재 3점은 패턴 1회 일치에도 나오며 중앙에서 확인 횟수를 만들지 않음.
 - `mecha_logger.py:303`의 읽기 실패가 기존 캐시 값을 제거하지 않을 수 있음.
