@@ -43,13 +43,13 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(result.annotations.entity_key, "1234")
         self.assertEqual(result.annotations.overlap_tags, ("process_access",))
 
-    def test_unknown_and_pending_modules_do_not_appear_clean(self):
-        """미등록/ESP 규격 대기를 점수 0 또는 정상 판정으로 만들지 않는다."""
+    def test_unknown_and_uncalibrated_modules_do_not_appear_clean(self):
+        """미등록/ESP 미보정 상태를 점수 0 또는 정상 판정으로 만들지 않는다."""
         registry = PolicyRegistry()
         self.assertEqual(registry.evaluate(sample("new_mod")).signal.state,
                          "UNKNOWN_MODULE")
         self.assertEqual(registry.evaluate(sample("esp")).signal.state,
-                         "AWAITING_DETECTOR")
+                         "POLICY_NOT_CALIBRATED")
 
     def test_failed_measurement_keeps_unavailable_state(self):
         """담당자 정책이 등록되어도 ERROR는 기본 분석 상태를 유지한다."""

@@ -64,18 +64,18 @@ class EspPolicyTests(unittest.TestCase):
             self.assertIsNone(result.annotations.entity_key)
             self.assert_note(result, "유효한 외부 source_pid가 없다")
 
-    def test_pending_profile_preserved_not_calibrated_by_handler(self):
+    def test_reviewed_profile_remains_not_calibrated_by_handler(self):
         result = self.analyse(sample())
-        self.assertEqual(result.signal.state, "AWAITING_DETECTOR")
+        self.assertEqual(result.signal.state, "POLICY_NOT_CALIBRATED")
         self.assertIsNone(result.signal.raw_fraction_pct)
-        self.assert_note(result, "B의 프로필 합의가 필요하다")
+        self.assert_note(result, "최종 위험도 보정")
 
-    def test_pending_profile_does_not_hide_explicit_measurement_failure(self):
+    def test_reviewed_profile_preserves_explicit_measurement_failure(self):
         for fields in ({"status": "ERROR"}, {"status": "OFFLINE"}, {"measurement_valid": False}):
             result = self.analyse(sample(evidence=fields))
-            self.assertEqual(result.signal.state, "AWAITING_DETECTOR")
+            self.assertEqual(result.signal.state, "MEASUREMENT_UNAVAILABLE")
             self.assertIsNone(result.annotations.entity_key)
-            self.assert_note(result, "실패 보고를 무시하지 않고")
+            self.assert_note(result, "정상 근거로 해석하지 않고")
             self.assertEqual(result.signal.raw_score, 2)
 
     def test_partial_observation_remains_partial(self):
