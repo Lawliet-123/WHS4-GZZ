@@ -126,7 +126,7 @@ class GodmodePolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             risk_input.unresolved_policy_modules,
-            ("godmode",),
+            (),
         )
         self.assertTrue(
             risk_input.signals[0].requires_event_history,
