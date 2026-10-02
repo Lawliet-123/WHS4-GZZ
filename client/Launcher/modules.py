@@ -209,6 +209,17 @@ MODULES: List[Module] = [
         note="UE4SS DamageLogger 텔레메트리",
     ),
     Module(
+        name="esp",
+        owner="ESP (지완)",
+        argv=[PY, "client/detectors/esp/run.py", "--headless",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--central-telemetry", "{telemetry}"],
+        mode=CONTINUOUS,
+        restart=False,
+        session_log_dir="client/detectors/esp/data/sessions",
+        note="외부 핸들·오버레이·로드 모듈 ESP 정황을 Sensor/Detector로 판정",
+    ),
+    Module(
         name="godmode",
         owner="GodMode (재민)",
         # 위치 인자로 넘긴다. main.py 가 argparse 없이 sys.argv[1], [2] 만 읽어서,
