@@ -6,8 +6,9 @@ r"""런처가 설치한 UE4SS 가 정확히 무엇인지 남긴다.
 `dwmapi.dll` 이 있고 `ue4ss/` 폴더가 있고 외부 Lua 모드가 켜져 있으면
 45 + 50 + 45 로 DETECTED(100) 다. 핵이 쓰는 전형적인 구성이라 그렇게 잡는다.
 
-그런데 우리 팀도 UE4SS 를 쓴다. 에임봇 탐지(은지님 DamageLogger)와 오토페인트
-관측(성민님 GZZPaintObserver)이 둘 다 UE4SS 위에서 돈다. 런처가 UE4SS 를
+그런데 우리 팀도 UE4SS 를 쓴다. 에임봇(은지님 DamageLogger)·오토페인트(성민님
+GZZPaintObserver)·노클립(송희님 NoclipLogger)·갓모드(재민님 GodModeTelemetry)
+탐지가 전부 UE4SS 위에서 돈다. 런처가 UE4SS 를
 정상 설치하면 **그 PC 의 정상 세션이 전부 DETECTED 로 나온다.** 9/27 에 나온
 자기탐지 문제의 세 번째 사례이고, 이번엔 파일 쪽이다.
 
@@ -43,7 +44,7 @@ r"""런처가 설치한 UE4SS 가 정확히 무엇인지 남긴다.
         "Chameleon/Binaries/Win64/ue4ss/UE4SS.dll": "<sha256>",
         "Chameleon/Binaries/Win64/ue4ss/Mods/DamageLogger/Scripts/main.lua": "<sha256>"
       },
-      "mods": ["DamageLogger", "GZZPaintObserver"]
+      "mods": ["DamageLogger", "GZZPaintObserver", "NoclipLogger", "GodModeTelemetry"]
     }
 
 경로는 `game_root` 기준 상대경로이고 구분자는 `/` 로 통일한다. 절대경로로
@@ -56,8 +57,10 @@ r"""런처가 설치한 UE4SS 가 정확히 무엇인지 남긴다.
     import ue4ss_manifest
     ue4ss_manifest.record(game_root, installed_paths,
                           bundle={"name": "UE4SS", "version": "...", "sha256": "..."},
-                          mods=["DamageLogger", "GZZPaintObserver"])
+                          mods=["DamageLogger", "GZZPaintObserver",
+                                "NoclipLogger", "GodModeTelemetry"])
 
+설치한 모드는 전부 넣는다. 빠진 모드는 우리 것이어도 외부 Lua 모드(45점)로 잡힌다.
 지우거나 다시 깔면 다시 부르면 된다. 통째로 덮어쓴다.
 """
 

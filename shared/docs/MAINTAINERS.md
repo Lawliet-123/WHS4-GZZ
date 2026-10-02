@@ -2,7 +2,7 @@
 
 ## 이 코드가 하지 않는 일
 
-치트 탐지, 점수 계산, 게임 메모리 접근, UE4SS 후킹, 하트비트, SelfDefense, Launcher, 자동 재시작, 클라우드 배포는 포함하지 않는다. 기존 AutoPaint 코드는 shared를 아직 호출하지 않는다. 범위를 넓힐 때는 담당자와 먼저 합의한다.
+치트 탐지, 점수 계산, 게임 메모리 접근, UE4SS 후킹, 하트비트, SelfDefense, Launcher, 자동 재시작, 클라우드 배포는 shared에 포함하지 않는다. SelfDefense는 별도 모듈로 shared 공개 API만 사용한다. 0.2.0은 재시도 정책 선택과 evidence 문서를 추가했다.
 
 ## 파일별 책임
 
@@ -18,8 +18,8 @@
 | shared/_locking.py | 로컬 프로세스 간 파일 잠금 | OS 잠금 변경 |
 | shared/_sqlite.py | 명시적 짧은 DB 트랜잭션 | SQLite 설정·오류 변환 변경 |
 | shared/errors.py | 호출 측이 처리할 공개 예외 | 실패 종류 추가 |
-| tests/test_shared.py | schema·실패·계약·동시성 회귀 테스트 | 공개 동작 변경 시 같이 수정 |
-| examples/shared_demo.py | localhost 합성 통합 데모 | 인수인계 smoke test |
+| shared/tests/test_shared.py | schema·실패·계약·동시성 회귀 테스트 | 공개 동작 변경 시 같이 수정 |
+| shared/examples/shared_demo.py | localhost 합성 통합 데모 | 인수인계 smoke test |
 
 ## 안정적으로 유지할 경계
 
@@ -53,29 +53,25 @@ DetectionSink.write_detection을 구현하고 `configure_writer(writer=custom_si
 
 ## 버전과 데이터 이전
 
-- Python library: shared.__version__ = 0.1.0
+- Python library: shared.__version__ = 0.2.0
 - HTTP: X-GZZ-Protocol-Version = 1
 - outbox / writer ledger: metadata에 각 schema version 1 저장
-- 기존 AutoPaint 프로그램 버전 0.3.0은 별도이며 변경하지 않았다.
+- AutoPaint 프로그램 버전 0.4.1은 별도이며 탐지 구현을 변경하지 않았다.
+
+0.2.0은 outbox metadata에 sender_retry_not_before 키만 추가하며 테이블/버전은 바꾸지 않는다. 기존 pending/failed/ID/본문을 그대로 보존한다. bounded 기본값과 공개 API는 유지된다. 기존 버전은 이 키를 무시하므로 다운그레이드 시 persistent 재시도/전역 대기는 적용되지 않는다.
 
 DB 구조를 바꿀 때는 migration과 이전 버전 테스트를 추가한다. 버전이 다르다고 빈 DB로 덮어쓰지 않는다. queue endpoint 변경도 자동 이동하지 않는다. 저장소 교체, 삭제, 로그 회전은 별도 기능이며 이번 버전에 없다.
 
 ## 테스트 방법
 
-프로젝트 또는 인수인계 ZIP의 루트에서:
+shared 폴더의 부모인 레포 또는 압축 해제 루트에서:
 
 ```powershell
-py -m unittest discover -s tests -p test_shared.py -v
-py -m examples.shared_demo
+py -m unittest discover -s shared/tests -t . -p "test_shared*.py" -v
+py -m shared.examples.shared_demo
 ```
 
-기존 프로젝트 전체 회귀 테스트:
-
-```powershell
-py -m unittest discover -s tests -v
-```
-
-기존 Lua 테스트는 별도 선택 의존성 lupa가 없으면 skip될 수 있다. shared 자체에는 추가 의존성이 없다. 기본 저장소는 로컬 디스크의 협력하는 프로세스들을 대상으로 한다. 네트워크 파일시스템, 여러 클라우드 인스턴스에 흩어진 로컬 디스크, 전원 장애 내구성은 이 테스트로 검증되지 않는다.
+이 배포본에는 shared 테스트만 있다. 다른 모듈·Lua·SelfDefense의 테스트는 각 모듈에서 실행한다. shared 자체에는 추가 의존성이 없다. 네트워크 파일시스템·분산 배포·전원 장애 내구성은 이 테스트로 검증되지 않는다.
 
 ## 인수인계 때 확인할 질문
 
@@ -88,4 +84,4 @@ py -m unittest discover -s tests -v
 - 새 session/player 정보와 시간 기준은 Launcher/통합 측에서 공급하는가?
 - 코드 변경 후 계약 테스트와 실패 테스트를 함께 실행했는가?
 
-추가 작업자가 AI이더라도 먼저 SHARED_README, PROTOCOL, 이 문서를 읽고 해당 책임 파일만 수정한다. 중앙 서버 변경을 이유로 AutoPaint 규칙이나 기존 원본 로그를 수정하지 않는다.
+추가 작업자가 AI이더라도 먼저 shared/README.md, PROTOCOL.md, 이 문서를 읽고 해당 책임 파일만 수정한다. 중앙 서버 변경을 이유로 AutoPaint 규칙이나 기존 원본 로그를 수정하지 않는다.

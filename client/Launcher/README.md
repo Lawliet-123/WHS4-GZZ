@@ -18,8 +18,8 @@ python client/Launcher/main.py
 
 커널 모듈을 쓰려면 **관리자 권한**으로 실행해야 한다. 아니면 그 모듈만 건너뛴다.
 
-에임봇·오토페인트 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고 확인할지는
-**[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
+에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
+확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 
 ---
 
@@ -40,10 +40,20 @@ Module(
 )
 ```
 
-자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` 는 런처가 채운다.
+자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` `{telemetry}` 는 런처가 채운다.
 `{game_bin}` 은 런처가 찾은 게임 실행 폴더(`...\Chameleon\Binaries\Win64`)다. UE4SS 모드가
 쓰는 로그처럼 게임 폴더 아래 파일을 읽는 모듈은 경로를 박지 말고 이걸로 받는다
 (예: `r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"`).
+`{telemetry}` 는 `GZZ_TELEMETRY_URL` 이 설정돼 있으면 `managed`, 없으면 `off` 다. 서버 설정이
+없을 때 시작을 거부하는 모듈(autopaint)에 쓴다.
+
+PC 마다 있을 수도 없을 수도 있는 경로(게임 쪽 UE4SS 모드 폴더 등)를 넘겨야 하는데, 없는
+경로를 주면 모듈이 시작을 거부한다면 `argv` 대신 `optional_paths` 에 적는다. 경로가 실제로
+있을 때만 붙고, 없으면 빼고 띄운 뒤 상태 화면 비고에 `경로가 없어 뺌: <옵션>` 으로 남긴다.
+
+```python
+optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
+```
 
 | 항목 | 뜻 |
 |---|---|
@@ -54,7 +64,9 @@ Module(
 
 **실행 방식이 모듈마다 다르니 확인하고 적어야 한다.** 예를 들어 `external_access`
 는 상대 import 를 써서 `python -m client.LocalGuard...` 로만 돌고, 직접 실행하면
-`ImportError` 가 난다. 등록하기 전에 그 명령을 손으로 한 번 돌려보는 게 빠르다.
+`ImportError` 가 난다. `autopaint` 도 `python -m client.detectors.autopaint.main` 으로
+띄운다 — 스크립트로 띄우면 레포 루트의 `shared` 를 못 찾는다. 등록하기 전에 그 명령을
+손으로 한 번 돌려보는 게 빠르다.
 
 ### 주기 실행 모듈이라면 `{t0}` 를 꼭 받아 주세요
 
@@ -198,7 +210,7 @@ client/Launcher/logs/<모듈>.log
 
 ## 안 만들어진 모듈이 있어도 멈추지 않는다
 
-2026-09-27 기준 `SelfDefense`, `KernelWatcher`, `input_signature` 는 폴더만 있다.
+2026-10-01 기준 `SelfDefense`(4번), `KernelWatcher`(5번) 는 등록된 경로에 코드가 없다.
 런처는 이 모듈들을 `MISSING` 으로 보여주고 나머지를 계속 띄운다. 조용히 넘기지도
 않는다 — 아직 안 만든 것과, 만들었는데 안 붙는 것은 원인이 다르기 때문이다.
 
@@ -221,10 +233,12 @@ client/Launcher/logs/<모듈>.log
 `modules` 는 예전 형식 그대로다(살아 있는 것만). 새로 쓰는 쪽은 `entries` 의
 `create_time` 까지 보면 PID 재사용을 가려낼 수 있다. 전체 모양은 `registry.py` 맨 위.
 
-**왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽으려고
-`PROCESS_VM_READ`/`VM_WRITE` 핸들을 연다. 밖에서 보면 Cheat Engine 과 구분되지 않는다.
-2026-09-27 첫 실전에서 은지님 `external_access` 가 우리 `python.exe` 를
-`raw_score 8` 로 잡았다. 배포하면 안티치트가 자기 자신을 신고하게 된다.
+**왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽는다.
+처음엔 pymem 기본값대로 전체 권한(`0x001F3FFF`)으로 열어서 밖에서 보면 Cheat Engine 과
+구분되지 않았고, 2026-09-27 첫 실전에서 은지님 `external_access` 가 우리 `python.exe` 를
+`raw_score 8` 로 잡았다. 지금은 읽기 전용(`0x0410`, `memory_integrity/core/procopen.py`)
+으로만 열어서 1번에 안 잡힌다. 다만 1번이 나중에 읽기 단독 핸들에도 점수를 주면 다시
+잡히므로, 그때 "우리 프로세스" 를 가려낼 근거로 이 파일이 필요하다.
 
 **allowlist 에 `python.exe` 를 넣는 것은 답이 아니다.** 이름+해시로 통과시키면
 같은 파이썬으로 짠 핵도 전부 통과한다. "우리가 방금 띄운 이 PID" 만 빼는 것이 정확하다.

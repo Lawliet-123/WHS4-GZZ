@@ -142,13 +142,17 @@ class ProcessManager:
         if st.proc is not None and st.proc.poll() is None:
             return True                      # 이미 돌고 있다
 
-        argv = st.module.resolved({
+        ctx = {
             "session": self.session, "player": self.player,
             "t0": f"{self.t0:.3f}", "window": st.runs,
             # 런처가 찾은 게임 실행 폴더(main.publish_game_dir 가 채운다). UE4SS 모드
             # 로그처럼 게임 폴더 아래 파일을 읽는 모듈에 넘긴다. 못 찾았으면 기본값.
             "game_bin": os.environ.get("GZZ_GAME_BIN") or GAME_DIR,
-        })
+            # 중앙 서버 설정이 있을 때만 전송한다. 없으면 로컬 기록만.
+            "telemetry": "managed" if os.environ.get("GZZ_TELEMETRY_URL") else "off",
+        }
+        argv = st.module.resolved(ctx)
+        skipped = st.module.missing_optional(ctx)
         cwd = st.module.cwd or REPO
         try:
             # 상주 모듈은 워치독과 같은 잠금 아래에서 띄운다. 워치독이 먼저 띄웠으면 이어받는다.
@@ -185,7 +189,11 @@ class ProcessManager:
         st.started_by = "launcher"
         st.started_at = time.time()
         st.runs += 1
-        st.detail = ""
+        # 경로가 없어 뺀 옵션은 조용히 넘기지 않는다. 탐지 범위가 줄어든 채로 돈다.
+        st.detail = ("경로가 없어 뺌: " + ", ".join(skipped)) if skipped else ""
+        if skipped and st.runs == 1:
+            self.say(f"  · {name}: {', '.join(skipped)} 경로가 없어 빼고 띄웁니다 "
+                     f"(탐지 범위가 줄어듭니다)")
         return True
 
     def start_group(self, needs_game: bool) -> None:

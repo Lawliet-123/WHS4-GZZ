@@ -1,4 +1,4 @@
-"""Queue-first API and one bounded-retry worker. No heartbeat or detection policy."""
+"""Queue-first API with selectable retry policy. No heartbeat or detection policy."""
 from __future__ import annotations
 
 import math
@@ -119,14 +119,21 @@ class DetectionClient:
             self._last_delivery, self._last_code, self._last_event_id = state, code, key
 
     def _run(self) -> None:
+        persistent = self.config.retry_mode == "persistent"
         try:
             while not self._stop.is_set():
                 self._wake.clear()
+                if persistent:
+                    delay = self._outbox.retry_delay()
+                    if delay > 0:
+                        # New Events must not bypass the outage cooldown. Stop stays responsive.
+                        self._stop.wait(min(delay, 0.5))
+                        continue
                 item = self._outbox.next_due()
                 if item is None:
                     self._wake.wait(0.1)
                     continue
-                if item.attempts >= self.config.max_attempts:
+                if not persistent and item.attempts >= self.config.max_attempts:
                     self._outbox.fail(item.event_id, "retry_exhausted")
                     self._state("FAILED", item.event_id, "retry_exhausted")
                     continue
@@ -147,7 +154,7 @@ class DetectionClient:
                     with self._state_lock:
                         self._acknowledged += 1
                     self._state("DELIVERED", item.event_id, code)
-                elif outcome.disposition == "rejected" or item.attempts + 1 >= self.config.max_attempts:
+                elif outcome.disposition == "rejected" or (not persistent and item.attempts + 1 >= self.config.max_attempts):
                     self._outbox.fail(item.event_id, code)
                     self._state("FAILED", item.event_id, code)
                 else:
@@ -156,7 +163,7 @@ class DetectionClient:
                     if outcome.retry_after_seconds is not None:
                         delay = max(delay, outcome.retry_after_seconds)
                     delay = min(self.config.retry_max_seconds, delay)
-                    self._outbox.retry_later(item.event_id, delay, code)
+                    self._outbox.retry_later(item.event_id, delay, code, pause_sender=persistent)
                     self._state("RETRYING", item.event_id, code)
         except Exception:
             self._state("ERROR", code="outbox_error")

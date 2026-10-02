@@ -80,6 +80,8 @@ class HttpTransport:
             if status in {408, 425, 429} or 500 <= status <= 599:
                 return DeliveryOutcome("retry", f"http_{status}", retry_after)
             return DeliveryOutcome("rejected", f"http_{status}")
+        except ssl.SSLCertVerificationError:
+            return DeliveryOutcome("rejected", "tls_verification_failed")
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, ssl.SSLCertVerificationError):
                 return DeliveryOutcome("rejected", "tls_verification_failed")

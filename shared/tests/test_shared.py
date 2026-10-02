@@ -191,7 +191,7 @@ class ConfigTests(SharedCase):
             self.assertEqual(config.api_token, "never-log-me")
 
     def test_import_has_no_files_network_threads_or_environment_requirements(self):
-        package_root = str(Path(__file__).resolve().parents[1])
+        package_root = str(Path(logger.__file__).resolve().parents[1])
         program = "import os,threading; before=set(os.listdir('.')); import shared.logger; assert set(os.listdir('.')) == before; assert len(threading.enumerate()) == 1"
         result = subprocess.run([sys.executable, "-c", program], cwd=self.root,
                                 env={**os.environ, "PYTHONPATH": package_root, "PYTHONDONTWRITEBYTECODE": "1"},
@@ -287,7 +287,7 @@ class WriterTests(SharedCase):
         self.assertEqual(len(writers[0].iter_stored()), 10)
 
     def test_processes_share_one_idempotency_ledger(self):
-        package_root = str(Path(__file__).resolve().parents[1])
+        package_root = str(Path(logger.__file__).resolve().parents[1])
         program = ("import sys,json; from shared.config import WriterConfig; from shared.storage import DetectionWriter; "
                    "w=DetectionWriter(WriterConfig(sys.argv[1])); "
                    "print(w.write_detection(json.loads(sys.argv[3]),event_id=sys.argv[2]).status)")
