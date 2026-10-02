@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from . import aimbot, autopaint, noclip
+from . import aimbot, autopaint, godmode, noclip
 from .contract import PolicyEvaluation, PolicyRegistry
 
 
@@ -17,13 +17,14 @@ def build_default_registry() -> PolicyRegistry:
     """현재 Scoring에서 지원하는 detector 정책을 새 Registry에 등록한다.
 
     테스트나 향후 확장 코드가 독립 Registry를 만들 수 있도록 매 호출마다
-    새로운 객체를 반환한다. Godmode와 A 담당 정책은 구현 완료 후 여기에
+    새로운 객체를 반환한다. A 담당 정책은 구현 완료 후 여기에
     같은 방식으로 추가한다.
     """
     registry = PolicyRegistry()
     registry.register("noclip", noclip.evaluate)
     registry.register("aimbot", aimbot.evaluate)
     registry.register("autopaint", autopaint.evaluate)
+    registry.register("godmode", godmode.evaluate)
     return registry
 
 
