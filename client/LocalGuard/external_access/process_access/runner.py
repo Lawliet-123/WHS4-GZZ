@@ -8,17 +8,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-# The shared package is versioned under shared/GZZ-Shared-0.1.0 rather than
-# installed as a top-level dependency. Put that package root first so
-# ``import shared`` resolves to the team's shared client.
+# shared 0.2.0 lives directly under the repository root.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
-VERSIONED_SHARED_ROOT = REPOSITORY_ROOT / "shared" / "GZZ-Shared-0.1.0"
-SHARED_PACKAGE_ROOT = (
-    VERSIONED_SHARED_ROOT if (VERSIONED_SHARED_ROOT / "shared").is_dir()
-    else REPOSITORY_ROOT
-)
-if str(SHARED_PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SHARED_PACKAGE_ROOT))
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from shared.config import ClientConfig
 from shared.errors import SharedError
@@ -29,6 +22,7 @@ from ..common import (
     ArtifactInspector,
     ProcessLocator,
     append_detection_jsonl,
+    build_detection_result,
 )
 from .allowlist import ProcessAllowlist
 from .detector import ProcessAccessDetector
@@ -114,6 +108,7 @@ class ProcessAccessRunner:
         self._artifact_cache = artifact_cache or ArtifactCache(ArtifactInspector())
         self._detector = detector or ProcessAccessDetector()
         self._allowlist = allowlist or ProcessAllowlist()
+        self._game_executable_name = game_executable_name
         self._session_id = session_id
         self._player_id = player_id
         self._output_path = Path(output_path)
@@ -125,18 +120,46 @@ class ProcessAccessRunner:
 
     def scan_once(self) -> ScanReport:
         scan_started = self._clock()
+        scan_start_ms = self._timestamp_ms_at(scan_started)
         game = self._locator.find()
         if game is None:
-            return ScanReport(False, 0, 0, 0, _elapsed_ms(scan_started, self._clock()))
+            scan_finished = self._clock()
+            duration_ms = _elapsed_ms(scan_started, scan_finished)
+            scan_end_ms = scan_start_ms + duration_ms
+            self._writer(
+                self._output_path,
+                self._scan_status_result(
+                    status="OFFLINE",
+                    scan_start_ms=scan_start_ms,
+                    scan_end_ms=scan_end_ms,
+                    observed_processes=0,
+                    allowed_processes=0,
+                    error_code="GAME_PROCESS_NOT_FOUND",
+                ),
+            )
+            return ScanReport(False, 0, 0, 0, duration_ms)
 
         try:
             observations = self._sensor.scan(game)
         except HandleSensorUnavailable as error:
-            return ScanReport(True, 0, 0, 0, _elapsed_ms(scan_started, self._clock()), str(error))
+            scan_finished = self._clock()
+            duration_ms = _elapsed_ms(scan_started, scan_finished)
+            scan_end_ms = scan_start_ms + duration_ms
+            self._writer(
+                self._output_path,
+                self._scan_status_result(
+                    status="ERROR",
+                    scan_start_ms=scan_start_ms,
+                    scan_end_ms=scan_end_ms,
+                    observed_processes=0,
+                    allowed_processes=0,
+                    error_code="HANDLE_SENSOR_UNAVAILABLE",
+                ),
+            )
+            return ScanReport(True, 0, 0, 0, duration_ms, str(error))
 
-        timestamp_ms = self._timestamp_ms()
-        context = ScanContext(self._session_id, self._player_id, timestamp_ms)
-        emitted = 0
+        context = ScanContext(self._session_id, self._player_id, scan_start_ms)
+        pending_results = []
         allowed = 0
         for observation in observations:
             enriched = self._enrich_artifact(observation)
@@ -146,24 +169,84 @@ class ProcessAccessRunner:
             result = self._detector.evaluate(enriched, context)
             if result is None:
                 continue
-            # 스캔 성능 측정값은 판정 근거가 아니라 분석용 보조 정보다.
-            result["evidence"]["scan_duration_ms"] = _elapsed_ms(scan_started, self._clock())
+            pending_results.append(result)
+
+        scan_finished = self._clock()
+        duration_ms = _elapsed_ms(scan_started, scan_finished)
+        scan_end_ms = scan_start_ms + duration_ms
+        for result in pending_results:
+            result["timestamp_ms"] = scan_end_ms
+            result["evidence"].update(
+                {
+                    "status": "SUSPICIOUS",
+                    "scan_start_ms": scan_start_ms,
+                    "scan_end_ms": scan_end_ms,
+                    "scan_duration_ms": scan_end_ms - scan_start_ms,
+                    "observed_processes": len(observations),
+                    "allowed_processes": allowed,
+                }
+            )
             self._writer(self._output_path, result)
-            emitted += 1
+
+        # 의심 결과가 없는 성공한 스캔도 실제 점수 계산 시점의 정상 0점으로 남긴다.
+        if not pending_results:
+            self._writer(
+                self._output_path,
+                self._scan_status_result(
+                    status="NORMAL",
+                    scan_start_ms=scan_start_ms,
+                    scan_end_ms=scan_end_ms,
+                    observed_processes=len(observations),
+                    allowed_processes=allowed,
+                ),
+            )
 
         return ScanReport(
             game_found=True,
             observed_processes=len(observations),
             allowed_processes=allowed,
-            emitted_detections=emitted,
-            duration_ms=_elapsed_ms(scan_started, self._clock()),
+            emitted_detections=len(pending_results),
+            duration_ms=duration_ms,
         )
 
-    def _timestamp_ms(self) -> int:
-        """런처의 세션 시작 epoch가 있으면 모든 모듈과 같은 시간축을 쓴다."""
+    def _timestamp_ms_at(self, monotonic_now: float) -> int:
+        """스캔 시작 시각을 런처 세션 기준으로 계산한다."""
         if self._session_t0 is not None:
             return max(0, round((self._wall_clock() - self._session_t0) * 1000))
-        return _elapsed_ms(self._started_at, self._clock())
+        return _elapsed_ms(self._started_at, monotonic_now)
+
+    def _scan_status_result(
+        self,
+        *,
+        status: str,
+        scan_start_ms: int,
+        scan_end_ms: int,
+        observed_processes: int,
+        allowed_processes: int,
+        error_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """정상 0점과 검사 실패·관측 불가를 evidence.status로 구분한다."""
+        evidence: Dict[str, Any] = {
+            "submodule": "external_process",
+            "status": status,
+            "scan_start_ms": scan_start_ms,
+            "scan_end_ms": scan_end_ms,
+            "scan_duration_ms": scan_end_ms - scan_start_ms,
+            "observed_processes": observed_processes,
+            "allowed_processes": allowed_processes,
+            "target_process": self._game_executable_name,
+        }
+        if error_code is not None:
+            evidence["error_code"] = error_code
+        return build_detection_result(
+            session_id=self._session_id,
+            player_id=self._player_id,
+            module="external_access",
+            timestamp_ms=scan_end_ms,
+            evidence=evidence,
+            reasons=[],
+            raw_score=0,
+        )
 
     def _enrich_artifact(self, observation: ExternalHandleObservation) -> ExternalHandleObservation:
         if observation.source_path is None:

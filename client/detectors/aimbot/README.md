@@ -1,5 +1,27 @@
 # MECCHA aimbot anti-cheat telemetry
 
+## shared 0.2.0 요구 반영
+
+- 원래는 공통 7필드 결과를 화면에 출력하고 `raw_score > 0`인 경우에만
+  `send_detection(result)`를 호출했으며, 실시간 공통 결과를 별도 로컬
+  JSONL에 남기지 않았다.
+- shared 0.2.0 통합 규칙에서 점수를 계산한 시점마다 정상 0점도 포함하고,
+  같은 결과를 로컬에 먼저 기록한 뒤 전송하도록 요구했다.
+- 이에 따라 detector가 결과를 반환하면 점수와 관계없이 세션별
+  `logs/detection/<session_id>.jsonl`에 먼저 기록하고, 기록에 성공한 동일한
+  7필드 dict를 shared에 전달하도록 수정했다. 로컬 기록에 실패한 결과는
+  중앙에만 남지 않도록 전송하지 않는다.
+- `configure_client(ClientConfig.from_env())` 1회 호출과 종료 시
+  `flush_client()`·`shutdown_client()` 호출은 기존 구현을 유지한다. 모듈별
+  outbox 경로는 런처가 `GZZ_TELEMETRY_OUTBOX`로 공급한다.
+- `queued`는 로컬 outbox 저장 성공만 의미하며 중앙 서버 수신 완료를
+  의미하지 않는다. 지속 재시도가 필요한 배포에서는 런처 환경에
+  `GZZ_TELEMETRY_RETRY_MODE=persistent`를 별도로 지정한다.
+- 라운드 ID가 확인된 0점은 `evidence.status="NORMAL"`로 남기고, 라운드
+  범위를 얻지 못해 점수화를 보류한 결과는 `ERROR`와
+  `error_code="ROUND_SCOPE_UNAVAILABLE"`로 구분한다. 양쪽 모두 최상위
+  필드는 기존 7개만 유지한다.
+
 This module records local Hunter shot attempts and confirmed find outcomes
 through UE4SS, then evaluates three raw aimbot signals in Python. It never
 makes the final ban decision; a central TelemetryServer combines this module's
@@ -54,8 +76,9 @@ ignored by Git because they may be large or machine-specific.
 
 ## Shared telemetry status
 
-`main.py` keeps printing the detector's existing seven-field result and also
-passes that result to `shared.logger.send_detection()`. The shared client is
+`main.py` keeps printing the detector's existing seven-field result, appends
+every scoring snapshot (including score 0) to the session's local JSONL, and
+then passes the same result to `shared.logger.send_detection()`. The shared client is
 configured once at startup from `GZZ_TELEMETRY_URL` and
 `GZZ_TELEMETRY_TOKEN`; shutdown calls `flush_client()` and
 `shutdown_client()`. The UE4SS raw telemetry JSONL and detector scoring are

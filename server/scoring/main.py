@@ -12,6 +12,15 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from .correlation import (
+    CorrelationCandidate,
+    find_correlation_candidates,
+    observation_from_evaluation,
+)
+from .policies.contract import PolicyEvaluation
+from .policies.registry import evaluate_registered_policy
+from .player_snapshot import PlayerPolicySnapshot, build_player_policy_snapshot
+from .risk_input import PlayerRiskInput, build_player_risk_input
 from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
@@ -60,6 +69,90 @@ def process(
 def get_player_snapshot(session_id: str, player_id: str) -> list[ModuleState]:
     """특정 세션/플레이어의 모듈별 최신 저장 기록을 조회한다(종합 위험도 아님)."""
     return _get_store().get_player_snapshot(session_id, player_id)
+
+
+def evaluate_event_policy(payload: Mapping[str, Any]) -> PolicyEvaluation:
+    """공통 Event를 module에 맞는 등록 정책으로 평가한다.
+
+    저장/점수 합산을 수행하지 않는 읽기 전용 분석 단계다. 미등록 모듈은
+    contract의 안전한 기본 동작에 따라 기존 B2a 상태만 보존한다.
+    """
+    return evaluate_registered_policy(payload)
+
+
+def get_player_policy_snapshot(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> PlayerPolicySnapshot:
+    """플레이어의 현재 모듈별 상태를 등록 Policy로 한 번에 해석한다.
+
+    latest_state의 최신 1건씩만 사용하며 점수 합산/가중치/최종 판정을 만들지 않는다.
+    correlation 시간 창을 명시한 경우에만 후보 목록도 같은 평가 결과에서 계산한다.
+    """
+    return build_player_policy_snapshot(
+        get_player_snapshot(session_id, player_id),
+        session_id=session_id,
+        player_id=player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+
+
+def get_player_risk_input(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> PlayerRiskInput:
+    """현재 Policy snapshot을 최종 risk 계산 전의 공통 입력 형태로 정리한다.
+
+    이 함수는 가중치, 점수 합산, 치트 확률, 최종 verdict를 계산하지 않는다.
+    ERROR/OFFLINE, 미확정 정책, event-delta처럼 별도 처리가 필요한 신호를
+    구분해 이후 risk 단계가 정상 0점과 혼동하지 않도록 한다.
+    """
+    snapshot = get_player_policy_snapshot(
+        session_id,
+        player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+    return build_player_risk_input(snapshot)
+
+
+def get_player_correlation_candidates(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int,
+) -> list[CorrelationCandidate]:
+    """플레이어의 현재 모듈별 최신 상태에서 상관 후보를 찾는다.
+
+    latest_state는 모듈당 1건만 보존하므로 이 함수는 과거 전체 타임라인 분석이 아니다.
+    후보를 삭제/합산/확정하지 않고, 등록 정책이 공통 overlap_tag를 보고한 최신 관측만
+    지정한 시간 창 안에서 비교한다.
+    """
+    observations = []
+    for state in get_player_snapshot(session_id, player_id):
+        event = {
+            "session_id": state.session_id,
+            "player_id": state.player_id,
+            "module": state.module,
+            "timestamp_ms": state.timestamp_ms,
+            "evidence": state.evidence,
+            "reasons": state.reasons,
+            "raw_score": state.raw_score,
+        }
+        evaluation = evaluate_registered_policy(event)
+        observations.append(observation_from_evaluation(
+            event,
+            event_id=state.event_id,
+            sequence=state.sequence,
+            evaluation=evaluation,
+        ))
+
+    return find_correlation_candidates(
+        observations, max_time_distance_ms=max_time_distance_ms
+    )
 
 
 def recover_from_writer(writer, *, batch_size: int = 1000) -> int:
