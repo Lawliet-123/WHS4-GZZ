@@ -1,3 +1,4 @@
+
 from core.result import DetectorResult, Evidence
 from core.process_memory import ProcessMemory
 from core.pawn_locator import PawnLocator
@@ -16,6 +17,13 @@ OFFSET_IS_HUNTER = 0x0C3A
 REASON_CODES = {
     "Invincible": "invincible_enabled",
     "GodModeState": "godmode_value_pattern",
+}
+
+# Runtime은 메모리의 현재 상태를 검사한다.
+# 독립 GodMode Detector의 지속 시간 점수와 구분한다.
+RUNTIME_SCORES = {
+    "Invincible": 2,
+    "GodModeState": 3,
 }
 
 
@@ -115,6 +123,10 @@ def scan():
             if not evidence_list:
                 return result
 
+            # 하나의 검사에서 같은 사유가 중복되더라도
+            # 해당 사유의 점수는 한 번만 부여한다.
+            scored_reasons = set()
+
             for item in evidence_list:
                 reason_code = _reason_code(
                     item
@@ -131,6 +143,17 @@ def scan():
                         pawn_address,
                     )
                 )
+
+                if reason_code not in scored_reasons:
+                    result.score = min(
+                        100,
+                        result.score
+                        + RUNTIME_SCORES.get(item.target, 0),
+                    )
+
+                    scored_reasons.add(
+                        reason_code
+                    )
 
             result.detail = (
                 f"{len(evidence_list)} "
