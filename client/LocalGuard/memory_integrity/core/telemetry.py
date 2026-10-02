@@ -1,4 +1,5 @@
-"""탐지 결과를 중앙 서버로 보낸다. 성민님 `shared 0.1.0` 을 감싼 얇은 층이다.
+
+"""탐지 결과를 중앙 서버로 보낸다. Shared 라이브러리를 감싼 얇은 층이다.
 
 ## 규칙 세 가지
 
@@ -13,9 +14,10 @@
 ## outbox 는 러너마다 따로 둔다
 
 shared 의 대기열(SQLite)은 **한 프로세스만 쓸 수 있다.** 두 탐지기가 같은 파일을
-잡으면 뒤에 온 쪽이 `ResourceBusyError` 로 큐에 넣지도 못한다. 그래서 2번과 휘파람이
-각자 자기 `logs/outbox/` 를 쓴다. 런처가 `GZZ_TELEMETRY_OUTBOX` 를 전역으로 주면
-안 되는 이유이기도 하다.
+잡으면 뒤에 온 쪽이 `ResourceBusyError` 로 큐에 넣지도 못한다.
+
+Launcher가 GZZ_TELEMETRY_OUTBOX를 지정하면 해당 경로를 사용한다.
+단독 실행에서는 기존 LocalGuard 전용 logs/outbox/ 경로를 사용한다.
 
 ## 한 번 돌고 끝나는 프로세스
 
@@ -24,9 +26,8 @@ shared 의 대기열(SQLite)은 **한 프로세스만 쓸 수 있다.** 두 탐�
 그래서 `finish()` 가 `flush` 를 한 번 기다린다. 그래도 못 보낸 건은 대기열에 남아
 **다음 실행이 같은 outbox 를 열 때 같이 나간다.**
 
-주의: 누적 시도 횟수가 한도(기본 8회)에 닿으면 `failed` 로 굳고 자동으로 재개되지
-않는다. 토큰이나 경로가 틀리면 첫 시도에 바로 그렇게 된다. 그래서 `finish()` 가
-`failed` 건수를 같이 돌려준다.
+재시도 모드는 Shared 설정을 따른다. 기본값은 bounded이며,
+GZZ_TELEMETRY_RETRY_MODE=persistent 설정 시 지속 재시도를 사용한다.
 """
 
 import os
@@ -39,8 +40,8 @@ def _find_shared():
     """`shared` 패키지를 담고 있는 폴더를 찾아 돌려준다.
 
     위로 올라가며 `shared/__init__.py` 를 찾는다. 지금은 레포 루트에 있지만
-    (은지님이 2026-09-29 에 옮겼다), 처음 배포는 `shared/GZZ-Shared-0.1.0/shared/`
-    로 한 단계 더 들어가 있었다. 둘 다 찾도록 해서 어느 쪽이 되든 돈다.
+    처음 배포는 `shared/GZZ-Shared-0.1.0/shared/` 로 한 단계 더 들어가 있었다.
+    둘 다 찾도록 해서 어느 쪽이 되든 돈다.
 
     경로를 추측해 박아 두면 폴더가 한 번 더 움직일 때 조용히 안 보내게 된다.
     """
@@ -83,10 +84,18 @@ class Sender:
             from shared.logger import configure_client, send_detection
 
             cfg = ClientConfig.from_env()
-            # 대기열은 러너마다 따로. 한 파일을 두 프로세스가 못 쓴다.
-            os.makedirs(self.outbox_dir, exist_ok=True)
-            cfg = dataclasses.replace(
-                cfg, outbox_path=os.path.join(self.outbox_dir, "client.sqlite3"))
+
+            # Launcher가 지정한 outbox 경로를 우선 사용한다.
+            # 단독 실행에서는 기존 LocalGuard 전용 경로를 유지한다.
+            if not os.environ.get("GZZ_TELEMETRY_OUTBOX"):
+                os.makedirs(self.outbox_dir, exist_ok=True)
+                cfg = dataclasses.replace(
+                    cfg,
+                    outbox_path=os.path.join(
+                        self.outbox_dir, "client.sqlite3"
+                    ),
+                )
+
             configure_client(cfg)
             self._send = send_detection
             self.on = True

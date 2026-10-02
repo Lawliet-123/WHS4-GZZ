@@ -145,6 +145,17 @@ MODULES: List[Module] = [
         note="위험 핸들 감시. 상대 import 라 -m 으로만 돈다",
     ),
     Module(
+        name="module_integrity",
+        owner="1번 (지완)",
+        argv=[PY, "-m", "client.LocalGuard.external_access.module_integrity.runner",
+              "--game-exe", GAME_EXE, "--game-pid", "{game_pid}",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}",
+              "--output", "client/LocalGuard/external_access/logs/module_integrity.jsonl"],
+        mode=CONTINUOUS,
+        note="게임 DLL 기준선·추가·변경 감시. shared 0.2.0 공통 이벤트 전송",
+    ),
+    Module(
         name="input_signature",
         owner="3번 (동효)",
         argv=[PY, "client/LocalGuard/input_signature/yara_scanner.py",
@@ -193,18 +204,31 @@ MODULES: List[Module] = [
         argv=[PY, "client/detectors/aimbot/main.py",
               "--session-id", "{session}", "--player-id", "{player}", "--from-end",
               "--t0", "{t0}",
+              "--event-log", "client/detectors/aimbot/logs/detection/{session}.jsonl",
               # 기본값이 C:\Program Files (x86)\... 고정이라 게임이 다른 곳에 있으면
               # 영영 기다린다. 런처가 찾은 게임 폴더로 준다. DamageLogger Lua 는 #43 부터
               # 스크립트 위치 기준으로 <game_bin>\ue4ss\Mods\DamageLogger\ 에 써서
               # 이 경로와 파일 이름까지 같다.
               "--log-path", r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"],
         mode=CONTINUOUS,
+        session_log_dir="client/detectors/aimbot/logs/detection",
         # 결과의 session_id/player_id 를 이 값으로 바꾸고 UE 값은 evidence 로 옮긴다.
         # 안 넘기면 UE 액터 경로가 player_id 에 들어가 중앙 전송이 로컬에서 거절된다.
         # --from-end: 텔레메트리 파일은 모드가 로드될 때만 비워져서 이전 게임 기록이
         # 남아 있을 수 있다. 처음부터 읽으면 그 기록이 지금 세션 이름으로 나가고,
         # 되살릴 때마다 같은 결과를 새 event_id 로 또 보낸다.
         note="UE4SS DamageLogger 텔레메트리",
+    ),
+    Module(
+        name="esp",
+        owner="ESP (지완)",
+        argv=[PY, "client/detectors/esp/run.py", "--headless",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--central-telemetry", "{telemetry}"],
+        mode=CONTINUOUS,
+        restart=False,
+        session_log_dir="client/detectors/esp/data/sessions",
+        note="외부 핸들·오버레이·로드 모듈 ESP 정황을 Sensor/Detector로 판정",
     ),
     Module(
         name="godmode",

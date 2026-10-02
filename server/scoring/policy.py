@@ -51,10 +51,10 @@ class SignalPreview:
 # - per_entity_positive_only: PID 등 원인 엔터티별로 구분해야 한다.
 # - pending: 규격이 아직 없는 모듈.
 _PROFILE_ITEMS = (
-    DetectorProfile("noclip", "client/detectors/noclip/main.py", "positive_only", 5,
-                    True, "0-point samples are local; absence of a new send is not clean."),
-    DetectorProfile("aimbot", "client/detectors/aimbot/detector/aimbot_detector.py", "positive_only", 8,
-                    True, "Four scoring signals 3+1+3+1; only positive reports sent."),
+    DetectorProfile("noclip", "client/detectors/noclip/main.py", "snapshot", 5,
+                    True, "Shared 0.2.0: every scored sample, including NORMAL 0, is sent; ERROR is explicit."),
+    DetectorProfile("aimbot", "client/detectors/aimbot/detector/aimbot_detector.py", "snapshot", 8,
+                    True, "Round-scoped cumulative observation snapshot; scored NORMAL 0 is also sent."),
     DetectorProfile("godmode", "client/detectors/godmode/main.py", "event_delta", None,
                     False, "raw_score=result.new_score, not cumulative score."),
     DetectorProfile("autopaint", "client/detectors/autopaint/gzz_anticheat/detector.py", "snapshot", 35,

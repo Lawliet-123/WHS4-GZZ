@@ -1,3 +1,4 @@
+
 import math
 import time
 
@@ -17,6 +18,9 @@ SAMPLE_INTERVAL = 1.0 / SAMPLE_HZ
 SCAN_SECONDS = 3.0
 
 REASON_CODE = "control_rotation_pattern"
+
+# 지속적인 ControlRotation 이상 패턴 탐지 시 부여하는 점수
+AIMBOT_PATTERN_SCORE = 1
 
 
 def _read_control_rotation(
@@ -224,6 +228,12 @@ def scan():
                 ):
                     result.reasons.append(
                         REASON_CODE
+                    )
+
+                    # 한 번의 검사에서 같은 탐지 사유는 한 번만 채점
+                    result.score = min(
+                        100,
+                        result.score + AIMBOT_PATTERN_SCORE,
                     )
 
                 result.evidence.append(
