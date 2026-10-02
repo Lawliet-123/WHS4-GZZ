@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph Windows["LocalGuard가 관측하는 Windows 상태"]
+        S1["Sysmon Event ID 10<br/>외부 프로세스 접근 이력"]
+        S5["NT Handle Snapshot<br/>현재 열린 외부 핸들"]
+        S2["Toolhelp Snapshot<br/>로드 모듈 변화"]
+        S3["EnumWindows<br/>창 위치·스타일"]
+        S4["SHA-256 + WinVerifyTrust<br/>파일 신원·서명"]
+    end
+
+    S1 --> R["SensorEvent<br/>사실 데이터"]
+    S5 --> R
+    S2 --> R
+    S3 --> R
+    S4 --> R
+
+    R --> RAW["raw/*.jsonl<br/>원본 보존"]
+    R --> D["EspEventDetector<br/>OS API 없는 규칙 판정"]
+    D --> E["EvidenceEvent"]
+    E --> SCORE["내부 의심도<br/>시간창·중복억제·범주상한"]
+    E --> A["TeamEventAdapter"]
+    SCORE --> DB["SQLite + Dashboard"]
+    A --> O["SQLite outbox<br/>커밋 후 전송·중복 억제"]
+    O --> OUT["events.jsonl<br/>팀 공통 7개 필드"]
+    OUT --> REPLAY["ReplayAnalyzer<br/>정상/ESP 구간 비교"]
