@@ -10,14 +10,17 @@ from .main import (
     configure_scoring,
     evaluate_event_policy,
     get_event_delta_history,
+    get_player_correlation_candidates,
     get_player_signal_inventory,
     get_player_snapshot,
     process,
     recover_from_writer,
 )
+from .correlation import CorrelationCandidate
 from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore
 
 __all__ = (
+    "CorrelationCandidate",
     "DeltaEvent",
     "ModuleState",
     "ProcessReceipt",
@@ -26,6 +29,7 @@ __all__ = (
     "configure_scoring",
     "evaluate_event_policy",
     "get_event_delta_history",
+    "get_player_correlation_candidates",
     "get_player_snapshot",
     "get_player_signal_inventory",
     "process",

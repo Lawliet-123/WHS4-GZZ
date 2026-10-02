@@ -93,3 +93,18 @@ print(result.signal, result.annotations)
 Godmode와 A 담당 탐지기 정책은 구현/검증이 끝난 뒤 같은 Registry에 추가합니다.
 등록되지 않은 모듈은 임의의 정상 상태로 처리하지 않고 기존 B2a 분석 결과만
 그대로 반환합니다.
+
+
+## Correlation 후보 사용
+
+`server/scoring/correlation.py`는 `overlap_tags`를 이용해 서로 다른 탐지기가 같은
+현상을 관측했을 가능성이 있는 **후보만** 만든다. 후보라는 이유로 이벤트를 삭제하거나
+raw score를 합치거나 최종 위험도를 조정하지 않는다.
+
+후보의 최소 조건은 같은 `session_id`/`player_id`, 공통 `overlap_tag`, 호출자가 지정한
+시간 창이다. `entity_key`는 탐지기마다 PID/대상 등 의미가 다를 수 있으므로 현재는
+일치 여부를 근거에 기록만 하며, 값이 다르다는 이유만으로 자동 제외하지 않는다.
+
+`get_player_correlation_candidates()`는 SQLite `latest_state`를 사용하므로 모듈별 최신
+1건끼리만 비교한다. 과거 전체 타임라인 상관 분석이나 자동 dedup은 별도 저장/정책이
+필요하며 이 단계에는 포함하지 않는다.
