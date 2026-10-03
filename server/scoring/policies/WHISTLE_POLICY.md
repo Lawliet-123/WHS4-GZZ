@@ -116,3 +116,19 @@ python -B -m unittest server.scoring.tests.test_whistle_policy -v
 - [x] 담당자 답변과 A·B 합의 방향을 문서에 기록함.
 - [ ] 전송 변경 후 실제 중앙 수신과 공통 Scoring 연결을 검증함.
 - [ ] RPC cursor·유효 시간·재시작 중복 기준과 공통 태그를 맞춤.
+
+## 2026-10-03 PR #82/#86 및 B history 연결 반영
+
+이전 기록은 보존함. 현재는 NORMAL 0점/ERROR/OFFLINE도 중앙 전송하고, B에
+window history와 의미 중복/conflict 저장이 구현되어 있음. A 함수의 양수-only
+설명을 수정하고 `evidence.window_id/sample_id` 및 종료 검사 의미를 보완함.
+
+일반 RPC는 sample 1, 마지막 RPC 전용 검사는 sample 0임. 기존 Scoring이 1만
+인정하는 문제를 실제 생산자 E2E로 재현하여 0/1을 인정하도록 최소 호환 수정함.
+sample 0의 재전송·의미 중복·상충 내용·재시작 보존을 검증함.
+hook_live=false인 새 위반 양수는 status/raw_score 기준으로 보존하고, 새 위반이
+없는 stale ERROR 0점과 정상 무위반 NORMAL 0점을 구분함.
+
+cursor의 같은 t0 이어 읽기/다른 t0 초기화도 검증함. 유효 시간·최종 risk 반영은
+설정값을 임의 확정하지 않고 B와 Replay 결과에 따라 맞춰야 함.
+상세 검증 범위는 [A 최신 통합 확인](../A_CURRENT_INTEGRATION.md)을 참조함.

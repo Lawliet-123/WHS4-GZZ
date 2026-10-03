@@ -59,7 +59,7 @@ class WhistlePolicyTests(unittest.TestCase):
         result = self.analyse(sample(score=0, reasons=[], evidence={"status": "NORMAL", "meta": {"target_pid": 7996}}))
         self.assertIsNone(result.annotations.entity_key)
         self.assert_note(result, "명시적 NORMAL 0점")
-        self.assert_note(result, "중앙에는 양수만")
+        self.assert_note(result, "정상 0점")
         self.assert_note(result, "유지·만료 기준")
 
     def test_missing_status_zero_is_not_assumed_successful(self):

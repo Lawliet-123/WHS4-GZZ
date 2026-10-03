@@ -123,7 +123,7 @@ class PolicyDraftTests(unittest.TestCase):
 
     def test_remaining_positive_only_feed_still_warns_about_silence(self):
         """실제로 양수만 보내는 모듈의 침묵은 정상 상태로 바꾸지 않음."""
-        preview = inspect_event(event("localguard_executable_hash", 1))
+        preview = inspect_event(event("esp", 1))
         self.assertEqual(preview.emission, "positive_only")
         self.assertIn("not current health", " ".join(preview.issues))
 

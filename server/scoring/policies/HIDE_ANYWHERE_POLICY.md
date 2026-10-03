@@ -65,3 +65,19 @@ registry.register("hide_anywhere", hide_anywhere.evaluate)
 ERROR/OFFLINE을 정상화하지 않으며 heartbeat로 측정 결과를 대신하지 않음.
 상태 유지·history·만료 구현은 B와 별도로 맞춰야 함.
 전체 후속 결과는 [A 조사 문서 9절](../A_DETECTOR_INVENTORY.md)에 기록함.
+
+## 2026-10-03 최신 생산자 형식 반영
+
+이전 내용은 당시 기록으로 보존함. 현재는 `mecha_detector_shared/`의 지속적인
+Rule과 확인/실패 필드가 실제 생성 경로에 연결돼 있어 단일 일치에도 3점이 나온다는
+위 설명은 현재 결함이 아님. 확인 전 두 번은 핵심 0점, 세 번째부터 핵심 3점이며
+읽기 실패/Pawn 변경 시 연속 횟수가 초기화되는 것을 실제 생성기로 검증함.
+
+A 정책은 새로운 confirmed/pending reason과 count·유효성 필드를 해석하도록 수정함.
+과거 single-match Replay는 원점수를 보존하되 새 3회 확인 표본으로 재해석하지 않음.
+유효한 3회 패턴에는 `hide_anywhere_value_tamper`, 유효한 meccha.dll 관측에는
+`hide_anywhere_injection` 후보를 부여함. 실제 숨기 성공이나 자동 점수 감산은 아님.
+Shared bridge의 잘못된 custom ID/import도 현재 수정되어 조사 도구를 갱신함.
+현재 생성자 → Receiver → Shared writer → Scoring HTTP 회귀 검사를 추가함.
+
+상세 조건과 남은 B/C 연결은 [A 최신 통합 확인](../A_CURRENT_INTEGRATION.md)을 참조함.

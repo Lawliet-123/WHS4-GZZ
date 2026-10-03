@@ -1,4 +1,4 @@
-"""Hide Anywhere v9의 점수/관측 한계를 설명하는 읽기 전용 정책."""
+"""현재 Hide Anywhere 생산자와 과거 리플레이를 구분하는 읽기 전용 정책."""
 
 from __future__ import annotations
 
@@ -7,66 +7,110 @@ from typing import Any
 
 from ..policy import SignalPreview
 from .contract import PolicyAnnotations
+from .overlap import HIDE_INJECTION, HIDE_VALUE_TAMPER
 
-
+CONFIRMED_REASON = "Hide Anywhere Value Pattern Confirmed (3 Consecutive Samples)"
+PENDING_REASON = "Hide Anywhere Value Pattern Pending Confirmation"
+LEGACY_REASON = "Hide Anywhere Value Pattern Matched"
 _FLAGS = ("hide_value_pattern", "injected_module", "viewport_hook")
-_REASONS = {
-    "Hide Anywhere Value Pattern Matched": "hide_value_pattern",
-    "Injected Module Loaded": "injected_module",
-    "Viewport VTable Outside Main Image": "viewport_hook",
-}
+_KNOWN_REASONS = frozenset((
+    CONFIRMED_REASON, PENDING_REASON, LEGACY_REASON, "Observation Unavailable",
+    "Injected Module Loaded", "Viewport VTable Outside Main Image",
+))
+
+
+def _flag(value: Any) -> bool:
+    return type(value) is int and value in (0, 1)
 
 
 def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotations:
-    """점수 재계산·상태 교체·관측 이력·실제 메모리 검사는 하지 않는다."""
+    """원점수와 baseline을 보존하고 생산자가 보고한 확인/실패 의미만 해석한다."""
     if event["module"] != "hide_anywhere":
         raise ValueError("Hide Anywhere policy supports only hide_anywhere")
     if baseline.module != event["module"]:
         raise ValueError("baseline module does not match the event")
     notes = [
-        "현재 v9는 매 관측 시점의 snapshot이다. 반복 양수를 새 사건 수로 합산하거나 정상/오류 결과로 이전 위험을 자동 해제하지 않는다.",
-        "공통 Event에는 안정된 대상 PID/Pawn·개별 사건 ID가 없다. session/player/로그 시각으로 가짜 entity_key를 만들지 않는다.",
-        "overlap_tags는 B와 공통 이름·조건을 합의하기 전까지 비워 둔다. DLL/후킹 보조 근거를 LocalGuard와 자동 중복 확정하지 않는다.",
+        "Hide Anywhere는 현재 설정값 snapshot이다. 반복 3점을 신규 사건으로 누적하지 않는다.",
+        "고정값 조합 관측은 실제 숨기 성공·거리 우회 행동의 증명이 아니다.",
+        "Event에 안정된 PID/Pawn 사건 ID가 없다. 회차·로그 경로로 entity_key를 만들지 않는다.",
+        "overlap_tags는 실제 대응 근거가 있는 상관 후보다. 후보 자체로 중복 확정·감산하지 않는다.",
     ]
     if baseline.state == "MEASUREMENT_UNAVAILABLE":
-        notes.append("ERROR/OFFLINE/measurement_valid=false는 정상 0점이 아니다. 남아 있는 플래그·점수로 유효 관측을 복구하지 않는다.")
+        notes.append("ERROR/OFFLINE/measurement_valid=false는 정상 0점이 아니다. 남은 근거를 유효 관측으로 승격하거나 overlap tag를 만들지 않는다.")
         return PolicyAnnotations(notes=tuple(notes))
 
-    evidence = event["evidence"]
-    reasons = set(event["reasons"])
+    evidence, reasons = event["evidence"], set(event["reasons"])
     if evidence.get("status") == "WARNING" or evidence.get("coverage_complete") is False:
-        notes.append("부분 검사다. 확보된 근거는 보존하되 전체 정상으로 확대하지 않는다.")
+        notes.append("부분 검사다. 확인된 근거를 보존하되 전체 정상으로 확정하지 않는다.")
     if evidence.get("measurement_valid") is not True:
-        notes.append("측정 유효성이 명시되지 않았다. 현재 3개 플래그만으로 읽기 실패·누락·최신 값 여부를 정상 미일치와 구분할 수 없다.")
-        notes.append("원본 로거는 필드 읽기 실패 뒤 이전 성공 값을 유지할 수 있다. 중앙에서 원시 읽기 로그 없이 이번 값이 새로 읽혔다고 확정하지 않는다.")
+        notes.append("측정 유효성이 명시되지 않았다. 과거 형식만으로 읽기 성공·신선도를 보장하지 않으며 이전 값이 남았을 수도 있다.")
     else:
-        notes.append("measurement_valid=true는 생산자의 명시적 보고다. 중앙 정책이 실제 메모리 읽기·값의 신선도를 독립 검증한 것은 아니다.")
+        notes.append("measurement_valid=true는 생산자의 유효성 보고이며 중앙에서 메모리를 독립적으로 재검사한 것은 아니다.")
 
-    valid_flags = all(type(evidence.get(name)) is int and evidence[name] in (0, 1) for name in _FLAGS)
+    tags: list[str] = []
+    current = "hide_value_confirmed" in evidence
+    valid_flags = all(_flag(evidence.get(name)) for name in _FLAGS)
+    if current:
+        # 핵심 값의 3회 확인은 부가 모듈/Viewport 조회 실패와 별개다.
+        valid_flags = _flag(evidence.get("hide_value_pattern")) and _flag(evidence.get("hide_value_confirmed"))
     if not valid_flags:
-        notes.append("v9의 0/1 정수 플래그가 누락되거나 형식이 다르다. 없는 값을 0으로 보완하거나 bool/문자열을 자동 변환하지 않는다.")
+        notes.append("0/1 정수 플래그가 누락되거나 형식이 다르다. None/bool/문자열을 정상 0점으로 보완하지 않는다.")
     else:
-        pattern, injected, viewport = (evidence[name] for name in _FLAGS)
-        # 생성식과 비교해 계약 차이를 설명할 뿐, 원점수는 반환값에서 교체하지 않는다.
-        expected = 3 if pattern else min(2, injected + viewport)
+        pattern = evidence["hide_value_pattern"]
+        injected, viewport = (evidence.get(name) for name in _FLAGS[1:])
+        auxiliary_score = sum(value for value in (injected, viewport) if _flag(value))
+        confirmed = evidence.get("hide_value_confirmed", 0)
+        confirmation_valid = False
+        if current:
+            count, required = evidence.get("consecutive_matches"), evidence.get("required_matches")
+            counts_valid = type(count) is int and count >= 0 and type(required) is int and required == 3
+            confirmation_valid = bool(
+                counts_valid and count >= required and pattern == confirmed == 1
+                and evidence.get("measurement_valid") is True and CONFIRMED_REASON in reasons
+            )
+            if confirmed and not confirmation_valid:
+                notes.append("확인 플래그와 3회 연속 확인 횟수/reason/측정 유효성이 상충한다. 원점수는 보존하되 확인된 패턴으로 overlap을 만들지 않는다.")
+            expected = 3 if confirmed else min(2, auxiliary_score)
+            if confirmation_valid:
+                notes.append("6개 고정값이 동일 Pawn에서 3회 연속 확인된 생산자 보고다. 이후 동일 상태의 3점도 새 사건 증분이 아니다.")
+            elif pattern:
+                notes.append("고정값 패턴 확인 대기다. 1·2회 일치를 확인된 핵심 3점으로 승격하지 않는다.")
+            expected_reasons = {
+                CONFIRMED_REASON: bool(confirmed), PENDING_REASON: bool(pattern and not confirmed),
+                "Injected Module Loaded": bool(injected),
+                "Viewport VTable Outside Main Image": bool(viewport),
+            }
+        else:
+            expected = 3 if pattern else min(2, auxiliary_score)
+            notes.append("과거 단일 일치 형식이다. 기존 raw_score를 보존하지만 3회 연속 확인 증거로 해석하지 않는다.")
+            expected_reasons = {
+                LEGACY_REASON: bool(pattern), "Injected Module Loaded": bool(injected),
+                "Viewport VTable Outside Main Image": bool(viewport),
+            }
         if event["raw_score"] != expected:
-            notes.append("원점수가 현재 v9 생성식(패턴 3점, 아니면 보조 근거 최대 2점)과 다르다. 구버전/계약 차이를 확인하고 원점수는 보존한다.")
-        if pattern:
-            notes.append("6개 고정 설정값의 패턴 일치 보고다. 실제 숨기 성공·거리 무시 행동까지 직접 관측한 것은 아니다.")
+            notes.append("원점수가 생산자 점수식과 다르다. 생산자/버전 차이를 확인하고 원점수를 보존한다.")
+        if any((reason in reasons) != enabled for reason, enabled in expected_reasons.items()):
+            notes.append("플래그와 알려진 reason 조합이 상충한다. reason 또는 점수를 고쳐 쓰지 않는다.")
         if injected:
-            notes.append("injected_module은 이름이 meccha.dll인 로드 모듈 관측이다. 파일 해시/서명·악성 주입 주체를 증명하지 않는다.")
+            notes.append("injected_module은 meccha.dll 이름의 로드 관측이다. 파일 해시/서명으로 악성을 확정하지 않는다.")
         if viewport:
-            notes.append("viewport_hook은 후보 Viewport vtable 슬롯이 메인 이미지 밖이라는 관측이다. 실제 렌더링 후킹 동작·특정 ESP 사용과 구분한다.")
+            notes.append("viewport_hook은 Viewport vtable이 메인 이미지 밖이라는 보조 근거다. 특정 ESP 사용을 단정하지 않는다.")
         if pattern == injected == viewport == 0:
-            notes.append("0/0/0은 이번에 보고된 패턴·보조 근거가 없다는 뜻이다. 성공한 최신 메모리 검사 또는 전체 무결성의 증명은 아니다.")
-        if any((flag in reasons) != bool(evidence[key]) for flag, key in _REASONS.items()):
-            notes.append("플래그와 알려진 reason 목록이 현재 v9 생성 계약과 다르다. 서로 대신 채우거나 점수를 새로 만들지 않는다.")
+            notes.append("0/0/0은 이번 관측 범위의 무일치다. 게임 전체의 정상 보장은 아니다.")
+        eligible = baseline.state != "OUT_OF_AUDITED_RANGE" and event["raw_score"] > 0
+        if eligible and evidence.get("measurement_valid") is True:
+            if (_flag(injected) and injected == 1 and evidence.get("module_observation_valid") is True
+                    and "Injected Module Loaded" in reasons):
+                tags.append(HIDE_INJECTION)
+            if confirmation_valid:
+                tags.append(HIDE_VALUE_TAMPER)
 
-    notes.append("Rule 클래스의 3회 확인과 실제 make_common_event 경로는 다르다. 현재 3점은 패턴 1회 일치에도 나오며 3회 연속 확인 증명이 아니다.")
-    if reasons - _REASONS.keys():
-        notes.append("미분류 reason이 포함된다. 자유 문자열로 핵 종류·새 중복 태그를 생성하지 않는다.")
+    if evidence.get("observation_status") == "unavailable":
+        notes.append("모듈/Viewport 일부 관측이 불가하다. 남은 유효 패턴 또는 보조 점수를 보존하되 전체 정상으로 확대하지 않는다.")
+    if reasons - _KNOWN_REASONS:
+        notes.append("미분류 reason이 포함된다. 자유 문자열로 새 overlap tag를 생성하지 않는다.")
     if event["raw_score"] > 0 and not reasons:
-        notes.append("양수 점수에 reason이 없다. 원점수를 보존하되 관측 원인을 추정하지 않는다.")
+        notes.append("양수에 reason 코드가 없다. 원점수를 보존하지만 원인을 추정하지 않는다.")
     if baseline.state == "OUT_OF_AUDITED_RANGE":
-        notes.append("조사 상한 3점을 벗어난 입력이다. 원점수를 자르거나 최종 위험도로 바꾸지 않는다.")
-    return PolicyAnnotations(notes=tuple(notes))
+        notes.append("조사 상한 3점을 벗어났다. 점수를 자르거나 overlap을 만들지 않는다.")
+    return PolicyAnnotations(overlap_tags=tuple(tags), notes=tuple(notes))

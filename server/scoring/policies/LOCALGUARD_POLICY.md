@@ -144,3 +144,20 @@ A는 필요한 분석 함수·테스트 보완과 Receiver 연동 검증을 맡�
 PR #78 module_integrity·PR #79 ESP는 현재 작업 브랜치에도 포함됨.
 위의 미병합 표기는 최초 검토 시점의 기록임. 병합 후 전체 Scoring 테스트
 201개가 통과했지만 공통 Registry의 A 함수 등록은 아직 수행하지 않음.
+
+## 2026-10-03 최신 main 반영 후 갱신
+
+위 내용은 당시 기록을 보존함. 최신 main에는 A Registry와 external_access scoped
+저장이 이미 연결되어 있음. 서로 다른 하위 채널의 NORMAL 0점이 양수 상태를
+덮지 않는 기존 HTTP E2E도 회귀 검사함. Registry/저장을 A가 새로 구현한 것은 아님.
+
+PR #82/#84 이후 상태형 정상 0점이 중앙으로 전송됨. Hash Profile을 snapshot으로
+갱신하고 YARA A key는 유효한 0점도 PID/scope별로 생성하도록 보완함. YARA 공통
+저장은 여전히 module-level 최신 한 건이므로 대상별 저장·해소는 B와 맞춰야 함.
+무전송을 정상으로 해석하지 않고 ERROR/OFFLINE/measurement_valid=false도 보존함.
+
+실제 알려진 reason·DLL/필드/규칙/카탈로그/Runtime 출처가 대응할 때만
+`overlap.py`가 후보 태그를 생성하도록 수정함. PID 또는 양수만으로 태그를 만들지
+않으며 최종 위험도·중복 감산 정책은 구현하지 않음. 이전 빈 태그 설명은 당시 상태임.
+
+상세 조건·검증·후속 담당은 [A 최신 통합 확인](../A_CURRENT_INTEGRATION.md)을 참조함.
