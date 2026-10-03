@@ -13,6 +13,7 @@ from .main import (
     get_external_access_scoped_state,
     get_whistle_window_conflicts,
     get_whistle_window_history,
+    get_player_aggregate_evidence,
     get_player_correlation_candidates,
     get_player_policy_snapshot,
     get_player_risk_input,
@@ -21,6 +22,7 @@ from .main import (
     process,
     recover_from_writer,
 )
+from .aggregate import AggregateEvidence, AggregateSignal
 from .correlation import CorrelationCandidate
 from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
 from .storage import (
@@ -33,6 +35,8 @@ from .storage import (
 )
 
 __all__ = (
+    "AggregateEvidence",
+    "AggregateSignal",
     "CorrelationCandidate",
     "DeltaEvent",
     "ModulePolicySnapshot",
@@ -49,6 +53,7 @@ __all__ = (
     "get_external_access_scoped_state",
     "get_whistle_window_conflicts",
     "get_whistle_window_history",
+    "get_player_aggregate_evidence",
     "get_player_correlation_candidates",
     "get_player_policy_snapshot",
     "get_player_risk_input",

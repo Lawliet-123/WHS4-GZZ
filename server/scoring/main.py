@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from .aggregate import AggregateEvidence, build_aggregate_evidence
 from .correlation import (
     CorrelationCandidate,
     find_correlation_candidates,
@@ -126,6 +127,26 @@ def get_player_risk_input(
         max_time_distance_ms=max_time_distance_ms,
     )
     return build_player_risk_input(snapshot)
+
+
+def get_player_aggregate_evidence(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> AggregateEvidence:
+    """현재 플레이어의 RiskInput을 Aggregate Risk 계산 직전 증거로 분류한다.
+
+    아직 가중치, 합산 점수, 중복 감산, Final Verdict는 계산하지 않는다.
+    event/window history가 필요한 신호는 DEFERRED로 남긴다.
+    """
+    return build_aggregate_evidence(
+        get_player_risk_input(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
 
 
 def get_player_correlation_candidates(
