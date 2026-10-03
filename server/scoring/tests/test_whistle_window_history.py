@@ -396,7 +396,7 @@ class WhistleWindowHistoryTests(unittest.TestCase):
         self.store.process_event(
             rpc_event(
                 window_id=70,
-                sample_id=0,
+                sample_id=2,
             ),
             event_id=uid(),
             sequence=1,
@@ -405,7 +405,7 @@ class WhistleWindowHistoryTests(unittest.TestCase):
         self.store.process_event(
             rpc_event(
                 window_id=70,
-                sample_id=0,
+                sample_id=2,
             ),
             event_id=uid(),
             sequence=2,
@@ -416,12 +416,31 @@ class WhistleWindowHistoryTests(unittest.TestCase):
             "player_1",
         )
 
-        # whistle_rpc의 현재 sender 계약은 sample_id=1이다.
+        # whistle_rpc의 현재 sender 계약은 일반 검사 1 / 마지막 검사 0이다.
         # 잘못된 식별자는 의미 중복 키로 신뢰하지 않고 두 원본을 모두 보존한다.
         self.assertEqual(len(history), 2)
         self.assertFalse(history[0].semantic_key_valid)
         self.assertFalse(history[1].semantic_key_valid)
         self.assertIsNone(history[0].sample_id)
+
+    def test_final_sample_zero_duplicate_and_conflict_survive_restart(self):
+        canonical_id = uid()
+        payload = rpc_event(window_id=80, sample_id=0, score=40, status="SUSPICIOUS")
+        self.store.process_event(payload, event_id=canonical_id, sequence=1)
+        self.store = ScoringStore(self.store.path)
+        self.store.process_event(payload, event_id=uid(), sequence=2)
+        self.store.process_event(rpc_event(window_id=80, sample_id=0, score=0), event_id=uid(), sequence=3)
+        history = self.store.get_window_history("rpc_session", "player_1")
+        self.assertEqual(len(history), 1)
+        self.assertTrue(history[0].semantic_key_valid)
+        self.assertEqual(history[0].sample_id, 0)
+        self.assertEqual(history[0].event_id, canonical_id)
+        self.assertEqual(len(self.store.get_window_conflicts("rpc_session", "player_1")), 1)
+
+    def test_bool_negative_and_string_ids_are_not_semantic_keys(self):
+        for sample_id in (True, False, -1, "0"):
+            payload = rpc_event(window_id=90, sample_id=sample_id)
+            self.assertEqual(self.store._whistle_rpc_identity(payload), (None, None, False))
 
     def test_history_query_uses_server_sequence_pagination(self):
         for seq, window in enumerate((60, 61, 62), start=1):

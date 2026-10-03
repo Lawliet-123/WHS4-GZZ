@@ -597,7 +597,7 @@ class ScoringStore:
 
         현 sender 계약:
         - window_id: 0부터 증가하는 비음수 정수
-        - whistle_rpc sample_id: 1
+        - whistle_rpc sample_id: 일반 검사 1, PR #86의 RPC 전용 마지막 검사 0
 
         bool은 int의 하위 타입이므로 type(value) is int로 엄격히 검사한다.
         """
@@ -611,7 +611,7 @@ class ScoringStore:
             type(window_id) is int
             and window_id >= 0
             and type(sample_id) is int
-            and sample_id == 1
+            and sample_id in (0, 1)
         )
 
         if not valid:
