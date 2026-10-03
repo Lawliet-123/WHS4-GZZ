@@ -12,6 +12,7 @@ from .main import (
     get_event_delta_history,
     get_godmode_history_summary,
     get_external_access_scoped_state,
+    get_player_final_verdict,
     get_player_fusion_plan,
     get_whistle_window_conflicts,
     get_whistle_window_history,
@@ -27,6 +28,7 @@ from .main import (
 )
 from .aggregate import AggregateEvidence, AggregateSignal
 from .aggregate_risk import AggregateRisk
+from .final_verdict import FinalVerdict
 from .history_summary import GodmodeHistorySummary
 from .fusion import FusionEvidenceUnit, FusionPlan
 from .overlap import OverlapGroup
@@ -49,6 +51,7 @@ __all__ = (
     "DeltaEvent",
     "FusionEvidenceUnit",
     "FusionPlan",
+    "FinalVerdict",
     "GodmodeHistorySummary",
     "ModulePolicySnapshot",
     "ModuleState",
@@ -64,6 +67,7 @@ __all__ = (
     "get_event_delta_history",
     "get_godmode_history_summary",
     "get_external_access_scoped_state",
+    "get_player_final_verdict",
     "get_player_fusion_plan",
     "get_whistle_window_conflicts",
     "get_whistle_window_history",

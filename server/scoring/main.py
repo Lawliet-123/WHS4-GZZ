@@ -19,6 +19,7 @@ from .history_summary import (
 )
 from .fusion import FusionPlan, build_fusion_plan
 from .aggregate_risk import AggregateRisk, build_aggregate_risk
+from .final_verdict import FinalVerdict, build_final_verdict
 from .correlation import (
     CorrelationCandidate,
     find_correlation_candidates,
@@ -202,6 +203,31 @@ def get_player_aggregate_risk(
     """
     return build_aggregate_risk(
         get_player_fusion_plan(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_final_verdict(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> FinalVerdict:
+    """현재 플레이어의 보수적 Final Verdict를 반환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint는 C 영역이다.
+
+    calibrated ACTIVE evidence가 있으면 SUSPICIOUS,
+    positive evidence 없이 평가가 불완전하면 INCONCLUSIVE,
+    그 외에는 NO_ACTIVE_EVIDENCE를 반환한다.
+
+    이 함수는 CHEAT 확정이나 치트 확률을 만들지 않는다.
+    """
+    return build_final_verdict(
+        get_player_aggregate_risk(
             session_id,
             player_id,
             max_time_distance_ms=max_time_distance_ms,
