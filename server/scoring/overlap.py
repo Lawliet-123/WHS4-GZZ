@@ -30,7 +30,14 @@ def build_overlap_groups(
     *,
     active_modules: Iterable[str],
 ) -> tuple[OverlapGroup, ...]:
-    """ACTIVE 모듈 사이의 correlation 후보를 connected component로 묶는다."""
+    """ACTIVE 모듈 사이의 correlation 후보를 보수적으로 그룹화한다.
+
+    그래프상 연결되어 있더라도 component 내부 correlation edge들이
+    최소 하나의 공통 overlap_tag를 공유할 때만 하나의 overlap group으로 만든다.
+
+    서로 다른 원인 tag가 B 같은 중간 모듈을 통해 연결된 경우에는
+    하나의 근거로 축소하지 않는다.
+    """
 
     active = set(active_modules)
 
@@ -90,13 +97,30 @@ def build_overlap_groups(
             if set(candidate.modules).issubset(component)
         ]
 
-        tags = sorted(
-            {
-                tag
-                for candidate in relevant
-                for tag in candidate.overlap_tags
-            }
+        # connected component라는 이유만으로 서로 다른 원인까지
+        # 하나의 evidence unit으로 축소하면 안 된다.
+        #
+        # 예:
+        #   A-B: process_injection
+        #   B-C: hide_config
+        #
+        # 위 경우 A-B-C 전체에 공통된 원인 tag가 없으므로
+        # overlap group으로 만들지 않는다.
+        tag_sets = [
+            set(candidate.overlap_tags)
+            for candidate in relevant
+        ]
+
+        common_tags = (
+            set.intersection(*tag_sets)
+            if tag_sets
+            else set()
         )
+
+        if not common_tags:
+            continue
+
+        tags = sorted(common_tags)
 
         event_ids = sorted(
             {

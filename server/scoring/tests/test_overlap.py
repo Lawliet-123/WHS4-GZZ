@@ -56,7 +56,7 @@ class OverlapGroupTests(unittest.TestCase):
         )
         self.assertEqual(group.candidate_count, 1)
 
-    def test_transitive_candidates_form_one_group(self):
+    def test_mixed_tag_transitive_chain_is_not_collapsed(self):
         result = build_overlap_groups(
             [
                 candidate(
@@ -81,21 +81,43 @@ class OverlapGroupTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(len(result), 1)
+        self.assertEqual(result, ())
 
-        self.assertEqual(
-            result[0].modules,
-            (
-                "hide_anywhere",
-                "injection",
-                "value_tamper",
+    def test_same_tag_transitive_candidates_form_one_group(self):
+        result = build_overlap_groups(
+            [
+                candidate(
+                    "module_a",
+                    "module_b",
+                    tag="same_cause",
+                    left_event="a",
+                    right_event="b",
+                ),
+                candidate(
+                    "module_b",
+                    "module_c",
+                    tag="same_cause",
+                    left_event="b",
+                    right_event="c",
+                ),
+            ],
+            active_modules=(
+                "module_a",
+                "module_b",
+                "module_c",
             ),
         )
 
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0].modules,
+            ("module_a", "module_b", "module_c"),
+        )
         self.assertEqual(
             result[0].overlap_tags,
-            ("hide_config", "hide_injection"),
+            ("same_cause",),
         )
+        self.assertEqual(result[0].candidate_count, 2)
 
     def test_inactive_module_is_not_grouped(self):
         result = build_overlap_groups(
