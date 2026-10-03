@@ -378,7 +378,8 @@ def end_session() -> None:
 
 # ── 띄우기·등록 ─────────────────────────────────────────────────────────
 
-def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Popen:
+def spawn(argv: List[str], cwd: str, log: str, note: str = "",
+          env_extra: Optional[Dict[str, str]] = None) -> subprocess.Popen:
     """모듈을 띄운다. 출력은 모듈 로그 파일에 이어 쓴다.
 
     **모듈마다 프로세스 그룹을 따로 만든다(CREATE_NEW_PROCESS_GROUP).** 그래야
@@ -401,6 +402,13 @@ def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Pop
     name = os.path.splitext(os.path.basename(log))[0]
     env["GZZ_TELEMETRY_OUTBOX"] = os.path.join(
         os.path.dirname(os.path.abspath(log)), "outbox", name, "client.sqlite3")
+    # 모듈마다 따로 주는 환경변수(Module.env). 전부에 넣지 않는 이유: 레포 루트를
+    # 모든 모듈의 PYTHONPATH 에 넣으면 최상위 modules/·server/ 같은 이름이 다른
+    # 모듈의 import 를 가로챌 수 있다. PYTHONPATH 는 사용자가 이미 준 값을 지우지 않는다.
+    for k, v in (env_extra or {}).items():
+        if k == "PYTHONPATH" and env.get(k):
+            v = v + os.pathsep + env[k]
+        env[k] = v
     with open(log, "a", encoding="utf-8") as f:
         f.write(f"\n{'=' * 70}\n[{note or 'start'}] {time.strftime('%H:%M:%S')}\n"
                 f"[cmd] {' '.join(argv)}\n{'=' * 70}\n")
@@ -418,8 +426,12 @@ def spawn(argv: List[str], cwd: str, log: str, note: str = "") -> subprocess.Pop
 
 
 def register(name: str, proc: subprocess.Popen, *, by: str, restartable: bool,
-             argv: List[str], cwd: str, log: str) -> None:
-    """방금 띄운 프로세스를 적는다. 재시작 기록은 이어간다."""
+             argv: List[str], cwd: str, log: str,
+             env: Optional[Dict[str, str]] = None) -> None:
+    """방금 띄운 프로세스를 적는다. 재시작 기록은 이어간다.
+
+    `env` 는 Module.env 다. 되살리는 쪽(런처·워치독)이 같은 환경으로 띄우도록 같이 적는다.
+    """
     with edit() as d:
         prev = d.setdefault("entries", {}).get(name) or {}
         d["entries"][name] = {
@@ -428,6 +440,7 @@ def register(name: str, proc: subprocess.Popen, *, by: str, restartable: bool,
             "started_by": by,
             "restartable": bool(restartable),
             "argv": list(argv), "cwd": cwd, "log": log,
+            "env": dict(env or {}),
             "restarts": prev.get("restarts", []),
             "gave_up": False,
         }
@@ -494,7 +507,8 @@ def restart_if_dead(name: str, by: str) -> Tuple[str, Optional[int], Optional[su
             d0.setdefault("entries", {}).setdefault(name, dict(e))["restarts"] = recent
 
         proc = spawn(e["argv"], e["cwd"], e["log"],
-                     note=f"{by} restart {len(recent)}/{MAX_RESTARTS}")
+                     note=f"{by} restart {len(recent)}/{MAX_RESTARTS}",
+                     env_extra=e.get("env"))
         try:
             with edit() as d2:
                 if d2.get("stopping"):
