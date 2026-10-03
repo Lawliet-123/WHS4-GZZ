@@ -2,8 +2,10 @@
 
 ## 1. 기준과 범위
 
-팀 `main`의 `90e90cc`를 기준으로 작업함. PR #83의 Replay calibration/RiskInput,
-PR #84의 InputSignature 0점 전송, PR #86의 종료 직전 RPC 검사가 병합된 상태임.
+최초 작업은 팀 `main`의 `90e90cc`를 기준으로 수행함. 이후 PR #87까지 병합된
+`c45cc39`와 이 브랜치를 임시로 합쳐 호환성을 다시 확인함. PR #83의 Replay
+calibration/RiskInput, PR #84의 InputSignature 0점 전송, PR #86의 종료 직전 RPC
+검사, PR #87의 Hide Anywhere 런처 등록·종료 처리가 포함된 상태임.
 기존 작업 폴더의 미커밋 조사 파일은 그대로 보존하고 별도 브랜치에서 수정함.
 충돌로 미병합인 PR #85의 모듈 이름·개인정보·런처 변경은 이번 작업에 섞지 않음.
 
@@ -43,6 +45,33 @@ ServerBridge는 현재 `shared.logger.send_detection(event)`를 호출하며 Sha
 전송 ID를 생성함. 이전 `UUID hex:순번` 오류와 잘못된 logger import가 현재
 코드에서 수정된 것을 확인하고, 조사 도구의 과거 오류 재현을 현재 계약 검증으로
 바꿈. bridge의 큐 등록 검사는 모의 receipt를 사용하며 운영 서버 ACK 검증이 아님.
+
+### PR #87 런처 연결 확인 및 제한
+
+PR #87에서 Hide Anywhere가 `client/Launcher/modules.py`에 상주 모듈로 등록됨.
+런처는 실제 게임 PID·session_id·player_id를 전달하고, 중앙 전송 설정이 없을
+때만 `--local-only`를 붙임. 모듈 전용 `PYTHONPATH`와 outbox를 유지한 채 실행하며,
+게임 종료 시 수집기가 정상 종료한 경우 STOPPED로 처리하고 Shared flush 시간을
+확보함. PR #87과 이 브랜치를 임시 병합한 상태에서 런처 인자·환경변수·outbox
+계약을 별도로 확인함.
+
+PR #87은 공통 Event의 7필드나 Hide 점수·reason·evidence 형식을 바꾸지 않았으므로
+A Policy 코드는 추가 변경하지 않음. 다만 실제 통합 및 Replay 수집에는 아래 제한이
+남아 있음.
+
+- Hide는 아직 런처의 공통 `--t0`를 받지 않고 수집기 시작 기준
+  `timestamp_ms`와 `evidence.timestamp_basis=local_session_start`를 사용함.
+  다른 탐지기의 세션 공통 시각과 직접 비교하여 overlap을 감산하면 잘못된 시간
+  대응이 생길 수 있으므로, B의 시간 기반 중복 보정 전에 시계 기준을 맞추거나
+  서로 다른 timestamp_basis를 가진 관측은 자동 보정 대상에서 제외해야 함.
+- Hide 수집기는 게임에 `PROCESS_VM_READ` 핸들을 유지함. ESP와 동시에 실행하면
+  ESP가 이 수집기를 `memory_read` 근거로 탐지하는 문제가 PR #87에도 명시됨.
+  ESP가 런처 등록 PID를 제외하기 전까지 정상 통합 세션은 두 모듈을 분리하여
+  검증해야 하며, 해당 ESP 점수를 정상 플레이 근거로 사용하면 안 됨.
+- Hide의 Replay manifest는 `--play-label`이 없으면 `normal_`로 시작하는 세션만
+  NORMAL로 추론함. 런처 기본 `ac_...` 세션은 CHEAT로 기록되므로 정상 Replay
+  수집 시에는 `normal_...` 세션명을 명시해야 함. 이는 중앙 7필드 Event의 점수
+  판정과는 별개지만 Replay calibration 라벨을 오염시킬 수 있음.
 
 ## 3. 0점과 측정 불가를 구분함
 
@@ -137,6 +166,7 @@ yara-python 4.5.4를 설치해 검사함. 단위/로컬 통합 검증이며 실�
 | Launcher 단위 테스트 | 25개 통과 |
 | ESP 실제 생성 경로 호환성 도구 | 8개 통과 |
 | A 계약 조사 도구의 합성 probe | assertion 통과 |
+| PR #87 main + 이 브랜치 임시 병합 회귀 | Scoring 276·Receiver 30·Launcher 25·Hide 29개 통과(환경 자료 의존 6개 skip) |
 
 서로 다른 실행 그룹 결과이며 이를 실게임 표본 수로 합산하지 않음.
 
@@ -172,6 +202,7 @@ FastAPI/Starlette의 폐기 예정 API 경고는 발생하나 검사 실패는 �
 - [x] YARA 유효 0점의 PID/scope key를 준비함. 실제 scoped 저장 완료와 구분함.
 - [x] 마지막 RPC sample 0 중복 방지 오류를 수정하고 HTTP/재시작 회귀 검사를 추가함.
 - [x] 근거 조건부 overlap 태그와 양성·음성·기본 Registry 호환 검사를 추가함.
+- [x] PR #87 main과 임시 병합하여 코드 충돌 없음과 Hide 런처 인자·환경·outbox 계약을 확인함.
 - [x] 이전 조사 내용·Replay·사용자의 미커밋 파일을 보존함.
 
 ### B와 연결/결정해야 함
@@ -179,6 +210,7 @@ FastAPI/Starlette의 폐기 예정 API 경고는 발생하나 검사 실패는 �
 - [ ] 공통 storage.py/Profile의 최소 호환 변경을 B가 검토해야 함.
 - [ ] YARA PID/scope 상태 저장·정상 복귀·종료 PID 처리 범위를 구현/합의해야 함.
 - [ ] overlap 후보의 실제 감산 여부와 대상·시간 대응 기준을 정해야 함.
+- [ ] Hide의 `local_session_start`와 공통 `--t0` 시계를 맞추기 전에는 시간 차이만으로 overlap 감산하지 않아야 함.
 - [ ] whistle_rpc TTL 및 종합 risk/최종 판정 정책을 Replay 기반으로 확정해야 함.
 - [ ] 이전 DB에 sample 0의 비의미 이력이 있으면 보존한 채 점검해야 함.
 
@@ -187,6 +219,8 @@ FastAPI/Starlette의 폐기 예정 API 경고는 발생하나 검사 실패는 �
 - [ ] C에서 writer → configure_scoring → recovery → Receiver 활성화 순서를 연결함.
 - [ ] B가 Final Verdict 공개 API/반환형을 확정하면 C의 Dashboard 조회 API와 연결함.
 - [ ] 실제 클라이언트 → 운영 HTTPS 수신/재전송 및 게임 종료 마지막 window를 검증함.
+- [ ] ESP가 Hide 수집기 PID를 자기 탐지에서 제외하도록 수정한 뒤 두 모듈 동시 실행을 검증함.
+- [ ] Hide 정상 Replay는 `normal_...` 세션명을 사용하거나 런처에서 `--play-label NORMAL`을 전달함.
 - [ ] 충돌 PR #85는 별도 계약 검토/해소 후 반영함. 이번 패치로 해결 처리하지 않음.
 
 가중치·TTL·최종 판정처럼 팀 결정이 필요한 값은 임의로 채우지 않음.
