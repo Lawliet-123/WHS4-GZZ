@@ -660,6 +660,14 @@ class AutoObserver(MemoryObserver):
 
 
 def main():
+    # The launcher stops modules with Ctrl+Break (CTRL_BREAK_EVENT). Map it to
+    # KeyboardInterrupt so the finally block (shared flush/shutdown, collector_stop)
+    # runs; Windows' default handler would terminate without cleanup.
+    try:
+        import signal
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+    except (AttributeError, ValueError, OSError):
+        pass
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--code', action='store_true', help='Observe main EXE .text changes')
     p.add_argument('--code-interval', type=float, default=10, help='Seconds between .text scans')

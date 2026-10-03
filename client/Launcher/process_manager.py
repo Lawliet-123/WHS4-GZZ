@@ -176,11 +176,13 @@ class ProcessManager:
                     return True
                 proc = registry.spawn(argv, cwd, st.log_path,
                                       note=f"launcher run #{st.runs + 1}"
-                                           + (" (세션 끝 마지막 검사)" if final else ""))
+                                           + (" (세션 끝 마지막 검사)" if final else ""),
+                                      env_extra=st.module.env)
                 try:
                     registry.register(name, proc, by="launcher",
                                       restartable=self._restartable(st),
-                                      argv=argv, cwd=cwd, log=st.log_path)
+                                      argv=argv, cwd=cwd, log=st.log_path,
+                                      env=st.module.env)
                 except BaseException:
                     # 등록을 못 하면 방금 띄운 것을 남기지 않는다. 아무도 추적하지 못하고
                     # stop_all 도 모르는 프로세스가 되어 세션이 끝난 뒤에도 남는다.
@@ -241,6 +243,12 @@ class ProcessManager:
                         exited = True
                         if st.module.mode == ONESHOT:
                             self._oneshot_exit(st, code, now)
+                        elif code == 0 and st.module.needs_game and self._game_gone():
+                            # 게임이 꺼져서 스스로 끝났다(hide_anywhere 는 대상이 죽으면 0 으로
+                            # 끝난다). 런처의 게임 종료 감지보다 먼저 보면 예전에는 되살리거나
+                            # FAILED 로 셌다 — 누가 먼저 보느냐에 따라 종료코드가 갈렸다.
+                            st.status = STOPPED
+                            st.detail = "게임이 꺼져 스스로 끝남"
                         else:
                             self._down(st, f"종료됨 (code {code})")
                 elif st.adopted_pid and not registry.is_alive(st.adopted_pid, st.adopted_ctime):
@@ -263,6 +271,10 @@ class ProcessManager:
                     pass          # _save 가 살아 있는 것만으로 modules 를 다시 쓴다
             except Exception:
                 pass
+
+    def _game_gone(self) -> bool:
+        """게임이 꺼졌는가. 게임 PID 를 아직 모르면 꺼졌다고 하지 않는다."""
+        return self.game_pid is not None and not registry.is_alive(self.game_pid)
 
     def _oneshot_exit(self, st: ModuleState, code: int, now: float) -> None:
         # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패 / 3 크래시.

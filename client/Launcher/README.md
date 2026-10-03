@@ -58,7 +58,8 @@ Module(
 )
 ```
 
-자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` `{telemetry}` 는 런처가 채운다.
+자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` `{telemetry}` `{game_pid}` 는 런처가 채운다.
+`{game_pid}` 는 런처가 찾은 게임 프로세스 PID 다. 게임이 뜬 뒤에 시작하는 모듈(`needs_game=True`)에만 쓴다.
 `{game_bin}` 은 런처가 찾은 게임 실행 폴더(`...\Chameleon\Binaries\Win64`)다. UE4SS 모드가
 쓰는 로그처럼 게임 폴더 아래 파일을 읽는 모듈은 경로를 박지 말고 이걸로 받는다
 (예: `r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"`).
@@ -80,11 +81,18 @@ optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
 | `final_run=[...]` | (주기 검사만) 세션이 끝날 때 그 인자를 붙여 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 스냅샷 검사는 넣지 않는다(게임이 꺼진 뒤 OFFLINE 이 세션 중 탐지를 덮는다). 지금은 휘파람 `["--only", "whistle_rpc"]` |
 | `needs_game=False` | 게임보다 **먼저** 뜬다 (SelfDefense·KernelWatcher) |
 | `needs_admin=True` | 관리자 권한이 없으면 건너뛴다 |
+| `telemetry_off_args=[...]` | 중앙 전송 설정이 없을 때(`{telemetry}` 가 `off`)만 argv 끝에 붙는다. 설정이 없으면 시작을 거부하는 모듈의 `--local-only` 같은 것 |
+| `env={...}` | 이 모듈에만 줄 환경변수. `PYTHONPATH` 는 기존 값 앞에 붙인다. 되살릴 때도 같은 값을 쓴다 |
+
+게임이 꺼진 뒤 `needs_game=True` 인 상주 모듈이 **종료코드 0 으로 스스로 끝나면** 정상 종료(STOPPED)로
+본다. 게임이 살아 있는데 끝났거나 0 이 아니면 예전처럼 되살리거나(`restart=True`) FAILED 로 남긴다.
 
 **실행 방식이 모듈마다 다르니 확인하고 적어야 한다.** 예를 들어 `external_access`
 는 상대 import 를 써서 `python -m client.LocalGuard...` 로만 돌고, 직접 실행하면
 `ImportError` 가 난다. `autopaint` 도 `python -m client.detectors.autopaint.main` 으로
-띄운다 — 스크립트로 띄우면 레포 루트의 `shared` 를 못 찾는다. 등록하기 전에 그 명령을
+띄운다 — 스크립트로 띄우면 레포 루트의 `shared` 를 못 찾는다. 같은 폴더의 파일을 최상위로
+import 해서 `-m` 으로 못 띄우는 스크립트(`hide_anywhere` 의 `mecha_logger.py`)는
+`env={"PYTHONPATH": REPO}` 로 `shared` 를 찾게 한다. 등록하기 전에 그 명령을
 손으로 한 번 돌려보는 게 빠르다.
 
 ### 주기 실행 모듈이라면 `{t0}` 를 꼭 받아 주세요
