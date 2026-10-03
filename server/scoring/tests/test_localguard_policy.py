@@ -47,7 +47,6 @@ class LocalGuardPolicyTests(unittest.TestCase):
         result = self.registry.evaluate(event)
         self.assertEqual(event, original)
         self.assertEqual(result.signal, inspect_event(original))
-        self.assertEqual(result.annotations.overlap_tags, ())
         if result.annotations.entity_key is not None:
             self.assertLessEqual(len(result.annotations.entity_key), 128)
         return result
@@ -112,7 +111,7 @@ class LocalGuardPolicyTests(unittest.TestCase):
         result = self.analyse(sample(evidence=dll_evidence(source_pid=900)))
         self.assertTrue(result.annotations.entity_key.startswith("game_module:500:"))
         self.assert_note(result, "핸들 접근 신호가 아니다")
-        self.assert_note(result, "서로 덮어쓸 수 있다")
+        self.assert_note(result, "scoped state")
 
     def test_dll_scope_canonicalizes_case_slashes_and_dot_segments(self):
         paths = ["C:/Game/extra.dll", "c:\\GAME\\unused\\..\\EXTRA.DLL", "\\\\?\\C:\\Game\\extra.dll", "\\??\\C:\\Game\\extra.dll"]
@@ -214,7 +213,7 @@ class LocalGuardPolicyTests(unittest.TestCase):
             "pid": 500, "scope": "known_autopaint_bridge_module_inventory",
             "measurement_valid": True, "matched_rules": [],
         }))
-        self.assertIsNone(result.annotations.entity_key)
+        self.assertEqual(result.annotations.entity_key, "yara_pid:500:known_autopaint_bridge_module_inventory")
         self.assert_note(result, "전체 메모리 YARA 검사")
 
     def test_yara_loaded_module_is_limited_scope(self):

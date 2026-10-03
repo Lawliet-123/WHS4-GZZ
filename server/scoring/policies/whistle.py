@@ -53,7 +53,7 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
     meta = evidence.get("meta")
     meta = meta if isinstance(meta, Mapping) else {}
     notes = [
-        "현재 클라이언트 구현은 로컬에 0점도 기록하지만 중앙에는 양수만 전송한다.",
+        "PR #82 이후 NORMAL 0점 및 ERROR/OFFLINE 0점도 중앙에 전송한다. heartbeat는 검사 결과를 대신하지 않는다.",
         "새 이벤트가 없다는 사실을 정상 0점이나 검사 성공으로 해석하지 않는다. 유지·만료 기준은 B와 합의가 필요하다.",
         "후킹 흔적과 RPC 호출 위반은 다른 관측이다. 두 채널의 점수를 같은 사건 또는 독립 사건으로 단정하여 합산하지 않는다.",
         "overlap_tags는 B와 이름·적용 조건을 합의하기 전까지 비워 둔다. 후보 주석 자체로 중복을 제거하거나 감점하지 않는다.",
@@ -87,6 +87,10 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
         if "address" in evidence:
             notes.append("address/value는 설명을 포함한 평문일 수 있어 파싱으로 함수·주소별 사건 키를 만들지 않는다.")
     else:
+        if meta.get("hook_live") is False:
+            notes.append("후크 생존과 이미 기록된 위반의 유효성은 구분한다. hook_live=false인 양수는 evidence.status 기준으로 보존하며 생존 상태만으로 측정 불가로 바꾸지 않는다.")
+        if _nonnegative_int(evidence.get("window_id")) and _nonnegative_int(evidence.get("sample_id")):
+            notes.append("RPC 의미 중복 키는 session/player/module + evidence.window_id/sample_id다. 마지막 RPC 전용 검사 sample_id=0도 유효하며 Shared event_id 재전송 중복과 별개다.")
         notes.append("whistle_rpc의 점수는 해당 관측 범위에 나타난 위반 코드별 점수를 합쳐 상한을 적용한 값이다. 같은 코드의 호출 횟수를 다시 곱하지 않는다.")
         if meta.get("mode") == "window":
             notes.append("window 모드는 새 로그 구간 관측이다. raw_score는 사건별 증분 계약이 아니며 최신 한 건만으로 과거 구간 이력을 복원할 수 없다.")

@@ -37,7 +37,6 @@ class HideAnywherePolicyTests(unittest.TestCase):
         self.assertEqual(event, original)
         self.assertEqual(result.signal, inspect_event(original))
         self.assertIsNone(result.annotations.entity_key)
-        self.assertEqual(result.annotations.overlap_tags, ())
         return result
 
     def assert_note(self, result, fragment):
@@ -47,7 +46,7 @@ class HideAnywherePolicyTests(unittest.TestCase):
         result = self.analyse(sample())
         self.assertEqual(result.signal.raw_score, 3)
         self.assert_note(result, "실제 숨기 성공")
-        self.assert_note(result, "3회 연속 확인 증명이 아니다")
+        self.assert_note(result, "3회 연속 확인 증거로 해석하지 않는다")
 
     def test_snapshot_repeated_result_is_not_new_event_accumulation(self):
         event = sample()
@@ -61,32 +60,33 @@ class HideAnywherePolicyTests(unittest.TestCase):
             result = self.analyse(event)
             self.assertEqual(result.signal.state, "MEASUREMENT_UNAVAILABLE")
             self.assertEqual(result.signal.raw_score, 3)
-            self.assert_note(result, "유효 관측을 복구하지 않는다")
+            self.assert_note(result, "유효 관측으로 승격")
+            self.assertEqual(result.annotations.overlap_tags, ())
 
     def test_validity_unspecified_never_assumed_fresh(self):
         result = self.analyse(sample())
         self.assert_note(result, "측정 유효성이 명시되지 않았다")
-        self.assert_note(result, "이전 성공 값을 유지할 수 있다")
+        self.assert_note(result, "이전 값이 남았을 수도 있다")
 
     def test_explicit_validity_is_report_not_independent_recheck(self):
         event = sample()
         event["evidence"]["measurement_valid"] = True
         result = self.analyse(event)
-        self.assert_note(result, "생산자의 명시적 보고")
+        self.assert_note(result, "생산자의 유효성 보고")
         self.assertFalse(any("측정 유효성이 명시되지 않았다" in note for note in result.annotations.notes))
 
     def test_zero_flags_do_not_prove_successful_read(self):
         result = self.analyse(sample(score=0, reasons=[], evidence={
             "hide_value_pattern": 0, "injected_module": 0, "viewport_hook": 0,
         }))
-        self.assert_note(result, "성공한 최신 메모리 검사")
+        self.assert_note(result, "게임 전체의 정상 보장은 아니다")
 
     def test_auxiliary_module_and_viewport_are_not_specific_cheat_behavior(self):
         result = self.analyse(sample(score=2, reasons=["Injected Module Loaded", "Viewport VTable Outside Main Image"], evidence={
             "hide_value_pattern": 0, "injected_module": 1, "viewport_hook": 1,
         }))
         self.assert_note(result, "파일 해시/서명")
-        self.assert_note(result, "특정 ESP 사용과 구분")
+        self.assert_note(result, "특정 ESP 사용을 단정하지 않는다")
         self.assertEqual(result.signal.raw_score, 2)
 
     def test_pattern_wins_without_readding_auxiliary_points(self):
@@ -106,7 +106,7 @@ class HideAnywherePolicyTests(unittest.TestCase):
     def test_historical_pattern_score_not_rewritten_to_v9_score(self):
         result = self.analyse(sample(score=1))
         self.assertEqual(result.signal.raw_score, 1)
-        self.assert_note(result, "구버전/계약 차이")
+        self.assert_note(result, "생산자/버전 차이")
 
     def test_out_of_range_score_preserved(self):
         result = self.analyse(sample(score=4))
@@ -115,11 +115,11 @@ class HideAnywherePolicyTests(unittest.TestCase):
 
     def test_inconsistent_reason_and_flags_not_repaired(self):
         result = self.analyse(sample(reasons=["Injected Module Loaded"]))
-        self.assert_note(result, "플래그와 알려진 reason 목록")
+        self.assert_note(result, "플래그와 알려진 reason 조합")
 
     def test_unknown_or_absent_reason_not_dynamic_tag(self):
         self.assert_note(self.analyse(sample(reasons=["arbitrary future reason"])), "미분류 reason")
-        self.assert_note(self.analyse(sample(reasons=[])), "양수 점수에 reason이 없다")
+        self.assert_note(self.analyse(sample(reasons=[])), "양수에 reason 코드가 없다")
 
     def test_partial_measurement_not_full_clean(self):
         event = sample()
@@ -142,23 +142,45 @@ class HideAnywherePolicyTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.registry.evaluate(event)
 
-    def test_real_v9_producer_immediate_match_and_rule_confirmation_are_different(self):
-        path = REPO_ROOT / "client/detectors/Hide_anywhere_detector/mecha_detector_v9.py"
+    def test_current_producer_requires_three_consecutive_samples_and_resets_on_failure(self):
+        path = REPO_ROOT / "client/detectors/mecha_detector_shared/mecha_detector_v9.py"
         spec = importlib.util.spec_from_file_location("_hide_v9_fixture", path)
         producer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(producer)
         rule = producer.Rule(required=3)
         values = dict(producer.EXPECTED)
-        self.assertFalse(rule.evaluate("pawn", values))
-        event = producer.make_common_event("fixture_hide", "fixture_player", "hide_anywhere", 1000, values)
-        self.assertEqual(event["raw_score"], 3)
-        self.assert_note(self.analyse(event), "3회 연속 확인 증명이 아니다")
-        for values, score in (({}, 0), ({}, 1), ({}, 2)):
-            event = producer.make_common_event("fixture_hide", "fixture_player", "hide_anywhere", 1000,
-                                               values, injected_module=score > 0, viewport_hook=score > 1)
-            self.assertEqual(self.analyse(event).signal.raw_score, score)
+        def emit(observed, identity="pawn", injected=False, viewport=False):
+            return producer.make_common_event("fixture_hide", "fixture_player", "hide_anywhere", 1000,
+                observed, injected_module=injected, viewport_hook=viewport, rule=rule, identity=identity)
+        events = [emit(values) for _ in range(4)]
+        self.assertEqual([event["raw_score"] for event in events], [0, 0, 3, 3])
+        self.assertEqual(self.analyse(events[0]).annotations.overlap_tags, ())
+        self.assertEqual(self.analyse(events[2]).annotations.overlap_tags, ("hide_anywhere_value_tamper",))
+        failed = emit({})
+        self.assertEqual(self.analyse(failed).signal.state, "MEASUREMENT_UNAVAILABLE")
+        self.assertEqual(self.analyse(failed).annotations.overlap_tags, ())
+        self.assertEqual(emit(values)["evidence"]["consecutive_matches"], 1)
+        self.assertEqual(emit(values, "different_pawn")["evidence"]["consecutive_matches"], 1)
+        pending = emit(values, "different_pawn", injected=True, viewport=True)
+        self.assertEqual(pending["raw_score"], 2)
+        self.assertEqual(self.analyse(pending).annotations.overlap_tags, ("hide_anywhere_injection",))
+        partial = producer.make_common_event("fixture_hide", "fixture_player", "hide_anywhere", 1000,
+            values, rule=rule, identity="different_pawn")
+        self.assertEqual(partial["raw_score"], 3)
+        self.assertEqual(partial["evidence"]["observation_status"], "unavailable")
+        self.assertEqual(self.analyse(partial).annotations.overlap_tags, ("hide_anywhere_value_tamper",))
 
-    def test_current_bridge_event_id_still_fails_shared_contract_not_policy_fixed(self):
+    def test_confirmation_cannot_be_invented_from_score_or_pid(self):
+        evidence = {"hide_value_pattern": 1, "hide_value_confirmed": 1, "injected_module": 0,
+                    "viewport_hook": 0, "consecutive_matches": 3, "required_matches": 3,
+                    "measurement_valid": True}
+        for changes in ({"consecutive_matches": 2}, {"required_matches": True}, {"hide_value_pattern": 0}):
+            event = sample(evidence=dict(evidence, **changes), reasons=["Hide Anywhere Value Pattern Confirmed (3 Consecutive Samples)"])
+            self.assertEqual(self.analyse(event).annotations.overlap_tags, ())
+        self.assertEqual(self.analyse(sample(evidence=evidence, reasons=[])).annotations.overlap_tags, ())
+        self.assertEqual(self.analyse(sample()).annotations.overlap_tags, ())
+
+    def test_legacy_custom_event_id_is_still_rejected_by_shared(self):
         with self.assertRaises(ValidationError):
             validate_event_id("a" * 32 + ":1")
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from ..policy import SignalPreview
 from .contract import PolicyAnnotations
+from .overlap import localguard_tags
 
 
 SUPPORTED_MODULES = (
@@ -121,7 +122,7 @@ def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
     if submodule == "module_integrity":
         notes.append("module_integrity는 PR #78의 DLL 추가·매핑 변경·초기 기준선 감사 채널이다. 핸들 접근 신호가 아니다.")
         notes.append("후속 NORMAL 0점은 새 의심 변화가 없다는 뜻이다. 이전 DLL의 제거·무해함 또는 모든 과거 변화의 해소를 뜻하지 않는다.")
-        notes.append("현재 module-only 최신 상태는 이 하위 채널과 핸들 관측을 서로 덮어쓸 수 있다. 저장 분리·변화 이력은 B와 별도 합의한다.")
+        notes.append("B의 external_access scoped state는 두 하위 채널을 분리한다. NORMAL 0점은 해당 채널만 갱신하며 module 대표 상태는 파생된다.")
         if event["raw_score"] > 3:
             notes.append("DLL 변화 채널의 조사 상한은 3점이다. external_access 공통 상한 10만으로 이 하위 채널의 범위를 검증할 수 없다.")
         change = evidence.get("change_type")
@@ -173,7 +174,8 @@ def _yara(event: Mapping[str, Any], notes: list[str]) -> str | None:
     if event["raw_score"] > 0 and (not isinstance(matched, list) or not matched):
         notes.append("양수 YARA 결과의 matched_rules 목록이 없다. 자유 reasons에서 규칙/대상을 복원하지 않는다.")
         return None
-    if event["raw_score"] > 0 and isinstance(scope, str) and scope in _YARA_SCOPES and _valid_pid(evidence.get("pid")):
+    if (isinstance(scope, str) and scope in _YARA_SCOPES and _valid_pid(evidence.get("pid"))
+            and (event["raw_score"] > 0 or evidence.get("measurement_valid") is True)):
         notes.append("yara_pid 키는 PID+검사 범위다. 규칙별 사건 ID나 계정이 아니며 PID 재사용/여러 모듈 관측에 유의한다.")
         return f"yara_pid:{evidence['pid']}:{scope}"
     return None
@@ -198,7 +200,7 @@ def _memory(event: Mapping[str, Any], notes: list[str]) -> str | None:
     meta = evidence.get("meta")
     meta = meta if isinstance(meta, Mapping) else {}
     reasons = set(event["reasons"])
-    notes.append("이 채널은 관측 시점/검사 구간의 평가다. 반복 양수는 독립 사건의 개수가 아니며 중앙에는 양수만 전송한다.")
+    notes.append("PR #82 이후 이 채널은 정상 0점 및 ERROR/OFFLINE도 중앙에 전송한다. 반복 양수는 독립 사건 수가 아닌 상태 snapshot이다.")
     notes.append("NORMAL 상태의 약한 양수는 내부 등급 임계값 아래의 근거일 수 있다. NORMAL이라고 원점수를 0으로 바꾸지 않는다.")
     if meta.get("failed_checks") or meta.get("cdo_unreadable") or meta.get("no_live_instance"):
         notes.append("meta에 실패 검사/CDO 읽기 실패/미관측 인스턴스가 보고되었다. 남은 유효 근거를 보존하되 전체 정상으로 해석하지 않는다.")
@@ -252,7 +254,7 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
         raise ValueError("baseline module does not match the event")
     notes = [
         "이 정책은 원점수·상태를 보존하며 합산·가중치·최종 판정·자동 초기화를 수행하지 않는다.",
-        "overlap_tags는 B와 이름·적용 조건을 합의하기 전까지 비워 둔다. 같은 PID/경로만으로 중복 사건을 확정하지 않는다.",
+        "overlap_tags는 검토된 reason/evidence가 대응할 때만 후보로 반환한다. 같은 PID 또는 양수 점수만으로 중복 사건을 확정하지 않는다.",
     ]
     if baseline.state == "MEASUREMENT_UNAVAILABLE":
         notes.append("ERROR/OFFLINE/measurement_valid=false는 정상 0점이나 과거 위험 해소가 아니다. 남은 근거로 entity/tag를 만들지 않는다.")
@@ -272,4 +274,7 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
         key = _executable_hash(event, notes)
     else:
         key = _memory(event, notes)
-    return PolicyAnnotations(entity_key=key, notes=tuple(notes))
+    tags = localguard_tags(event) if baseline.state != "OUT_OF_AUDITED_RANGE" else ()
+    if tags:
+        notes.append("공통 tag는 동일 원인 가능성만 나타낸다. 실제 시간·대상·원인 대응 확인 없이 자동 감산하지 않는다.")
+    return PolicyAnnotations(entity_key=key, overlap_tags=tags, notes=tuple(notes))
