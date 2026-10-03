@@ -27,6 +27,7 @@ def observation(
     session_id: str = "s",
     player_id: str = "p",
     sequence: int = 1,
+    timestamp_basis: str | None = None,
 ) -> CorrelationObservation:
     return CorrelationObservation(
         event_id=str(uuid.uuid4()),
@@ -39,6 +40,7 @@ def observation(
         entity_key=entity_key,
         overlap_tags=tags,
         reasons=(),
+        timestamp_basis=timestamp_basis,
     )
 
 
@@ -60,6 +62,29 @@ class CorrelationCandidateTests(unittest.TestCase):
         self.assertEqual(result[0].modules, ("noclip", "noclip_runtime"))
         self.assertEqual(result[0].overlap_tags, ("noclip_behavior",))
         self.assertEqual(result[0].time_distance_ms, 300)
+
+    def test_local_session_start_is_not_compared_with_other_detector_clock(self):
+        hide = observation(
+            "hide_anywhere",
+            timestamp_ms=1000,
+            tags=("hide_anywhere_injection",),
+            sequence=1,
+            timestamp_basis="local_session_start",
+        )
+        injection = observation(
+            "injection",
+            timestamp_ms=1100,
+            tags=("hide_anywhere_injection",),
+            sequence=2,
+        )
+
+        self.assertEqual(
+            find_correlation_candidates(
+                [hide, injection],
+                max_time_distance_ms=5000,
+            ),
+            [],
+        )
 
     def test_different_player_tag_or_far_time_does_not_correlate(self):
         base = observation("noclip", timestamp_ms=1000, tags=("same",), sequence=1)
@@ -131,6 +156,32 @@ class CorrelationCandidateTests(unittest.TestCase):
                 sequence=1,
                 evaluation=wrong,
             )
+
+    def test_observation_builder_preserves_timestamp_basis(self):
+        event = {
+            "session_id": "s",
+            "player_id": "p",
+            "module": "hide_anywhere",
+            "timestamp_ms": 1000,
+            "evidence": {"timestamp_basis": "local_session_start"},
+            "reasons": [],
+            "raw_score": 3,
+        }
+
+        result = observation_from_evaluation(
+            event,
+            event_id=str(uuid.uuid4()),
+            sequence=1,
+            evaluation=evaluation(
+                "hide_anywhere",
+                ("hide_anywhere_injection",),
+            ),
+        )
+
+        self.assertEqual(
+            result.timestamp_basis,
+            "local_session_start",
+        )
 
     @patch("server.scoring.main.evaluate_registered_policy")
     @patch("server.scoring.main.get_player_snapshot")

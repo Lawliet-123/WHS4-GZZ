@@ -37,6 +37,9 @@ class CorrelationObservation:
     entity_key: str | None
     overlap_tags: tuple[str, ...]
     reasons: tuple[str, ...]
+    # 서로 다른 detector의 timestamp_ms를 비교할 수 있는지 판단하기 위한 기준.
+    # None은 기존 producer처럼 별도 기준을 명시하지 않은 경우다.
+    timestamp_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,10 @@ def observation_from_evaluation(
     if evaluation.signal.module != event["module"]:
         raise ValueError("policy evaluation module does not match event module")
 
+    timestamp_basis = event["evidence"].get("timestamp_basis")
+    if not isinstance(timestamp_basis, str) or not timestamp_basis.strip():
+        timestamp_basis = None
+
     return CorrelationObservation(
         event_id=event_id,
         sequence=sequence,
@@ -84,6 +91,7 @@ def observation_from_evaluation(
         entity_key=evaluation.annotations.entity_key,
         overlap_tags=evaluation.annotations.overlap_tags,
         reasons=tuple(event["reasons"]),
+        timestamp_basis=timestamp_basis,
     )
 
 
@@ -127,6 +135,18 @@ def find_correlation_candidates(
 
             shared_tags = tuple(sorted(set(left.overlap_tags) & set(right.overlap_tags)))
             if not shared_tags:
+                continue
+
+            # Hide Anywhere는 현재 detector 자체 시작 시각을 timestamp_ms 원점으로 쓴다.
+            # launcher/session 공통 원점의 다른 detector와 숫자를 직접 비교하면
+            # 실제 동시 사건도 멀리 떨어진 것으로 오판할 수 있다.
+            #
+            # 공통 timebase 계약이 생기기 전까지는 local_session_start가 포함된
+            # cross-module pair를 overlap 후보로 만들지 않는다.
+            if (
+                left.timestamp_basis == "local_session_start"
+                or right.timestamp_basis == "local_session_start"
+            ):
                 continue
 
             distance = abs(left.timestamp_ms - right.timestamp_ms)

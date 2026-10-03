@@ -145,7 +145,7 @@ class ASenderReceiverE2ETests(unittest.TestCase):
         self.assertEqual(inspect_event(events[3]).state, "MEASUREMENT_UNAVAILABLE")
         self.assertEqual(self.store.get_module_state("e2e_session", "player_1", "hide_anywhere").evidence["status"], "ERROR")
 
-    def test_current_hide_and_captured_localguard_evidence_make_only_matching_candidates(self):
+    def test_current_hide_overlap_tags_are_kept_but_mixed_clock_candidates_are_blocked(self):
         producer = load("_hide_overlap_e2e", "client/detectors/mecha_detector_shared/mecha_detector_v9.py")
         rule = producer.Rule(required=3)
         for _ in range(3):
@@ -160,13 +160,47 @@ class ASenderReceiverE2ETests(unittest.TestCase):
                 payload.update(session_id="e2e_session", player_id="player_1")
                 self.assertEqual(self.post(payload, fixtures.uid()).status_code, 200)
         snapshot = fixtures.scoring_main.get_player_policy_snapshot("e2e_session", "player_1", max_time_distance_ms=5000)
-        candidates = {frozenset(row.modules): row.overlap_tags for row in snapshot.correlation_candidates}
-        self.assertEqual(candidates, {
-            frozenset(("hide_anywhere", "injection")): ("hide_anywhere_injection",),
-            frozenset(("hide_anywhere", "value_tamper")): ("hide_anywhere_value_tamper",),
-        })
-        self.assertEqual({row.state.module: row.state.raw_score for row in snapshot.modules},
-                         {"hide_anywhere": 3, "injection": 40, "value_tamper": 100})
+        # Hide는 현재 detector 자체 시작 시각(local_session_start)을 사용한다.
+        # LocalGuard 캡처와 timestamp_ms 원점이 같다고 보장할 수 없으므로
+        # overlap tag 자체는 보존하되 cross-module correlation candidate는 만들지 않는다.
+        self.assertEqual(snapshot.correlation_candidates, ())
+
+        tags = {
+            row.state.module: row.evaluation.annotations.overlap_tags
+            for row in snapshot.modules
+        }
+
+        self.assertIn(
+            "hide_anywhere_injection",
+            tags["hide_anywhere"],
+        )
+        self.assertIn(
+            "hide_anywhere_injection",
+            tags["injection"],
+        )
+        self.assertIn(
+            "hide_anywhere_value_tamper",
+            tags["hide_anywhere"],
+        )
+        self.assertIn(
+            "hide_anywhere_value_tamper",
+            tags["value_tamper"],
+        )
+
+        hide_state = next(
+            row.state
+            for row in snapshot.modules
+            if row.state.module == "hide_anywhere"
+        )
+        self.assertEqual(
+            hide_state.evidence["timestamp_basis"],
+            "local_session_start",
+        )
+
+        self.assertEqual(
+            {row.state.module: row.state.raw_score for row in snapshot.modules},
+            {"hide_anywhere": 3, "injection": 40, "value_tamper": 100},
+        )
 
 
 if __name__ == "__main__":

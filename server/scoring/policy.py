@@ -49,7 +49,8 @@ class SignalPreview:
 # - positive_only: 양수 탐지 시 전송. 새 기록이 없다고 정상인 것은 아니다.
 # - event_delta: 새로 발생한 사건의 점수. 최근 1개만으로 누적 사건을 알 수 없다.
 # - window_history: 검사 window 결과. 최신 0점만으로 직전 양수 이력을 즉시 지우지 않는다.
-# - per_entity_positive_only: PID 등 원인 엔터티별로 구분해야 한다.
+# - per_entity_positive_only: PID 등 원인 엔터티별 양수 탐지만 전송한다.
+# - per_entity_snapshot: PID/scope 등 엔터티별 정상 0과 양수 상태를 모두 전송한다.
 # - pending: 규격이 아직 없는 모듈.
 _PROFILE_ITEMS = (
     DetectorProfile("noclip", "client/detectors/noclip/main.py", "snapshot", 5,
@@ -66,8 +67,8 @@ _PROFILE_ITEMS = (
                     False, "Each event can refer to a different source process/handle."),
     DetectorProfile("localguard_executable_hash", "client/LocalGuard/input_signature/hash_monitor.py", "snapshot", 1,
                     False, "PR #84 sends measured NORMAL 0 as well as positives; presence of exact known EXE hash is not proof of activation."),
-    DetectorProfile("localguard_yara", "client/LocalGuard/input_signature/yara_scanner.py", "per_entity_positive_only", 3,
-                    False, "PR #84 sender includes measured zeros. Conservative per-entity profile retained pending PID/scope state integration; do not treat one target's zero as whole-module recovery. Current default metadata max=3; custom rules require review."),
+    DetectorProfile("localguard_yara", "client/LocalGuard/input_signature/yara_scanner.py", "per_entity_snapshot", 3,
+                    False, "PR #84 sends measured zeros and positives per PID/scope. B scoped state keeps targets independent, so one target's NORMAL 0 does not clear another target's positive state. Current default metadata max=3; custom rules require review."),
     *(
         DetectorProfile(name, "client/LocalGuard/memory_integrity/run_session.py", "snapshot", 100,
                         False, "PR #82 sends NORMAL 0 and explicit ERROR/OFFLINE 0; latest successful sample is a state snapshot.")
@@ -131,7 +132,9 @@ def inspect_event(event: Mapping[str, Any]) -> SignalPreview:
     elif profile.emission == "window_history":
         issues.append("requires window-scoped history; latest NORMAL 0 does not immediately erase prior positive windows")
     elif profile.emission == "per_entity_positive_only":
-        issues.append("multiple source entities can be overwritten by latest module-only state")
+        issues.append("multiple source entities require scoped state; silence is not entity recovery")
+    elif profile.emission == "per_entity_snapshot":
+        issues.append("requires scoped state so one entity's NORMAL 0 does not clear another entity")
     elif profile.emission == "positive_only":
         issues.append("no 0-point heartbeat in central feed; last detection is not current health")
 

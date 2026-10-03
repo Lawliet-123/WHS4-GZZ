@@ -12,6 +12,14 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from .aggregate import AggregateEvidence, build_aggregate_evidence
+from .history_summary import (
+    GodmodeHistorySummary,
+    summarize_godmode_history,
+)
+from .fusion import FusionPlan, build_fusion_plan
+from .aggregate_risk import AggregateRisk, build_aggregate_risk
+from .final_verdict import FinalVerdict, build_final_verdict
 from .correlation import (
     CorrelationCandidate,
     find_correlation_candidates,
@@ -126,6 +134,105 @@ def get_player_risk_input(
         max_time_distance_ms=max_time_distance_ms,
     )
     return build_player_risk_input(snapshot)
+
+
+def get_player_aggregate_evidence(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> AggregateEvidence:
+    """현재 플레이어의 RiskInput을 Aggregate Risk 계산 직전 증거로 분류한다.
+
+    아직 가중치, 합산 점수, 중복 감산, Final Verdict는 계산하지 않는다.
+    event/window history가 필요한 신호는 DEFERRED로 남긴다.
+    """
+    risk_input = get_player_risk_input(
+        session_id,
+        player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+
+    godmode_history = None
+    if "godmode" in risk_input.event_history_modules:
+        godmode_history = get_godmode_history_summary(
+            session_id,
+            player_id,
+        )
+
+    return build_aggregate_evidence(
+        risk_input,
+        godmode_history=godmode_history,
+    )
+
+
+def get_player_fusion_plan(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> FusionPlan:
+    """현재 AggregateEvidence를 최종 risk 계산 직전 fusion 계획으로 변환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint가 아니다.
+
+    overlap 후보는 cluster로 구조화하지만,
+    여기서는 아직 점수 합산/감산, weight, 확률, Final Verdict를 계산하지 않는다.
+    """
+    return build_fusion_plan(
+        get_player_aggregate_evidence(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_aggregate_risk(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> AggregateRisk:
+    """현재 플레이어의 overlap 보정 Aggregate Risk 근거를 반환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint가 아니다.
+
+    현재 버전은 임의 가중치/확률을 만들지 않고,
+    independent evidence와 overlap cluster를 evidence unit 단위로 집계한다.
+    """
+    return build_aggregate_risk(
+        get_player_fusion_plan(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_final_verdict(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> FinalVerdict:
+    """현재 플레이어의 보수적 Final Verdict를 반환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint는 C 영역이다.
+
+    calibrated ACTIVE evidence가 있으면 SUSPICIOUS,
+    positive evidence 없이 평가가 불완전하면 INCONCLUSIVE,
+    그 외에는 NO_ACTIVE_EVIDENCE를 반환한다.
+
+    이 함수는 CHEAT 확정이나 치트 확률을 만들지 않는다.
+    """
+    return build_final_verdict(
+        get_player_aggregate_risk(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
 
 
 def get_player_correlation_candidates(
@@ -278,6 +385,50 @@ def get_event_delta_history(
     return _get_store().get_event_delta_history(
         session_id, player_id, module=module,
         after_sequence=after_sequence, limit=limit,
+    )
+
+
+def get_godmode_history_summary(
+    session_id: str,
+    player_id: str,
+    *,
+    batch_size: int = 1000,
+) -> GodmodeHistorySummary:
+    """Godmode event_delta 전체 이력을 합산 없이 요약한다.
+
+    저장소 조회 limit 때문에 과거 사건이 잘리지 않도록 sequence cursor로
+    끝까지 페이지를 읽는다.
+
+    이 함수는 TTL, Aggregate Risk, Final Verdict를 계산하지 않는다.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    rows: list[DeltaEvent] = []
+    cursor = 0
+
+    while True:
+        batch = get_event_delta_history(
+            session_id,
+            player_id,
+            module="godmode",
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            break
+
+        rows.extend(batch)
+        cursor = batch[-1].sequence
+
+        if len(batch) < batch_size:
+            break
+
+    return summarize_godmode_history(
+        rows,
+        session_id=session_id,
+        player_id=player_id,
     )
 
 
