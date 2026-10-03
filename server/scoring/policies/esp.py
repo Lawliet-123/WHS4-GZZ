@@ -1,4 +1,4 @@
-"""PR #79 ESP의 개별 근거 스트림을 해석함. 공통 pending 프로필은 변경하지 않음."""
+"""PR #79 ESP의 개별 근거 스트림을 해석하는 읽기 전용 정책."""
 
 from __future__ import annotations
 
@@ -93,14 +93,22 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
         "overlap_tags는 B와 공통 이름·조건을 합의하기 전까지 비워 둔다. 동일 PID/경로·유사 범주만으로 LocalGuard와 중복을 확정하지 않는다.",
         "sensor_event_id와 Shared 전송 event_id는 다른 식별자다. 중앙 재전송 중복은 Shared ID를 사용하며 이 정책에서 ID를 다시 만들지 않는다.",
     ]
-    if baseline.state in ("AWAITING_DETECTOR", "UNKNOWN_MODULE"):
-        notes.append("기존 공통 ESP 프로필은 pending/미검토 상태다. PR #79 해석 주석을 추가해도 baseline을 정상·보정 완료로 바꾸지 않으며 B의 프로필 합의가 필요하다.")
+    if baseline.state == "POLICY_NOT_CALIBRATED":
+        notes.append(
+            "공통 ESP 프로필은 positive_only 근거 스트림으로 검토됐지만 "
+            "최종 위험도 보정·가중치·판정 기준은 아직 확정되지 않았다."
+        )
+    elif baseline.state in ("AWAITING_DETECTOR", "UNKNOWN_MODULE"):
+        notes.append(
+            "공통 ESP 프로필이 아직 미검토 상태다. 이 정책은 baseline을 "
+            "정상·보정 완료 상태로 바꾸지 않는다."
+        )
 
     evidence = event["evidence"]
-    # pending 프로필은 inspect_event에서 실패 상태 검사보다 먼저 반환될 수 있다.
-    # annotations는 바꾸되 B의 SignalPreview 자체는 읽기 전용 계약대로 보존한다.
+    # 명시적 실패 상태는 reviewed profile에서도 정상 근거보다 우선한다.
+    # annotations는 SignalPreview를 변경하지 않고 실패 의미만 설명한다.
     if baseline.state == "MEASUREMENT_UNAVAILABLE" or evidence.get("status") in ("ERROR", "OFFLINE") or evidence.get("measurement_valid") is False:
-        notes.append("명시적 실패/오프라인/측정 무효다. 공통 pending 상태가 우선 반환되어도 실패 보고를 무시하지 않고 entity/tag를 만들지 않는다.")
+        notes.append("명시적 실패/오프라인/측정 무효다. 정상 근거로 해석하지 않고 entity/tag를 만들지 않는다.")
         return PolicyAnnotations(notes=tuple(notes))
     if evidence.get("status") == "WARNING" or evidence.get("coverage_complete") is False:
         notes.append("부분 검사다. 확보된 근거를 보존하되 전체 정상으로 확대하지 않는다.")

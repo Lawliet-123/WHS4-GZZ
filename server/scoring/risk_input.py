@@ -1,35 +1,39 @@
-"""최종 risk 계산 전에 Policy 결과를 안전한 공통 입력으로 정리한다.
+"""최종 risk 계산 전에 Policy 결과와 Replay calibration을 안전하게 정리한다.
 
-이 계층은 서로 다른 detector 점수를 합산하거나 가중치를 부여하지 않는다.
-측정 실패, 미확정 정책, 사건 이력이 필요한 모듈처럼 후속 계산에서 반드시
-구분해야 할 상태를 명시적으로 표시하는 역할만 한다.
+이 계층은 아직 detector 가중치, 점수 합산, 최종 verdict를 계산하지 않는다.
+
+역할:
+- Policy가 보존한 detector별 raw 의미를 유지한다.
+- ERROR/OFFLINE을 정상 0점과 구분한다.
+- event_delta/window_history/entity-scope 제약을 보존한다.
+- Replay calibration 설정을 각 signal에 연결한다.
+- calibration이 완료된 모듈과 pending 모듈을 명확히 구분한다.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .calibration import ModuleCalibration, get_calibration
 from .correlation import CorrelationCandidate
 from .player_snapshot import PlayerPolicySnapshot
 
 
-# 실제 측정값을 정상 표본처럼 사용하면 안 되는 상태다.
 _MEASUREMENT_UNAVAILABLE_STATES = frozenset({
     "MEASUREMENT_UNAVAILABLE",
 })
 
-# 최종 risk 규칙에 바로 넣기 전에 정책/구현 확인이 더 필요한 상태다.
-_UNRESOLVED_POLICY_STATES = frozenset({
+# calibration이 있어도 그대로 risk에 넣으면 안 되는 Policy 상태.
+_HARD_UNRESOLVED_POLICY_STATES = frozenset({
     "UNKNOWN_MODULE",
     "AWAITING_DETECTOR",
-    "POLICY_NOT_CALIBRATED",
     "OUT_OF_AUDITED_RANGE",
 })
 
 
 @dataclass(frozen=True)
 class RiskSignalInput:
-    """모듈 1개의 현재 Policy 결과를 risk 계산 전 입력으로 고정한 값."""
+    """모듈 1개의 Policy + calibration 결과."""
 
     module: str
     event_id: str
@@ -45,12 +49,21 @@ class RiskSignalInput:
     issues: tuple[str, ...]
     notes: tuple[str, ...]
 
+    # Replay calibration 계층.
+    #
+    # 기존 필드 뒤에 default를 두어 기존 호출부와의 호환성을 유지한다.
+    calibration_version: str | None = None
+    calibration_mode: str | None = None
+    calibration_threshold: float | None = None
+    threshold_met: bool | None = None
+
 
 @dataclass(frozen=True)
 class PlayerRiskInput:
-    """플레이어 1명의 최종 risk 계산 전 입력 묶음.
+    """플레이어 1명의 Aggregate Risk 계산 직전 입력.
 
-    이 자료형에는 weight, aggregate score, probability, verdict가 없다.
+    이 객체 자체에는 아직 weight, aggregate score, probability,
+    final verdict가 없다.
     """
 
     session_id: str
@@ -63,13 +76,69 @@ class PlayerRiskInput:
     correlation_candidates: tuple[CorrelationCandidate, ...]
 
 
-def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
-    """PlayerPolicySnapshot을 후속 risk 계산용 공통 입력으로 변환한다.
+def _is_unresolved(
+    policy_state: str,
+    calibration: ModuleCalibration | None,
+) -> bool:
+    """현재 signal이 Aggregate Risk 전에 추가 정책 결정이 필요한지 판단한다."""
 
-    snapshot 계열 raw_score는 그대로 보존하고 합산하지 않는다.
-    event_delta 계열은 최신 한 건만으로 계산하지 않도록 history 필요 표시를 남긴다.
-    ERROR/OFFLINE 등 측정 불가 상태의 0점도 정상 0점으로 바꾸지 않는다.
+    # 구현/측정 범위 자체가 신뢰되지 않는 상태는 calibration threshold로 덮지 않는다.
+    if policy_state in _HARD_UNRESOLVED_POLICY_STATES:
+        return True
+
+    # calibration config 자체에 없는 신규 detector.
+    if calibration is None:
+        return True
+
+    # 데이터 추가를 기다리는 공식 pending detector.
+    if calibration.mode == "pending":
+        return True
+
+    # threshold/event_threshold/advisory는 replay-v1에서 의미가 확정됐다.
+    #
+    # 따라서 기존 Policy 층의 POLICY_NOT_CALIBRATED 상태여도
+    # 이 calibration 계층에서는 unresolved로 남기지 않는다.
+    return False
+
+
+def _threshold_result(
+    *,
+    raw_score: float,
+    policy_state: str,
+    measurement_available: bool,
+    calibration: ModuleCalibration | None,
+) -> bool | None:
+    """현재 raw sample의 calibration threshold 충족 여부.
+
+    None:
+    - 측정 불가
+    - pending/advisory
+    - unknown calibration
+    - audited range 위반 등 Policy 단계에서 사용하면 안 되는 값
     """
+
+    if not measurement_available:
+        return None
+
+    if policy_state in _HARD_UNRESOLVED_POLICY_STATES:
+        return None
+
+    if calibration is None:
+        return None
+
+    return calibration.meets_threshold(raw_score)
+
+
+def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
+    """PlayerPolicySnapshot을 calibration이 연결된 risk 입력으로 변환한다.
+
+    snapshot raw_score는 합산하지 않는다.
+
+    event_delta/window_history는 history가 필요하다는 표시를 유지하며,
+    calibration threshold를 통과했다고 해서 최신 한 건만으로 최종 risk를
+    확정하지 않는다.
+    """
+
     signals: list[RiskSignalInput] = []
     unavailable: list[str] = []
     unresolved: list[str] = []
@@ -82,40 +151,77 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
         signal = evaluation.signal
         annotations = evaluation.annotations
 
-        # 저장된 module과 Policy가 해석한 module이 다르면 잘못 연결된 입력이다.
         if state.module != signal.module:
-            raise ValueError("module state and policy evaluation do not match")
+            raise ValueError(
+                "module state and policy evaluation do not match"
+            )
 
         measurement_available = (
             signal.state not in _MEASUREMENT_UNAVAILABLE_STATES
         )
-        requires_event_history = signal.emission == "event_delta"
-        requires_entity_scope = signal.emission == "per_entity_positive_only"
+
+        requires_event_history = signal.emission in (
+            "event_delta",
+            "window_history",
+        )
+
+        requires_entity_scope = (
+            signal.emission == "per_entity_positive_only"
+        )
+
+        calibration = get_calibration(signal.module)
+
+        threshold_met = _threshold_result(
+            raw_score=signal.raw_score,
+            policy_state=signal.state,
+            measurement_available=measurement_available,
+            calibration=calibration,
+        )
+
+        calibration_threshold = None
+        calibration_version = None
+        calibration_mode = None
+
+        if calibration is not None:
+            calibration_version = calibration.version
+            calibration_mode = calibration.mode
+
+            if calibration.threshold is not None:
+                calibration_threshold = float(calibration.threshold)
 
         if not measurement_available:
             unavailable.append(signal.module)
-        if signal.state in _UNRESOLVED_POLICY_STATES:
+
+        if _is_unresolved(signal.state, calibration):
             unresolved.append(signal.module)
+
         if requires_event_history:
             history_required.append(signal.module)
+
         if requires_entity_scope:
             entity_scoped.append(signal.module)
 
-        signals.append(RiskSignalInput(
-            module=signal.module,
-            event_id=state.event_id,
-            raw_score=signal.raw_score,
-            emission=signal.emission,
-            policy_state=signal.state,
-            raw_fraction_pct=signal.raw_fraction_pct,
-            measurement_available=measurement_available,
-            requires_event_history=requires_event_history,
-            requires_entity_scope=requires_entity_scope,
-            entity_key=annotations.entity_key,
-            overlap_tags=annotations.overlap_tags,
-            issues=signal.issues,
-            notes=annotations.notes,
-        ))
+        signals.append(
+            RiskSignalInput(
+                module=signal.module,
+                event_id=state.event_id,
+                raw_score=signal.raw_score,
+                emission=signal.emission,
+                policy_state=signal.state,
+                raw_fraction_pct=signal.raw_fraction_pct,
+                measurement_available=measurement_available,
+                requires_event_history=requires_event_history,
+                requires_entity_scope=requires_entity_scope,
+                entity_key=annotations.entity_key,
+                overlap_tags=annotations.overlap_tags,
+                issues=signal.issues,
+                notes=annotations.notes,
+                calibration_version=calibration_version,
+                calibration_mode=calibration_mode,
+                calibration_threshold=calibration_threshold,
+                threshold_met=threshold_met,
+            )
+        )
 
     return PlayerRiskInput(
         session_id=snapshot.session_id,

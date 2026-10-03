@@ -113,7 +113,7 @@ class WhistlePolicyTests(unittest.TestCase):
         }}))
         self.assert_note(result, "새 로그 구간 관측")
         self.assert_note(result, "raw_score는 사건별 증분 계약이 아니며")
-        self.assertEqual(result.signal.emission, "positive_only")
+        self.assertEqual(result.signal.emission, "window_history")
         self.assertEqual(result.signal.raw_score, 40)
         self.assertIsNone(result.annotations.entity_key)
 

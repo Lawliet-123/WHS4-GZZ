@@ -123,7 +123,10 @@ class RiskInputTests(unittest.TestCase):
 
         self.assertTrue(result.signals[0].requires_event_history)
         self.assertEqual(result.event_history_modules, ("godmode",))
-        self.assertEqual(result.unresolved_policy_modules, ("godmode",))
+        # replay-v1에서 Godmode event threshold=2가 확정됐으므로
+        # policy_state가 POLICY_NOT_CALIBRATED여도 calibration 계층에서는 unresolved가 아니다.
+        # 다만 event_delta이므로 event history 요구는 그대로 유지한다.
+        self.assertEqual(result.unresolved_policy_modules, ())
 
     def test_entity_scoped_positive_only_is_marked(self) -> None:
         snapshot = PlayerPolicySnapshot(
