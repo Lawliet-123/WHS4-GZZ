@@ -117,9 +117,21 @@ MODULES: List[Module] = [
     Module(
         name="self_defense",
         owner="4번 (성민)",
-        argv=[PY, "client/SelfDefense/main.py"],
+        # 성민님 #68 (watchdog 0.2.1, docs/LAUNCHER_HANDOFF.md). 등록명 self_defense 는
+        # 유지한다 — 이 이름으로 재시작 한도를 세고, 워치독이 자기 자신을 감시 목록에서 뺀다.
+        # 이벤트 module 값은 selfdefense(운영 상태, raw_score 0)다.
+        argv=[PY, "client/SelfDefense/watchdog/main.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--telemetry", "{telemetry}"],
+        mode=CONTINUOUS,
         needs_game=False,
-        note="워치독·안티디버깅·자체 무결성. 진입점은 이 경로로 확정(2026-09-29 성민님)",
+        # 워치독이 죽으면 런처가 되살린다. 실행마다 logs/<세션>/runs/<run_id>/ 를 새로
+        # 만들고 세션 시계(session-clock.json)는 이어 쓰므로 되살려도 기록이 안 지워진다.
+        restart=True,
+        # registry 잠금 + shared flush/shutdown 여유(성민님 요청).
+        stop_grace_s=30.0,
+        session_log_dir="client/SelfDefense/watchdog/logs",
+        note="워치독: registry 로 상주 모듈 생존 확인·복구, 운영 상태 보고",
     ),
     Module(
         name="kernel_watcher",
