@@ -95,6 +95,11 @@ import 해서 `-m` 으로 못 띄우는 스크립트(`hide_anywhere` 의 `mecha_
 `env={"PYTHONPATH": REPO}` 로 `shared` 를 찾게 한다. 등록하기 전에 그 명령을
 손으로 한 번 돌려보는 게 빠르다.
 
+**자기탐지 주의 (10/3).** `hide_anywhere` 는 세션 내내 게임을 읽기 핸들로 열어 둔다. `esp` 와
+같이 켜면 ESP 가 이 수집기를 `memory_read` 2점으로 약 7초마다 잡는다. ESP 가 등록부
+(`logs/anticheat_pids.json`)로 우리 프로세스를 빼지 않아서다. 고쳐지기 전까지 정상 세션은
+`--only` 로 둘 중 하나를 빼고 찍는다.
+
 ### 주기 실행 모듈이라면 `{t0}` 를 꼭 받아 주세요
 
 `ONESHOT` 은 실행할 때마다 새 프로세스다. 각자 자기 시작 시각을 기준으로

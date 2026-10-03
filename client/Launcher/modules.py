@@ -351,7 +351,11 @@ MODULES: List[Module] = [
         stop_grace_s=15.0,
         session_log_dir="client/detectors/mecha_detector_shared/logs",
         # --t0 는 아직 못 받는다. timestamp_ms 는 이 수집기 자체 시작 기준이다.
-        # manifest 라벨은 세션 이름이 normal_ 로 시작하면 NORMAL, 아니면 CHEAT 로 추정한다.
+        # manifest 라벨은 세션 이름이 normal_ 로 시작하면 NORMAL, 아니면 CHEAT 로 추정한다
+        # (기본 이름 ac_... 도 CHEAT 가 된다 — 검증 세션은 normal_/hide_anywhere_ 로 이름 짓기).
+        # 주의: 세션 내내 게임을 읽기 핸들로 열어 두므로, esp 와 같이 켜면 ESP 가 이 수집기를
+        # memory_read 2점으로 약 7초마다 잡는다(10/3 재현). ESP 가 등록부(anticheat_pids.json)를
+        # 안 읽는 문제(#79 리뷰 blocker)와 같다. 고쳐지기 전 정상 세션은 --only 로 둘 중 하나를 뺀다.
         note="Hide Anywhere 값 패턴·DLL 로드·뷰포트 vtable 관측 (1초마다, 0점 포함 전송)",
     ),
 ]

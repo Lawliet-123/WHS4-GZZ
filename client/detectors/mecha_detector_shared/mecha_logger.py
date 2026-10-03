@@ -825,6 +825,13 @@ def main():
             emit('fatal_error', message=str(exc))
             return 1
         finally:
+            # Already cleaning up (target exited or first Ctrl+Break). A later Ctrl+Break
+            # from the launcher must not interrupt the flush/shutdown below.
+            try:
+                import signal
+                signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+            except (AttributeError, ValueError, OSError):
+                pass
             if server:
                 server.close()
             if memory:

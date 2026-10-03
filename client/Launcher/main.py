@@ -54,9 +54,11 @@ PLAYER_FILE = os.path.join(HERE, "player_id.txt")
 # 이름 규칙은 **받는 쪽 중에서 제일 좁은 것**에 맞춘다. 런처가 통과시켜 놓고
 # 모듈 하나만 조용히 죽는 것보다, 시작할 때 다 같이 막히는 편이 낫다.
 #   player : shared 는 [A-Za-z0-9_.-]{1,128}, input_signature 는 1~100자
-#   session: input_signature 가 [A-Za-z0-9][A-Za-z0-9_-]{0,79} (점을 안 받는다)
+#   session: input_signature 가 [A-Za-z0-9][A-Za-z0-9_-]{0,79} (점을 안 받는다),
+#            hide_anywhere(mecha_logger) 는 60자에서 **잘라 쓴다** — 61자 이상이면
+#            그 모듈만 다른 세션으로 갈리고 같은 이름 재사용 검사도 비켜 간다(10/3 검토)
 PLAYER_RE = re.compile(r"[A-Za-z0-9_.\-]{1,64}\Z")
-SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,79}\Z")
+SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,59}\Z")
 
 
 def resolve_player_id(given):
@@ -220,7 +222,7 @@ def main(argv=None):
     session = a.session or ("ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
     if not SESSION_RE.match(session):
         ui.line(f"세션 이름 '{session}' 은 쓸 수 없습니다.")
-        ui.line("  영문·숫자로 시작하고, 영문·숫자·_·- 만 80자까지 (점은 안 됩니다).")
+        ui.line("  영문·숫자로 시작하고, 영문·숫자·_·- 만 60자까지 (점은 안 됩니다).")
         ui.line("  input_signature 가 이 이름으로 폴더를 만들기 때문에 여기서 막습니다.")
         return 2
 
