@@ -44,8 +44,9 @@ CONTINUOUS = "continuous"  # 자기가 알아서 계속 돈다
 class Module:
     name: str
     owner: str                      # 누구 담당인지. 안 붙을 때 물어볼 사람
-    # {session} {player} {t0} {window} {game_bin} {telemetry} 를 쓸 수 있다.
+    # {session} {player} {t0} {window} {game_bin} {telemetry} {game_pid} 를 쓸 수 있다.
     # {telemetry} 는 GZZ_TELEMETRY_URL 이 있으면 "managed", 없으면 "off".
+    # {game_pid} 는 게임 PID 라 needs_game=True 모듈에만 쓴다(그 전엔 정해지지 않는다).
     argv: List[str]
     mode: str = CONTINUOUS
     cwd: Optional[str] = None       # None 이면 레포 루트
@@ -73,6 +74,12 @@ class Module:
     # 안 된다 — 게임이 꺼진 뒤라 OFFLINE 이 나오고, 서버는 모듈마다 최신 상태만 남기므로
     # 세션 중 잡은 탐지를 그 OFFLINE 이 덮는다(10/3 검토에서 재현).
     final_run: Optional[List[str]] = None
+    # 중앙 전송 설정이 없을 때({telemetry} 가 off)만 argv 끝에 붙일 인자.
+    # 설정이 없으면 시작을 거부하는 모듈에 끄는 옵션(--local-only 등)을 넘길 때 쓴다.
+    telemetry_off_args: List[str] = field(default_factory=list)
+    # 이 모듈에만 줄 환경변수. PYTHONPATH 는 기존 값 앞에 붙인다(registry.spawn).
+    # 등록부에 같이 적어서 런처·워치독이 되살릴 때도 같은 값을 쓴다.
+    env: Dict[str, str] = field(default_factory=dict)
     note: str = ""
 
     @staticmethod
@@ -93,6 +100,8 @@ class Module:
             p = self._fill(path, ctx)
             if os.path.exists(p):
                 out += [opt, p]
+        if ctx.get("telemetry") == "off":
+            out += list(self.telemetry_off_args)
         return out
 
     def missing_optional(self, ctx: Dict[str, object]) -> List[str]:
@@ -320,6 +329,34 @@ MODULES: List[Module] = [
         session_log_dir="client/Launcher/logs/autopaint",
         # --t0 는 아직 못 받는다. timestamp_ms 는 이 탐지기 자체 시작 기준이다.
         note="AutoPaint DLL·런타임 + GZZPaintObserver 행동 판정",
+    ),
+    Module(
+        name="hide_anywhere",
+        owner="Hide Anywhere (찬준)",
+        # 같은 폴더의 mecha_detector_v9·server_bridge 를 최상위로 import 해서 -m 으로는
+        # 못 띄운다. 스크립트로 띄우고 shared 는 아래 env 의 PYTHONPATH 로 찾게 한다.
+        argv=[PY, "client/detectors/mecha_detector_shared/mecha_logger.py",
+              "--pid", "{game_pid}",
+              "--session-id", "{session}", "--player-id", "{player}",
+              # 기본값 logs 는 실행 위치 기준이라 그대로면 레포 루트에 생긴다.
+              "--out", "client/detectors/mecha_detector_shared/logs"],
+        # 서버 설정이 없으면 ServerBridge 가 시작을 거부하고 종료코드 1 로 끝난다.
+        telemetry_off_args=["--local-only"],
+        # README_v11: "런처에서 shared/ 부모 경로를 PYTHONPATH에 공급한다"
+        env={"PYTHONPATH": REPO},
+        mode=CONTINUOUS,
+        # <out>/<세션>/raw 를 exist_ok=False 로 만든다. 되살리면 바로 다시 죽는다.
+        restart=False,
+        # 끝날 때 shared flush(5초) + shutdown(5초). 기본 10초면 비우는 도중 끊길 수 있다.
+        stop_grace_s=15.0,
+        session_log_dir="client/detectors/mecha_detector_shared/logs",
+        # --t0 는 아직 못 받는다. timestamp_ms 는 이 수집기 자체 시작 기준이다.
+        # manifest 라벨은 세션 이름이 normal_ 로 시작하면 NORMAL, 아니면 CHEAT 로 추정한다
+        # (기본 이름 ac_... 도 CHEAT 가 된다 — 검증 세션은 normal_/hide_anywhere_ 로 이름 짓기).
+        # 주의: 세션 내내 게임을 읽기 핸들로 열어 두므로, esp 와 같이 켜면 ESP 가 이 수집기를
+        # memory_read 2점으로 약 7초마다 잡는다(10/3 재현). ESP 가 등록부(anticheat_pids.json)를
+        # 안 읽는 문제(#79 리뷰 blocker)와 같다. 고쳐지기 전 정상 세션은 --only 로 둘 중 하나를 뺀다.
+        note="Hide Anywhere 값 패턴·DLL 로드·뷰포트 vtable 관측 (1초마다, 0점 포함 전송)",
     ),
 ]
 
