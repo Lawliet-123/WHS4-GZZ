@@ -120,6 +120,8 @@ class Tests(unittest.TestCase):
         session = ReplaySession(self.root, 'hash_positive',
                                 data_origin='controlled_fixture',
                                 modules=['localguard_executable_hash'])
+        forwarded = []
+        session.event_sink = forwarded.append
         heartbeat = HeartbeatRecorder()
         monitor = HashMonitor(catalogue=self.catalogue,
                               game_process=SimpleNamespace(pid=1, check=lambda: None),
@@ -133,17 +135,51 @@ class Tests(unittest.TestCase):
             self.assertEqual(event['raw_score'], 1)
             self.assertEqual(event['module'], 'localguard_executable_hash')
             self.assertNotIn(str(self.image), json.dumps(event))
+            self.assertEqual(forwarded, [event])
             self.assertEqual(heartbeat.calls[-1][1], 'running')
         finally:
             monitor.raw.close()
             session.finish()
         self.assertTrue(validate(session.path)['valid_format'])
 
+    def test_hash_monitor_complete_no_hit_forwards_zero(self):
+        """완전한 불일치 검사는 0점 Event를 로컬과 송신 경계에 남긴다."""
+        self.image.write_bytes(b'X' * self.image.stat().st_size)
+        complete = self.scan()
+        self.assertTrue(complete['complete'])
+        self.assertEqual(complete['matches'], [])
+        session = ReplaySession(self.root, 'hash_zero',
+                                data_origin='controlled_fixture',
+                                modules=['localguard_executable_hash'])
+        forwarded = []
+        session.event_sink = forwarded.append
+        heartbeat = HeartbeatRecorder()
+        monitor = HashMonitor(catalogue=self.catalogue,
+                              game_process=SimpleNamespace(pid=1, check=lambda: None),
+                              session=session, heartbeat=heartbeat)
+        monitor.raw = io.StringIO()
+        try:
+            with patch('hash_monitor.process_session_id', return_value=1), \
+                 patch('hash_monitor.scan_running_executable_hashes', return_value=complete):
+                monitor._run_once()
+            self.assertEqual(len(forwarded), 1)
+            event = forwarded[0]
+            self.assertEqual(event['raw_score'], 0)
+            self.assertTrue(event['evidence']['coverage_complete'])
+            self.assertEqual(event['evidence']['matched_executables'], [])
+            self.assertEqual(json.loads((session.path/'events.jsonl').read_text(encoding='utf-8')),
+                             event)
+            self.assertEqual(heartbeat.calls[-1][1], 'running')
+        finally:
+            session.finish()
+
     def test_hash_monitor_partial_no_hit_emits_no_zero(self):
         """부분 검사에 일치가 없으면 정상 0점 Event를 내보내지 않는다."""
         session = ReplaySession(self.root, 'hash_partial',
                                 data_origin='controlled_fixture',
                                 modules=['localguard_executable_hash'])
+        forwarded = []
+        session.event_sink = forwarded.append
         heartbeat = HeartbeatRecorder()
         monitor = HashMonitor(catalogue=self.catalogue,
                               game_process=SimpleNamespace(pid=1, check=lambda: None),
@@ -155,6 +191,7 @@ class Tests(unittest.TestCase):
                  patch('hash_monitor.scan_running_executable_hashes', return_value=partial):
                 monitor._run_once()
             self.assertEqual(session.counts, {})
+            self.assertEqual(forwarded, [])
             self.assertEqual(heartbeat.calls[-1][1], 'degraded')
             self.assertFalse(json.loads(monitor.raw.getvalue())['score_evaluated'])
         finally:

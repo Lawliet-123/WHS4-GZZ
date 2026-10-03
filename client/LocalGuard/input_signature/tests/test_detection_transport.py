@@ -30,7 +30,8 @@ class DetectionTransportTests(unittest.TestCase):
         """테스트마다 덮어쓰기 위험이 없는 임시 세션을 만든다."""
         self.temp = tempfile.TemporaryDirectory()
         self.session = ReplaySession(self.temp.name, 'transport_test',
-                                     modules=['localguard_yara'])
+                                     modules=['localguard_yara',
+                                              'localguard_executable_hash'])
 
     def tearDown(self):
         """세션을 닫고 임시 파일을 제거한다."""
@@ -95,8 +96,8 @@ class DetectionTransportTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(set(json.loads(lines[0])), EVENT_FIELDS)
 
-    def test_zero_score_event_stays_local_and_is_not_queued(self):
-        """0점 정상 Event는 로컬 JSONL에만 남고 Shared로 보내지 않는다."""
+    def test_zero_score_events_are_queued_for_both_detectors(self):
+        """정상 0점도 YARA·실행 파일 해시 모두 Shared로 전달한다."""
         sent = []
 
         env = {
@@ -111,18 +112,24 @@ class DetectionTransportTests(unittest.TestCase):
              patch('yara_scanner.flush_client', return_value=True), \
              patch('yara_scanner.shutdown_client', return_value=True):
             self.assertTrue(configure_detection_forwarding(self.session))
-            event = self.emit(0)
+            yara_event = self.emit(0)
+            hash_event = self.session.emit(
+                'localguard_executable_hash', 'local_player',
+                {'measurement_valid': True, 'coverage_complete': True,
+                 'matched_executables': []}, [], 0)
             stop_detection_forwarding(True)
 
-        self.assertEqual(event['raw_score'], 0)
-        self.assertEqual(sent, [])
+        self.assertEqual([event['raw_score'] for event in sent], [0, 0])
+        self.assertEqual(sent, [yara_event, hash_event])
+        for event in sent:
+            self.assertEqual(set(event), EVENT_FIELDS)
+            encode_event(event)
 
-        local = json.loads(
-            (self.session.path / 'events.jsonl').read_text(
-                encoding='utf-8'
-            )
-        )
-        self.assertEqual(local, event)
+        local = [json.loads(line) for line in
+                 (self.session.path / 'events.jsonl').read_text(
+                     encoding='utf-8').splitlines()]
+        self.assertEqual(local, sent)
+
     def test_queue_failure_does_not_erase_or_rescore_local_result(self):
         """송신 대기열 실패가 이미 기록된 점수와 로컬 증거를 바꾸지 않는다."""
         env = {'GZZ_TELEMETRY_URL': 'https://telemetry.example',
@@ -195,7 +202,12 @@ class DetectionTransportTests(unittest.TestCase):
                        side_effect=lambda: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)):
                 active = configure_detection_forwarding(self.session)
                 self.assertTrue(active)
-                event = self.emit(3)
+                positive = self.emit(3)
+                zero_yara = self.emit(0)
+                zero_hash = self.session.emit(
+                    'localguard_executable_hash', 'local_player',
+                    {'measurement_valid': True, 'coverage_complete': True,
+                     'matched_executables': []}, [], 0)
                 self.assertTrue(flush_client(timeout=3))
                 stop_detection_forwarding(active)
                 active = False
@@ -206,13 +218,14 @@ class DetectionTransportTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-        self.assertEqual(len(received), 1)
-        path, headers, body = received[0]
-        self.assertEqual(path, '/api/detection')
-        self.assertEqual(headers['authorization'], 'Bearer test-token')
-        self.assertEqual(headers['x-gzz-protocol-version'], '1')
-        self.assertEqual(body, event)
-        self.assertEqual(set(body), EVENT_FIELDS)
+        self.assertEqual(len(received), 3)
+        self.assertCountEqual([body for _, _, body in received],
+                              [positive, zero_yara, zero_hash])
+        for path, headers, body in received:
+            self.assertEqual(path, '/api/detection')
+            self.assertEqual(headers['authorization'], 'Bearer test-token')
+            self.assertEqual(headers['x-gzz-protocol-version'], '1')
+            self.assertEqual(set(body), EVENT_FIELDS)
 
 
 if __name__ == '__main__':

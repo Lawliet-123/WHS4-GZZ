@@ -196,7 +196,7 @@ class ReplaySession:
             self.counts[module] += 1
             if player_id == self.manifest['player_id']: self.labelled_player_events += 1
             sink = self.event_sink
-        if sink is not None and raw_score > 0:
+        if sink is not None:
             # 파일 잠금을 놓은 뒤 호출해야 전송 대기열의 디스크 작업이 다른
             # 검사 스레드의 로컬 증거 기록까지 오래 막지 않는다.
             sink(dict(item))
