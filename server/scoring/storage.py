@@ -30,6 +30,16 @@ EXTERNAL_ACCESS_SUBMODULES = (
     "module_integrity",
 )
 
+# localguard_yara는 PR #84 이후 정상 0점도 PID/scope별로 전송한다.
+# 서로 다른 대상의 NORMAL 0이 다른 대상의 양수 상태를 지우지 않도록
+# scoped_latest_state에서 각 PID/scope를 독립 상태로 보존한다.
+YARA_SCOPES = frozenset({
+    "selected_local_process_memory",
+    "same_session_external_python_memory",
+    "loaded_autopaint_bridge_module_memory",
+    "known_autopaint_bridge_module_inventory",
+})
+
 
 # 이벤트 1건을 처리한 결과: 중복 여부와 최신 상태 변경 여부를 구분한다.
 @dataclass(frozen=True)
@@ -177,9 +187,12 @@ class ScoringStore:
                         PRIMARY KEY(session_id, player_id, module)
                     )"""
                 )
-                # external_access의 두 하위 채널은 같은 module 이름을 공유하므로
-                # module-level latest_state와 별도의 scoped 최신 상태를 보존한다.
-                # 기존 테이블을 변경하지 않는 additive 확장이므로 storage version은 유지한다.
+                # module 내부에서 독립 범위를 갖는 상태를 별도로 보존한다.
+                # - external_access: submodule별
+                # - localguard_yara: PID+scope별
+                #
+                # 기존 테이블을 변경하지 않고 submodule 열을 범위 키로 재사용하는
+                # additive 확장이므로 storage version은 유지한다.
                 db.execute(
                     """CREATE TABLE IF NOT EXISTS scoped_latest_state (
                         session_id TEXT NOT NULL,
@@ -590,6 +603,184 @@ class ScoringStore:
         )
 
     @staticmethod
+    def _yara_scope_key(event: Mapping[str, Any]) -> str | None:
+        """localguard_yara의 PID+scope 범위를 안정적인 저장 키로 만든다.
+
+        양수 결과는 유효 PID/scope가 있으면 저장한다.
+        NORMAL 0은 measurement_valid=true일 때만 해당 범위의 정상 상태로 갱신한다.
+        ERROR/OFFLINE/measurement_valid=false는 정상 0으로 사용하지 않는다.
+        """
+
+        if event["module"] != "localguard_yara":
+            return None
+
+        evidence = event["evidence"]
+        pid = evidence.get("pid")
+        scope = evidence.get("scope")
+
+        if (
+            type(pid) is not int
+            or not 0 < pid <= 0xFFFFFFFF
+            or not isinstance(scope, str)
+            or scope not in YARA_SCOPES
+        ):
+            return None
+
+        if (
+            evidence.get("status") in ("ERROR", "OFFLINE")
+            or evidence.get("measurement_valid") is False
+        ):
+            return None
+
+        # 정상 0점은 실제 측정 성공이 명시된 경우에만
+        # 기존 동일 PID/scope 상태를 정상으로 갱신한다.
+        if event["raw_score"] == 0 and evidence.get("measurement_valid") is not True:
+            return None
+
+        return f"yara_pid:{pid}:{scope}"
+
+    @staticmethod
+    def _update_yara_scoped(
+        db: sqlite3.Connection,
+        event: dict[str, Any],
+        event_id: str,
+        sequence: int,
+        scope_key: str,
+    ) -> bool:
+        """YARA PID+scope 하나의 최신 상태를 갱신한다."""
+
+        key = (
+            event["session_id"],
+            event["player_id"],
+            event["module"],
+            scope_key,
+        )
+
+        current = db.execute(
+            """SELECT timestamp_ms, sequence
+               FROM scoped_latest_state
+               WHERE session_id=? AND player_id=?
+                 AND module=? AND submodule=?""",
+            key,
+        ).fetchone()
+
+        should_update = (
+            current is None
+            or event["timestamp_ms"] > current["timestamp_ms"]
+            or (
+                event["timestamp_ms"] == current["timestamp_ms"]
+                and sequence > current["sequence"]
+            )
+        )
+
+        if not should_update:
+            return False
+
+        db.execute(
+            """INSERT INTO scoped_latest_state(
+                   session_id, player_id, module, submodule,
+                   timestamp_ms, sequence, event_id, raw_score,
+                   evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(session_id, player_id, module, submodule)
+               DO UPDATE SET
+                   timestamp_ms=excluded.timestamp_ms,
+                   sequence=excluded.sequence,
+                   event_id=excluded.event_id,
+                   raw_score=excluded.raw_score,
+                   evidence_json=excluded.evidence_json,
+                   reasons_json=excluded.reasons_json""",
+            (
+                event["session_id"],
+                event["player_id"],
+                event["module"],
+                scope_key,
+                event["timestamp_ms"],
+                sequence,
+                event_id,
+                float(event["raw_score"]),
+                json.dumps(
+                    event["evidence"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    event["reasons"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+
+        return True
+
+    @staticmethod
+    def _rebuild_yara_aggregate(
+        db: sqlite3.Connection,
+        session_id: str,
+        player_id: str,
+    ) -> None:
+        """YARA의 PID/scope별 현재 상태에서 module 대표 상태를 파생한다.
+
+        서로 다른 대상의 점수를 합산하지 않는다.
+
+        현재 양수 대상이 하나라도 있으면 그중 가장 높은 raw_score를 대표 상태로
+        유지한다. 따라서 다른 PID/scope의 NORMAL 0이 기존 양수를 지우지 않는다.
+
+        모든 현재 대상이 0이면 가장 최근 정상 표본을 대표 상태로 사용한다.
+        """
+
+        rows = db.execute(
+            """SELECT *
+               FROM scoped_latest_state
+               WHERE session_id=? AND player_id=?
+                 AND module='localguard_yara'""",
+            (session_id, player_id),
+        ).fetchall()
+
+        if not rows:
+            return
+
+        # raw_score를 우선하여 양수 범위가 unrelated NORMAL 0에 의해
+        # 사라지지 않도록 한다. 같은 점수라면 최신 게임 시각/sequence를 쓴다.
+        representative = max(
+            rows,
+            key=lambda row: (
+                float(row["raw_score"]),
+                row["timestamp_ms"],
+                row["sequence"],
+            ),
+        )
+
+        db.execute(
+            """INSERT INTO latest_state(
+                   session_id, player_id, module,
+                   timestamp_ms, sequence, event_id,
+                   raw_score, evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(session_id, player_id, module)
+               DO UPDATE SET
+                   timestamp_ms=excluded.timestamp_ms,
+                   sequence=excluded.sequence,
+                   event_id=excluded.event_id,
+                   raw_score=excluded.raw_score,
+                   evidence_json=excluded.evidence_json,
+                   reasons_json=excluded.reasons_json""",
+            (
+                session_id,
+                player_id,
+                "localguard_yara",
+                representative["timestamp_ms"],
+                representative["sequence"],
+                representative["event_id"],
+                float(representative["raw_score"]),
+                representative["evidence_json"],
+                representative["reasons_json"],
+            ),
+        )
+
+    @staticmethod
     def _whistle_rpc_identity(
         event: Mapping[str, Any],
     ) -> tuple[int | None, int | None, bool]:
@@ -852,6 +1043,26 @@ class ScoringStore:
                         sequence,
                     )
                     self._remember_delta_event(db, event, event_id, sequence)
+
+                    # YARA scoped 저장이 추가되기 전에 처리된 기존 DB도
+                    # Shared recovery/retry 시 정확한 원본 이벤트로 안전하게 보완한다.
+                    if event["module"] == "localguard_yara":
+                        scope_key = self._yara_scope_key(event)
+                        if scope_key is not None:
+                            yara_updated = self._update_yara_scoped(
+                                db,
+                                event,
+                                event_id,
+                                sequence,
+                                scope_key,
+                            )
+                            if yara_updated:
+                                self._rebuild_yara_aggregate(
+                                    db,
+                                    event["session_id"],
+                                    event["player_id"],
+                                )
+
                     db.commit()
                     return ProcessReceipt(event_id, sequence, "duplicate", False)
 
@@ -896,6 +1107,26 @@ class ScoringStore:
 
                         if should_update:
                             self._rebuild_external_access_aggregate(
+                                db,
+                                event["session_id"],
+                                event["player_id"],
+                            )
+
+                elif event["module"] == "localguard_yara":
+                    scope_key = self._yara_scope_key(event)
+                    should_update = False
+
+                    if scope_key is not None:
+                        should_update = self._update_yara_scoped(
+                            db,
+                            event,
+                            event_id,
+                            sequence,
+                            scope_key,
+                        )
+
+                        if should_update:
+                            self._rebuild_yara_aggregate(
                                 db,
                                 event["session_id"],
                                 event["player_id"],
