@@ -17,6 +17,7 @@ from .history_summary import (
     GodmodeHistorySummary,
     summarize_godmode_history,
 )
+from .fusion import FusionPlan, build_fusion_plan
 from .correlation import (
     CorrelationCandidate,
     find_correlation_candidates,
@@ -160,6 +161,28 @@ def get_player_aggregate_evidence(
     return build_aggregate_evidence(
         risk_input,
         godmode_history=godmode_history,
+    )
+
+
+def get_player_fusion_plan(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> FusionPlan:
+    """현재 AggregateEvidence를 최종 risk 계산 직전 fusion 계획으로 변환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint가 아니다.
+
+    overlap 후보는 cluster로 구조화하지만,
+    여기서는 아직 점수 합산/감산, weight, 확률, Final Verdict를 계산하지 않는다.
+    """
+    return build_fusion_plan(
+        get_player_aggregate_evidence(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
     )
 
 
