@@ -56,6 +56,7 @@ import uuid
 
 from mecha_detector_v9 import Rule, make_common_event
 from server_bridge import ServerBridge
+from session_clock import SessionClock
 
 
 def utc():
@@ -678,6 +679,7 @@ def main():
     p.add_argument('--sysmon', action='store_true', help='Read existing Sysmon events every 5 seconds')
     p.add_argument('--label', default='observation', help='Legacy alias/fallback for --session-id')
     p.add_argument('--session-id', help='Test name, e.g. normal_001 or hide_anywhere_002')
+    p.add_argument('--t0', help='Launcher common session start, Unix epoch seconds')
     p.add_argument('--player-id', default='player_local')
     p.add_argument('--module', default='hide_anywhere', help='Common-event module name')
     p.add_argument('--play-label', choices=('NORMAL', 'CHEAT'), help='Manifest label; inferred when omitted')
@@ -706,6 +708,10 @@ def main():
             a.cheat_end_ms < a.cheat_start_ms):
         p.error('--cheat-end-ms must be >= --cheat-start-ms')
     a.pawn, a.pawn_profile = None, 'auto'
+    try:
+        clock = SessionClock(a.t0)
+    except ValueError as exc:
+        p.error(str(exc))
     requested_session = a.session_id or a.label
     session_id = ''.join(c if c.isascii() and (c.isalnum() or c in '-_') else '_' for c in requested_session)[:60]
     if not session_id:
@@ -721,6 +727,7 @@ def main():
         'cheat_type': None if play_label == 'NORMAL' else a.module.upper(),
         'cheat_start_ms': None if play_label == 'NORMAL' else a.cheat_start_ms,
         'cheat_end_ms': None if play_label == 'NORMAL' else a.cheat_end_ms,
+        **clock.evidence(),
     }
     (directory / 'manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
@@ -735,7 +742,8 @@ def main():
             log.write(json.dumps(row, ensure_ascii=False) + '\n')
             print(row['time'], kind, data.get('message', ''), flush=True)
         started = utc()
-        emit('collector_start', collector_pid=os.getpid(), sysmon_requested=a.sysmon)
+        emit('collector_start', collector_pid=os.getpid(), sysmon_requested=a.sysmon,
+             **clock.evidence())
         print('Raw log:', (raw_directory / 'mecha_log.jsonl').resolve())
         print('Common events:', (directory / 'events.jsonl').resolve())
         print('Manifest:', (directory / 'manifest.json').resolve())
@@ -804,12 +812,13 @@ def main():
                         session_id=session_id,
                         player_id=a.player_id,
                         module=a.module,
-                        timestamp_ms=(time.monotonic() - begin) * 1000,
+                        timestamp_ms=clock.elapsed_ms(),
                         values=values,
                         injected_module=loaded,
                         viewport_hook=hooked, rule=rule,
                         identity=getattr(memory, 'sample_identity', None),
                         errors=getattr(memory, 'sample_errors', {'observer': 'DisabledOrUnavailable'}))
+                common['evidence'].update(clock.evidence())
                 common_log.write(json.dumps(common, ensure_ascii=False, allow_nan=False) + '\n')
                 common_log.flush()
                 if server:

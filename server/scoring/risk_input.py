@@ -165,8 +165,9 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
             "window_history",
         )
 
-        requires_entity_scope = (
-            signal.emission == "per_entity_positive_only"
+        requires_entity_scope = signal.emission in (
+            "per_entity_positive_only",
+            "per_entity_snapshot",
         )
 
         calibration = get_calibration(signal.module)
