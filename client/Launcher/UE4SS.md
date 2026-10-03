@@ -5,15 +5,19 @@
 
 ## 왜 런처가 설치해야 하나
 
-탐지기 두 개가 UE4SS 위에서 돈다.
+탐지기 네 개가 UE4SS 위에서 돈다(2026-10-01 기준).
 
-| 기능 | 필요한 Lua 모드 | 담당 |
-|---|---|---|
-| 에임봇 탐지 (`client/detectors/aimbot`) | `DamageLogger` | 은지 |
-| 오토페인트 행동 탐지 | `GZZPaintObserver` | 성민 |
+| 기능 | 필요한 Lua 모드 | 레포의 모드 소스 | 모드가 남기는 기록 | 담당 |
+|---|---|---|---|---|
+| 에임봇 탐지 | `DamageLogger` | `client/ue4ss/Mods/DamageLogger` | 자기 폴더 `meccha_aim_telemetry.jsonl` | 은지 |
+| 오토페인트 행동 탐지 | `GZZPaintObserver` | `client/ue4ss/Mods/GZZPaintObserver` | 자기 폴더 `session.control` 등 | 성민 |
+| 노클립 탐지 | `NoclipLogger` | `client/ue4ss/Mods/NoclipLogger` | 자기 폴더 `noclip_log.csv` | 송희 |
+| 갓모드 탐지 | `GodModeTelemetry` | `client/detectors/godmode/telemetry_mod/GodModeTelemetry` | `%LOCALAPPDATA%\MECCHA-GZZ-godmode-telemetry.jsonl` | 재민 |
+
+`modules/godmode/Mods/GodMode`, `modules/noclip` 은 **핵 PoC** 다. 설치 대상이 아니다.
 
 **UE4SS 본체는 런처가 한 번만 설치하고, 각 기능은 자기 모드 폴더만 추가한다**(성민님).
-두 기능이 각자 UE4SS 를 설치하면 서로 다른 빌드의 `dwmapi.dll` 과 `UE4SS.dll` 이 섞인다.
+기능마다 UE4SS 를 따로 설치하면 서로 다른 빌드의 `dwmapi.dll` 과 `UE4SS.dll` 이 섞인다.
 
 ## 배치
 
@@ -26,10 +30,12 @@
    ├─ UE4SS-settings.ini
    ├─ UE4SS_Signatures/StaticConstructObject.lua    (은지: 이 게임 전용)
    └─ Mods/
-      ├─ mods.txt                     ← DamageLogger : 1 / GZZPaintObserver : 1
+      ├─ mods.txt                     ← 아래 네 모드를 : 1 로
       ├─ shared/UEHelpers/UEHelpers.lua            (성민: observer.lua 가 씀)
       ├─ DamageLogger/Scripts/main.lua
-      └─ GZZPaintObserver/Scripts/{main.lua, observer.lua}
+      ├─ GZZPaintObserver/Scripts/{main.lua, observer.lua}
+      ├─ NoclipLogger/Scripts/main.lua
+      └─ GodModeTelemetry/Scripts/main.lua
 ```
 
 ## 먼저 풀어야 할 것 — 우리 안티치트가 이 설치를 핵으로 잡는다
@@ -44,8 +50,13 @@
 > import ue4ss_manifest
 > ue4ss_manifest.record(game_root, installed_paths,
 >                       bundle={"name": "UE4SS", "version": "...", "sha256": "..."},
->                       mods=["DamageLogger", "GZZPaintObserver"])
+>                       mods=["DamageLogger", "GZZPaintObserver",
+>                             "NoclipLogger", "GodModeTelemetry"])
 > ```
+>
+> **설치한 모드는 전부 `mods` 와 `installed_paths` 에 넣어야 한다.** 빠진 모드는
+> 우리 것이어도 `third_party_lua_mod`(45점)로 그대로 잡힌다. 모드 폴더 안에 실행 중
+> 생기는 기록 파일(`noclip_log.csv` 등)은 넣지 않아도 된다 — 등록한 파일만 대조한다.
 >
 > 형식과 이유는 `client/Launcher/ue4ss_manifest.py` 독스트링에 있습니다.
 > **이 파일을 안 남기면 예전처럼 DETECTED 100 이 납니다** — 조용히 통과시키지
@@ -66,33 +77,44 @@
 9/27 에 나온 "안티치트가 자기 자신을 신고한다" 의 세 번째 사례다. 앞의 두 번은 프로세스
 핸들과 주입 DLL 이었고, 이번엔 파일이다.
 
-**고치는 쪽은 랑언이다. 동효님이 신경 쓸 일은 아니지만, 고치기 전에는 정상 세션이
-전부 DETECTED 로 나오므로 이 순서를 알고 계셔야 한다.**
+고친 방향은 앞의 두 번과 같다(9/29, 랑언). 이름이나 존재 여부가 아니라 **우리가 설치한
+그 파일인지**로 가른다. 설치 기록에 적힌 해시와 디스크의 바이트가 같은 파일만 빼고,
+**다른 UE4SS·등록 안 된 DLL·등록 안 된 모드는 그대로 잡는다.** 가짜 게임 폴더로 25항목
+확인했다(1바이트만 바꿔도, 옆에 `cheat.dll` 을 얹어도 다시 잡힘).
 
-고치는 방향은 앞의 두 번과 같다. 이름이나 존재 여부가 아니라 **우리가 설치한 그 묶음인지**
-로 가른다. 즉 팀이 고정한 UE4SS 묶음의 해시와 일치하고 `mods.txt` 활성 모드가
-`DamageLogger`, `GZZPaintObserver` 뿐일 때만 뺀다. **다른 UE4SS 나 다른 모드는 그대로 잡는다.**
-그래서 런처가 어떤 해시를 깔았는지 알려 줘야 한다 — 아래 "런처가 남길 것" 참고.
+**설치 코드가 기록을 남기기 전까지는 정상 세션이 여전히 DETECTED 100 으로 나온다.**
+그래서 2번 정상 세션 수집이 이 설치 코드를 기다리고 있다.
 
 ## 버전 고정
 
-**어떤 UE4SS 묶음을 쓸지는 랑언이 정한다(2026-09-29 결정).** 정해지면 이 문서에 해시와 함께 적는다.
+> **정했다 (2026-09-30).** 팀 UE4SS 는 성민님이 디스코드에 올린
+> **`UE4SS_v3.0.1-1136-g35d1795d.zip`** 이다. 게임 안 `UE4SS.log` 에는
+> **`v3.0.1 Beta #0 - Git SHA #f6d5f942`** 로 찍힌다(은지님 설치본과 같다).
 
-지금 확인된 것:
+**zip 이름의 SHA(`35d1795d`)와 로그의 SHA(`f6d5f942`)가 다른 게 정상이다.**
+zip 이름은 배포 시점의 커밋이고, 로그는 DLL 을 빌드한 커밋이다. `35d1795d` 는 다른
+게임(The Pathless) 설정 파일만 추가한 커밋이라, UE4SS 배포 과정이 DLL 을 다시 빌드하지
+않고 `f6d5f942` 빌드를 그대로 썼다(RE-UE4SS `cmake-experimental.yml` "Only asset
+changes detected - reusing last build"). **버전은 zip 이름이 아니라 로그 첫 줄로 확인한다.**
 
-| 어디 | 버전 |
-|---|---|
-| 랑언 PC 설치본 | `v3.0.1 Beta #0 - Git SHA #24b12662` |
-| 성민님이 동작 확인한 것 | `v3.0.1 Beta #0 - Git SHA #f6d5f942` |
+| 어디 | 버전 | 할 일 |
+|---|---|---|
+| 팀 기준(성민님 zip) | 로그 `f6d5f942` | — |
+| 은지님 설치본 | 로그 `f6d5f942` | 없음 |
+| 랑언 PC 설치본 | 로그 `24b12662` → 팀 zip 으로 교체함(10/1) | 없음 |
 
-**이름은 같은 v3.0.1 Beta #0 인데 Git SHA 가 다르다.** 성민님이 경고한 상황이 실제로
-일어나 있다. 둘 중 하나로 정하고 팀 전체가 같은 묶음을 쓴다.
+- zip SHA-256 (8,717,962 바이트):
+  `050948bdf6b4aae2ff8d834aaebadbf7535d4cb8478fbb579966a5ca3142f86a`
+- 내용 확인(10/1, 실행하지 않고): 41항목, DLL 은 `dwmapi.dll` 과 `ue4ss/UE4SS.dll` 둘뿐이고
+  나머지는 UE4SS 표준 구성(기본 모드·`Mods/shared/UEHelpers`·설정·`UE4SS_SDK_Backends`)이다.
+  `UE4SS.dll` 안에 `f6d5f942` 문자열이 들어 있어 위 "로그 SHA" 설명과 맞는다.
+  `UE4SS-settings.ini` 는 기본값(`ConsoleEnabled = 0`)이다.
+- 묶음은 지금 **디스코드로 배포**한다. 레포에 커밋할지는 아직 안 정했다(아래).
 
-현재 레포에는 `DamageLogger`와 `GZZPaintObserver`의 Lua 스크립트가 있다.
-UE4SS 폴더 배포본은 전달받았지만, 이것이 팀의 최종 검증본인지 확인 중이고
-게임 전용 `StaticConstructObject.lua`는 아직 없다. `game_launcher.prepare_ue4ss()`는
-ZIP 전체 해시 또는 폴더 필수 파일 지문과 별도 시그니처의 해시가 고정되지 않으면
-`MISSING`을 반환하며 게임 폴더에 아무것도 쓰지 않는다.
+레포에는 네 모드의 Lua 소스가 있다(위 표). UE4SS 런타임(`UE4SS.dll`, `dwmapi.dll`),
+`UE4SS_Signatures`, `UEHelpers` 는 레포에 없다 — `UEHelpers` 는 UE4SS 배포본의
+`Mods/shared/UEHelpers/` 에 들어 있는 것을 쓴다(랑언 PC 설치본에서 확인. 성민님 zip 안은
+아직 열어 보지 않았다).
 
 ## 설치 절차
 
@@ -134,6 +156,8 @@ Steam 설치 위치를 찾고, 못 찾으면 **사용자에게 한 번 물어서
 ```
 DamageLogger : 1
 GZZPaintObserver : 1
+NoclipLogger : 1
+GodModeTelemetry : 1
 ```
 다른 팀 모드도 지우지 않는다.
 단, 새 설치에서 기존 `mods.txt`가 없다면 배포 묶음의 기본 목록은 가져오지 않고
@@ -141,7 +165,8 @@ GZZPaintObserver : 1
 안티치트 런처가 자동 활성화하면 안 되는 기본 항목이 있기 때문이다.
 
 > 랑언 PC 의 `mods.txt` 에는 `GodMode : 1` 같은 **치트 모드가 들어 있다.** 실제로 만나는
-> 상황이니 참고. 이건 지우면 안 되고(측정용), 우리 탐지기가 잡아야 할 대상이다.
+> 상황이니 참고. 측정용이라 지우지는 않지만, **정상 세션을 찍을 때는 반드시 `: 0`** 이어야
+> 한다. 켜 둔 채로 찍으면 정상 세션이 핵 세션이 된다.
 
 ### 4. 매 실행 전 검사
 아래가 있고 팀 버전과 같은지 본다. 정상이면 **다시 복사하지 않는다.**
@@ -151,6 +176,8 @@ ue4ss/UE4SS.dll
 ue4ss/Mods/shared/UEHelpers/UEHelpers.lua
 ue4ss/Mods/DamageLogger/Scripts/main.lua
 ue4ss/Mods/GZZPaintObserver/Scripts/{main.lua, observer.lua}
+ue4ss/Mods/NoclipLogger/Scripts/main.lua
+ue4ss/Mods/GodModeTelemetry/Scripts/main.lua
 ```
 `mods.txt` 는 파일 전체 해시가 아니라 **해당 항목이 `: 1` 인지**로 본다(다른 모드가 섞이므로).
 
@@ -205,21 +232,15 @@ paint_calls.jsonl,  기존 세션 로그,  main.lua.backup-*
 > signal.default_int_handler)`. 없으면 예전처럼 즉시 끝납니다. 자세한 건
 > `README.md` 의 "끌 때 정리 코드가 돌게 하려면".
 
-## 런처가 남길 것 (랑언 요청)
+## 런처가 남길 것 — 설치 기록
 
-`filesystem` 탐지기가 "우리가 깐 UE4SS" 를 가려내려면 근거가 필요하다.
-설치·검사 결과를 `client/Launcher/logs/ue4ss_install.json` 같은 파일로 남겨 주면 좋겠다.
+> **정해졌다 (9/29).** `ue4ss_manifest.record()` 가 `client/Launcher/logs/ue4ss_install.json`
+> 을 쓴다. 파일별 SHA-256 과 모드 이름이 들어가고, 형식은 `ue4ss_manifest.py` 독스트링에
+> 있다. 위 "먼저 풀어야 할 것" 의 예시대로 설치 직후 한 번 부르면 된다.
+> **이 호출을 하는 설치 코드가 아직 없다(10/1).**
 
-```json
-{
-  "game_dir": "...", "game_version": "4.0.2",
-  "ue4ss_sha": "...", "installed_by": "launcher",
-  "mods": {"DamageLogger": "<해시>", "GZZPaintObserver": "<해시>"},
-  "verified_at": "...", "log_check": "ok"
-}
-```
-형식은 정해진 게 아니니 편한 대로 바꾸셔도 된다. 필요한 건 **"이 묶음은 런처가 깐 것"**
-이라는 사실과 해시다.
+처음 제안한 `game_version` · `log_check`(5번 실행 후 확인 결과)는 지금 기록에 없다.
+실행 후 확인을 붙일 때 같이 넣을지 정하면 된다.
 
 ## 아직 안 정해진 것
 
@@ -228,3 +249,10 @@ paint_calls.jsonl,  기존 세션 로그,  main.lua.backup-*
 3. 실제 ZIP 내부 구조가 설치 코드의 필수 파일 목록과 맞는지 실물로 확인
 4. `main.py`에서 설치·실행 후 검증을 언제 호출할지, 실패 시 어떤 탐지기만 건너뛸지
 5. 쓰기 권한이 없으면 관리자 권한을 강요하지 않고 `ERROR`를 표시한다.
+1. UE4SS 묶음을 레포에 넣을지, 지금처럼 디스코드로 배포할지 (버전은 위에서 정함)
+2. `UE4SS_Signatures/StaticConstructObject.lua` 를 누가 주는지 (은지님 것으로 보임, 레포에 없음)
+3. 설치 충돌이 났을 때 런처 동작 — 멈출지, 그 모듈만 끄고 갈지
+4. 게임 폴더 쓰기 권한이 없을 때 (Steam 폴더는 보통 관리자 권한이 필요할 수 있음)
+
+정해진 것(10/1 정리): 버전 — 성민님 zip(로그 `f6d5f942`). 모드 소스 위치 — 위 표의 레포
+경로. `UEHelpers` — UE4SS 배포본에 들어 있는 것을 쓴다.

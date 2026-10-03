@@ -1,3 +1,4 @@
+
 from core.result import DetectorResult, Evidence
 from core.process_memory import ProcessMemory
 from core.pawn_locator import PawnLocator
@@ -10,6 +11,9 @@ OFFSET_BODY_CAPSULE = 0x420
 OFFSET_COLLISION_FLAGS = 0x94
 
 REASON_CODE = "collision_bit_cleared"
+
+# 단일 메모리 검사에서 충돌 비트 해제 확인 시 부여하는 점수
+COLLISION_DISABLED_SCORE = 1
 
 
 def _format_evidence(
@@ -108,6 +112,12 @@ def scan():
                 if REASON_CODE not in result.reasons:
                     result.reasons.append(
                         REASON_CODE
+                    )
+
+                    # 같은 검사 내 중복 근거에 중복 점수를 주지 않는다.
+                    result.score = min(
+                        100,
+                        result.score + COLLISION_DISABLED_SCORE,
                     )
 
                 result.evidence.append(

@@ -36,8 +36,11 @@ class ClientConfig:
     max_event_bytes: int = 256 * 1024
     allow_insecure_loopback: bool = False
     use_environment_proxy: bool = False
+    retry_mode: str = "bounded"
 
     def __post_init__(self) -> None:
+        if self.retry_mode not in ("bounded", "persistent"):
+            raise ConfigurationError("retry_mode must be bounded or persistent")
         if type(self.allow_insecure_loopback) is not bool or type(self.use_environment_proxy) is not bool:
             raise ConfigurationError("transport flags must be booleans")
         if not isinstance(self.server_url, str) or any(c.isspace() for c in self.server_url):
@@ -85,6 +88,7 @@ class ClientConfig:
                   "api_token": os.environ.get(prefix + "TOKEN", "")}
         options = {
             "OUTBOX": ("outbox_path", Path), "DETECTION_PATH": ("detection_path", str),
+            "RETRY_MODE": ("retry_mode", str),
             "TIMEOUT_SECONDS": ("timeout_seconds", float), "MAX_ATTEMPTS": ("max_attempts", int),
             "RETRY_BASE_SECONDS": ("retry_base_seconds", float),
             "RETRY_MAX_SECONDS": ("retry_max_seconds", float),

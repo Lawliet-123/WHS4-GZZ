@@ -22,7 +22,7 @@
 
 ## 안 만들어진 모듈이 있어도 멈추지 않는다
 
-지금 SelfDefense·KernelWatcher·input_signature 는 폴더만 있다. 없는 모듈에서
+지금(10/1) SelfDefense·KernelWatcher 는 등록된 경로에 코드가 없다. 없는 모듈에서
 런처가 죽으면 다른 사람이 자기 것을 시험해볼 수 없다. **없으면 MISSING 으로
 보여주고 나머지를 계속 띄운다.** 조용히 넘기지도 않는다 — 아직 안 만든 것과
 만들었는데 안 붙는 것은 원인이 다르다.
@@ -286,6 +286,7 @@ def main(argv=None):
             ui.line("  게임이 뜨지 않아 종료합니다. 게임을 켜고 다시 실행해 주세요.")
             return 2
         ctx["game_pid"] = pid
+        pm.set_game_pid(pid)
         # 게임이 떴으니 이제 추정이 아니라 프로세스에서 경로를 얻을 수 있다.
         # 게임 관련 모듈을 띄우기 **전에** 갱신해야 그 값을 물려받는다.
         found = publish_game_dir(refresh=True)
