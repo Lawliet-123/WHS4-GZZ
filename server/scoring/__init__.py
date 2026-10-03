@@ -10,22 +10,72 @@ from .main import (
     configure_scoring,
     evaluate_event_policy,
     get_event_delta_history,
+    get_godmode_history_summary,
+    get_external_access_scoped_state,
+    get_player_final_verdict,
+    get_player_fusion_plan,
+    get_whistle_window_conflicts,
+    get_whistle_window_history,
+    get_player_aggregate_evidence,
+    get_player_aggregate_risk,
+    get_player_correlation_candidates,
+    get_player_policy_snapshot,
+    get_player_risk_input,
     get_player_signal_inventory,
     get_player_snapshot,
     process,
     recover_from_writer,
 )
-from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore
+from .aggregate import AggregateEvidence, AggregateSignal
+from .aggregate_risk import AggregateRisk
+from .final_verdict import FinalVerdict
+from .history_summary import GodmodeHistorySummary
+from .fusion import FusionEvidenceUnit, FusionPlan
+from .overlap import OverlapGroup
+from .correlation import CorrelationCandidate
+from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
+from .storage import (
+    DeltaEvent,
+    ModuleState,
+    ProcessReceipt,
+    ScoringStore,
+    WindowConflict,
+    WindowEvent,
+)
 
 __all__ = (
+    "AggregateEvidence",
+    "AggregateRisk",
+    "AggregateSignal",
+    "CorrelationCandidate",
     "DeltaEvent",
+    "FusionEvidenceUnit",
+    "FusionPlan",
+    "FinalVerdict",
+    "GodmodeHistorySummary",
+    "ModulePolicySnapshot",
     "ModuleState",
+    "OverlapGroup",
+    "PlayerPolicySnapshot",
     "ProcessReceipt",
     "ScoringStore",
+    "WindowConflict",
+    "WindowEvent",
     "backfill_event_delta_history_from_writer",
     "configure_scoring",
     "evaluate_event_policy",
     "get_event_delta_history",
+    "get_godmode_history_summary",
+    "get_external_access_scoped_state",
+    "get_player_final_verdict",
+    "get_player_fusion_plan",
+    "get_whistle_window_conflicts",
+    "get_whistle_window_history",
+    "get_player_aggregate_evidence",
+    "get_player_aggregate_risk",
+    "get_player_correlation_candidates",
+    "get_player_policy_snapshot",
+    "get_player_risk_input",
     "get_player_snapshot",
     "get_player_signal_inventory",
     "process",

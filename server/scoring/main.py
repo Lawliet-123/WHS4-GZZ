@@ -12,9 +12,33 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from .aggregate import AggregateEvidence, build_aggregate_evidence
+from .history_summary import (
+    GodmodeHistorySummary,
+    summarize_godmode_history,
+)
+from .fusion import FusionPlan, build_fusion_plan
+from .aggregate_risk import AggregateRisk, build_aggregate_risk
+from .final_verdict import FinalVerdict, build_final_verdict
+from .correlation import (
+    CorrelationCandidate,
+    find_correlation_candidates,
+    observation_from_evaluation,
+)
 from .policies.contract import PolicyEvaluation
 from .policies.registry import evaluate_registered_policy
-from .storage import DeltaEvent, ModuleState, ProcessReceipt, ScoringStore, EVENT_DELTA_MODULES
+from .player_snapshot import PlayerPolicySnapshot, build_player_policy_snapshot
+from .risk_input import PlayerRiskInput, build_player_risk_input
+from .storage import (
+    DeltaEvent,
+    EVENT_DELTA_MODULES,
+    EXTERNAL_ACCESS_SUBMODULES,
+    ModuleState,
+    ProcessReceipt,
+    ScoringStore,
+    WindowConflict,
+    WindowEvent,
+)
 
 # 기본 DB 경로: 저장 위치를 외부에서 지정하지 않으면 서버 내부 logs/scoring에 생성한다.
 _DEFAULT_DB = Path(__file__).resolve().parents[1] / "logs" / "scoring" / "scoring.sqlite3"
@@ -73,6 +97,180 @@ def evaluate_event_policy(payload: Mapping[str, Any]) -> PolicyEvaluation:
     return evaluate_registered_policy(payload)
 
 
+def get_player_policy_snapshot(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> PlayerPolicySnapshot:
+    """플레이어의 현재 모듈별 상태를 등록 Policy로 한 번에 해석한다.
+
+    latest_state의 최신 1건씩만 사용하며 점수 합산/가중치/최종 판정을 만들지 않는다.
+    correlation 시간 창을 명시한 경우에만 후보 목록도 같은 평가 결과에서 계산한다.
+    """
+    return build_player_policy_snapshot(
+        get_player_snapshot(session_id, player_id),
+        session_id=session_id,
+        player_id=player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+
+
+def get_player_risk_input(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> PlayerRiskInput:
+    """현재 Policy snapshot을 최종 risk 계산 전의 공통 입력 형태로 정리한다.
+
+    이 함수는 가중치, 점수 합산, 치트 확률, 최종 verdict를 계산하지 않는다.
+    ERROR/OFFLINE, 미확정 정책, event-delta처럼 별도 처리가 필요한 신호를
+    구분해 이후 risk 단계가 정상 0점과 혼동하지 않도록 한다.
+    """
+    snapshot = get_player_policy_snapshot(
+        session_id,
+        player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+    return build_player_risk_input(snapshot)
+
+
+def get_player_aggregate_evidence(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> AggregateEvidence:
+    """현재 플레이어의 RiskInput을 Aggregate Risk 계산 직전 증거로 분류한다.
+
+    아직 가중치, 합산 점수, 중복 감산, Final Verdict는 계산하지 않는다.
+    event/window history가 필요한 신호는 DEFERRED로 남긴다.
+    """
+    risk_input = get_player_risk_input(
+        session_id,
+        player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+
+    godmode_history = None
+    if "godmode" in risk_input.event_history_modules:
+        godmode_history = get_godmode_history_summary(
+            session_id,
+            player_id,
+        )
+
+    return build_aggregate_evidence(
+        risk_input,
+        godmode_history=godmode_history,
+    )
+
+
+def get_player_fusion_plan(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> FusionPlan:
+    """현재 AggregateEvidence를 최종 risk 계산 직전 fusion 계획으로 변환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint가 아니다.
+
+    overlap 후보는 cluster로 구조화하지만,
+    여기서는 아직 점수 합산/감산, weight, 확률, Final Verdict를 계산하지 않는다.
+    """
+    return build_fusion_plan(
+        get_player_aggregate_evidence(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_aggregate_risk(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> AggregateRisk:
+    """현재 플레이어의 overlap 보정 Aggregate Risk 근거를 반환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint가 아니다.
+
+    현재 버전은 임의 가중치/확률을 만들지 않고,
+    independent evidence와 overlap cluster를 evidence unit 단위로 집계한다.
+    """
+    return build_aggregate_risk(
+        get_player_fusion_plan(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_final_verdict(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> FinalVerdict:
+    """현재 플레이어의 보수적 Final Verdict를 반환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint는 C 영역이다.
+
+    calibrated ACTIVE evidence가 있으면 SUSPICIOUS,
+    positive evidence 없이 평가가 불완전하면 INCONCLUSIVE,
+    그 외에는 NO_ACTIVE_EVIDENCE를 반환한다.
+
+    이 함수는 CHEAT 확정이나 치트 확률을 만들지 않는다.
+    """
+    return build_final_verdict(
+        get_player_aggregate_risk(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_correlation_candidates(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int,
+) -> list[CorrelationCandidate]:
+    """플레이어의 현재 모듈별 최신 상태에서 상관 후보를 찾는다.
+
+    latest_state는 모듈당 1건만 보존하므로 이 함수는 과거 전체 타임라인 분석이 아니다.
+    후보를 삭제/합산/확정하지 않고, 등록 정책이 공통 overlap_tag를 보고한 최신 관측만
+    지정한 시간 창 안에서 비교한다.
+    """
+    observations = []
+    for state in get_player_snapshot(session_id, player_id):
+        event = {
+            "session_id": state.session_id,
+            "player_id": state.player_id,
+            "module": state.module,
+            "timestamp_ms": state.timestamp_ms,
+            "evidence": state.evidence,
+            "reasons": state.reasons,
+            "raw_score": state.raw_score,
+        }
+        evaluation = evaluate_registered_policy(event)
+        observations.append(observation_from_evaluation(
+            event,
+            event_id=state.event_id,
+            sequence=state.sequence,
+            evaluation=evaluation,
+        ))
+
+    return find_correlation_candidates(
+        observations, max_time_distance_ms=max_time_distance_ms
+    )
+
+
 def recover_from_writer(writer, *, batch_size: int = 1000) -> int:
     """서버 장애로 B가 놓쳤을 수 있는 A의 영구 저장 이벤트를 재처리한다.
 
@@ -113,6 +311,68 @@ def get_player_signal_inventory(session_id: str, player_id: str):
     return inspect_player_snapshot(get_player_snapshot(session_id, player_id))
 
 
+def get_external_access_scoped_state(
+    session_id: str,
+    player_id: str,
+    submodule: str,
+) -> ModuleState | None:
+    """external_access 하위 채널 하나의 최신 상태를 조회한다.
+
+    현재 지원 범위는 external_process / module_integrity 두 채널이다.
+    module-level external_access aggregate와 원본 scoped 상태를 구분해 볼 때 사용한다.
+    """
+
+    if submodule not in EXTERNAL_ACCESS_SUBMODULES:
+        raise ValueError(
+            "unsupported external_access submodule"
+        )
+
+    return _get_store().get_scoped_module_state(
+        session_id,
+        player_id,
+        "external_access",
+        submodule,
+    )
+
+
+def get_whistle_window_history(
+    session_id: str,
+    player_id: str,
+    *,
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[WindowEvent]:
+    """whistle_rpc의 window별 원본 관측 이력을 조회한다.
+
+    NORMAL 0, 양수, ERROR/OFFLINE을 모두 보존한다.
+    여기서는 유효시간, 점수 합산, 최종 risk를 계산하지 않는다.
+    """
+
+    return _get_store().get_window_history(
+        session_id,
+        player_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
+def get_whistle_window_conflicts(
+    session_id: str,
+    player_id: str,
+    *,
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[WindowConflict]:
+    """같은 whistle_rpc window에 상충하는 관측이 온 감사 기록을 조회한다."""
+
+    return _get_store().get_window_conflicts(
+        session_id,
+        player_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
 def get_event_delta_history(
     session_id: str,
     player_id: str,
@@ -125,6 +385,50 @@ def get_event_delta_history(
     return _get_store().get_event_delta_history(
         session_id, player_id, module=module,
         after_sequence=after_sequence, limit=limit,
+    )
+
+
+def get_godmode_history_summary(
+    session_id: str,
+    player_id: str,
+    *,
+    batch_size: int = 1000,
+) -> GodmodeHistorySummary:
+    """Godmode event_delta 전체 이력을 합산 없이 요약한다.
+
+    저장소 조회 limit 때문에 과거 사건이 잘리지 않도록 sequence cursor로
+    끝까지 페이지를 읽는다.
+
+    이 함수는 TTL, Aggregate Risk, Final Verdict를 계산하지 않는다.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    rows: list[DeltaEvent] = []
+    cursor = 0
+
+    while True:
+        batch = get_event_delta_history(
+            session_id,
+            player_id,
+            module="godmode",
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            break
+
+        rows.extend(batch)
+        cursor = batch[-1].sequence
+
+        if len(batch) < batch_size:
+            break
+
+    return summarize_godmode_history(
+        rows,
+        session_id=session_id,
+        player_id=player_id,
     )
 
 

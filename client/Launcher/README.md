@@ -21,6 +21,24 @@ python client/Launcher/main.py
 에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
 확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 
+게임 경로는 실행 중인 게임·저장된 사용자 선택·Steam 라이브러리 순서로 검증한다.
+모두 실패하면 콘솔 유무와 관계없이 게임 exe 선택 창을 한 번 열고 `%LOCALAPPDATA%`에
+저장한다. GUI를 열 수 없고 콘솔이 있다면 경로를 직접 입력받는다.
+`GZZ_GAME_DIR`로 설치 루트 또는 게임 exe 경로를 직접 지정할 수도 있다.
+폴더만 존재하는 경로는 쓰지 않고 `PenguinHotel-Win64-Shipping.exe`까지 확인한다.
+게임 exe를 직접 실행했는데 곧바로 종료되면 Steam URL로 한 번 재시도한다.
+
+`game_launcher.prepare_ue4ss()`는 팀 ZIP 또는 압축을 푼 폴더와 게임 전용 시그니처의
+고정 SHA-256이 없으면 설치하지 않는다. ZIP은 전체 파일 해시를, 폴더는 실제 설치할
+필수 파일의 경로·길이·내용을 묶은 지문을 사용한다. 기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를
+돌려준다. `READY`는 파일 준비 상태일 뿐, 게임 실행 후에는
+`verify_ue4ss_log()`로 실제 로드를 별도로 확인해야 한다. 현재 팀 실물과 해시가
+확인이 없어 `main.py` 자동 호출은 아직 연결되지 않았다. 로컬 테스트는
+`python -B -m unittest discover -s client/Launcher/tests -q`로 실행한다.
+새 설치에서는 UE4SS 묶음의 기본 `mods.txt`를 그대로 복사하지 않는다.
+`CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 모드 두 개만 새로
+등록한다. 이미 있는 사용자 `mods.txt`의 다른 줄은 보존한다.
+
 ---
 
 ## 내 모듈을 붙이려면 — `modules.py` 에 한 줄
@@ -40,7 +58,8 @@ Module(
 )
 ```
 
-자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` `{telemetry}` 는 런처가 채운다.
+자리표시자 `{session}` `{player}` `{t0}` `{window}` `{game_bin}` `{telemetry}` `{game_pid}` 는 런처가 채운다.
+`{game_pid}` 는 런처가 찾은 게임 프로세스 PID 다. 게임이 뜬 뒤에 시작하는 모듈(`needs_game=True`)에만 쓴다.
 `{game_bin}` 은 런처가 찾은 게임 실행 폴더(`...\Chameleon\Binaries\Win64`)다. UE4SS 모드가
 쓰는 로그처럼 게임 폴더 아래 파일을 읽는 모듈은 경로를 박지 말고 이걸로 받는다
 (예: `r"{game_bin}\ue4ss\Mods\DamageLogger\meccha_aim_telemetry.jsonl"`).
@@ -59,14 +78,27 @@ optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
 |---|---|
 | `mode=CONTINUOUS` | 자기가 알아서 계속 돈다. 런처는 살아 있는지만 본다 |
 | `mode=ONESHOT` + `every_s` | 한 번 돌고 끝난다. 런처가 그 주기로 다시 부른다 |
+| `final_run=[...]` | (주기 검사만) 세션이 끝날 때 그 인자를 붙여 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 스냅샷 검사는 넣지 않는다(게임이 꺼진 뒤 OFFLINE 이 세션 중 탐지를 덮는다). 지금은 휘파람 `["--only", "whistle_rpc"]` |
 | `needs_game=False` | 게임보다 **먼저** 뜬다 (SelfDefense·KernelWatcher) |
 | `needs_admin=True` | 관리자 권한이 없으면 건너뛴다 |
+| `telemetry_off_args=[...]` | 중앙 전송 설정이 없을 때(`{telemetry}` 가 `off`)만 argv 끝에 붙는다. 설정이 없으면 시작을 거부하는 모듈의 `--local-only` 같은 것 |
+| `env={...}` | 이 모듈에만 줄 환경변수. `PYTHONPATH` 는 기존 값 앞에 붙인다. 되살릴 때도 같은 값을 쓴다 |
+
+게임이 꺼진 뒤 `needs_game=True` 인 상주 모듈이 **종료코드 0 으로 스스로 끝나면** 정상 종료(STOPPED)로
+본다. 게임이 살아 있는데 끝났거나 0 이 아니면 예전처럼 되살리거나(`restart=True`) FAILED 로 남긴다.
 
 **실행 방식이 모듈마다 다르니 확인하고 적어야 한다.** 예를 들어 `external_access`
 는 상대 import 를 써서 `python -m client.LocalGuard...` 로만 돌고, 직접 실행하면
 `ImportError` 가 난다. `autopaint` 도 `python -m client.detectors.autopaint.main` 으로
-띄운다 — 스크립트로 띄우면 레포 루트의 `shared` 를 못 찾는다. 등록하기 전에 그 명령을
+띄운다 — 스크립트로 띄우면 레포 루트의 `shared` 를 못 찾는다. 같은 폴더의 파일을 최상위로
+import 해서 `-m` 으로 못 띄우는 스크립트(`hide_anywhere` 의 `mecha_logger.py`)는
+`env={"PYTHONPATH": REPO}` 로 `shared` 를 찾게 한다. 등록하기 전에 그 명령을
 손으로 한 번 돌려보는 게 빠르다.
+
+**자기탐지 주의 (10/3).** `hide_anywhere` 는 세션 내내 게임을 읽기 핸들로 열어 둔다. `esp` 와
+같이 켜면 ESP 가 이 수집기를 `memory_read` 2점으로 약 7초마다 잡는다. ESP 가 등록부
+(`logs/anticheat_pids.json`)로 우리 프로세스를 빼지 않아서다. 고쳐지기 전까지 정상 세션은
+`--only` 로 둘 중 하나를 빼고 찍는다.
 
 ### 주기 실행 모듈이라면 `{t0}` 를 꼭 받아 주세요
 
@@ -141,6 +173,8 @@ signal.signal(signal.SIGBREAK, signal.default_int_handler)
 `status`: `MISSING` / `SKIPPED` / `PENDING` / `RUNNING` / `DONE` / `WARN` / `RESTART` / `FAILED` / `STOPPED`
 (`RESTART` = 상주 모듈이 죽어서 되살리는 중)
 서버 연결 상태는 `ctx["server"]` 로 들어갑니다(하트비트 붙이면 그 값만 채우면 됩니다).
+현재 UI의 `RUNNING`은 자식 프로세스가 살아 있다는 뜻일 뿐, 검사 성공이나 중앙 서버
+전송 성공을 뜻하지 않는다. UE4SS 상태가 전달되지 않으면 `검증 정보 없음`으로 표시한다.
 
 ---
 

@@ -1,0 +1,80 @@
+{
+  "reference_commit": "acc9d2afe7d21e576b098f654c04643be8455b61",
+  "python": "3.14.6",
+  "launcher_sha256": {
+    "game_launcher.py": "87aa77272e49946dbc4bd653bc99f8db98e086d73084510aaace3382dc577ebb",
+    "main.py": "8de8e30e9c043197de84c63ba4207d15303fb45ae1c56af9cae7009b7bb0b209",
+    "modules.py": "230edddf784deaebd4eef93e9b54539beada8c05b8056d26c401065049926efa",
+    "process_manager.py": "abd6702f58748f2575c5b5bf963ee1541c789ad2c7e09cac68ec241344a4f534",
+    "README.md": "26c8fff1c8a9e7f11c560652b2d9b8d68b7bd458ef884468441e530f9ea4b200",
+    "registry.py": "ea16447f57ee97151d5f894d49a42967c78b608221b1255e98abf25737218d57",
+    "UE4SS.md": "3ff2476e1747d3205b833e8430b6b2450554c0d227e1a4d1949123be8b302da0",
+    "ue4ss_manifest.py": "96e4ff992bce793a83fd5e044cd28d8f67ea8b01278f534a5b65bc663598f6d7",
+    "ui.py": "89b0ff890edc23ce6980da0fb4c1e5cf16e9bb71983eaef6def05e2c85cdc0cb"
+  },
+  "checks": [
+    {
+      "name": "launcher_start_identity_clock_and_self_exclusion",
+      "status": "PASS"
+    },
+    {
+      "name": "watchdog_restart_launcher_adoption_and_local_receiver_retry",
+      "status": "PASS"
+    },
+    {
+      "name": "concurrent_restart_no_duplicate",
+      "status": "PASS",
+      "restart_owner": "launcher"
+    },
+    {
+      "name": "launcher_recovers_selfdefense_same_session_keeps_two_runs",
+      "status": "PASS"
+    },
+    {
+      "name": "real_five_restart_limit_and_backoff",
+      "status": "PASS"
+    },
+    {
+      "name": "oneshot_and_restart_disabled_not_restarted",
+      "status": "PASS"
+    },
+    {
+      "name": "stopping_suppresses_restart_and_ctrl_break_flushes",
+      "status": "PASS",
+      "shutdown": {
+        "graceful": [
+          "self_defense"
+        ],
+        "forced": [],
+        "unsignaled": []
+      }
+    },
+    {
+      "name": "operational_events_received_separately_from_cheat_scores",
+      "status": "PASS",
+      "stored_events": 6
+    },
+    {
+      "name": "launcher_death_reported_without_resurrection",
+      "status": "PASS"
+    },
+    {
+      "name": "downloaded_launcher_files_unchanged",
+      "status": "PASS"
+    }
+  ],
+  "status": "PASS",
+  "central_server_tested": false,
+  "game_tested": false,
+  "workspace_path_omitted": true,
+  "packaged_unit_tests": [
+    {
+      "layout": "module-root ZIP",
+      "passed": 30
+    },
+    {
+      "layout": "installed team layout",
+      "passed": 30
+    }
+  ]
+}

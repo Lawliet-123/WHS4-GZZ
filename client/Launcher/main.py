@@ -45,7 +45,8 @@ import game_launcher                                          # noqa: E402
 import registry                                               # noqa: E402
 import ui                                                     # noqa: E402
 from modules import MODULES, REPO                              # noqa: E402
-from process_manager import MISSING, RUNNING, ProcessManager, SKIPPED, is_admin  # noqa: E402
+from process_manager import (FINAL_WAIT_S, MISSING, RUNNING, ProcessManager,  # noqa: E402
+                             SKIPPED, is_admin)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLAYER_FILE = os.path.join(HERE, "player_id.txt")
@@ -53,9 +54,11 @@ PLAYER_FILE = os.path.join(HERE, "player_id.txt")
 # 이름 규칙은 **받는 쪽 중에서 제일 좁은 것**에 맞춘다. 런처가 통과시켜 놓고
 # 모듈 하나만 조용히 죽는 것보다, 시작할 때 다 같이 막히는 편이 낫다.
 #   player : shared 는 [A-Za-z0-9_.-]{1,128}, input_signature 는 1~100자
-#   session: input_signature 가 [A-Za-z0-9][A-Za-z0-9_-]{0,79} (점을 안 받는다)
+#   session: input_signature 가 [A-Za-z0-9][A-Za-z0-9_-]{0,79} (점을 안 받는다),
+#            hide_anywhere(mecha_logger) 는 60자에서 **잘라 쓴다** — 61자 이상이면
+#            그 모듈만 다른 세션으로 갈리고 같은 이름 재사용 검사도 비켜 간다(10/3 검토)
 PLAYER_RE = re.compile(r"[A-Za-z0-9_.\-]{1,64}\Z")
-SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,79}\Z")
+SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,59}\Z")
 
 
 def resolve_player_id(given):
@@ -151,6 +154,8 @@ def report_stop(ended):
     강제로 끝난 모듈은 정리 코드가 안 돌았다. manifest 가 RUNNING 으로 남았을
     수 있으니, 그 세션 로그를 쓸 사람은 알아야 한다. 조용히 넘기지 않는다.
     """
+    for line in ended.get("final", []):
+        ui.line(f"  마지막 검사 — {line}")
     g, f, u = ended.get("graceful", []), ended.get("forced", []), ended.get("unsignaled", [])
     d = ended.get("defaulted", [])
     if not (g or f or u):
@@ -217,7 +222,7 @@ def main(argv=None):
     session = a.session or ("ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
     if not SESSION_RE.match(session):
         ui.line(f"세션 이름 '{session}' 은 쓸 수 없습니다.")
-        ui.line("  영문·숫자로 시작하고, 영문·숫자·_·- 만 80자까지 (점은 안 됩니다).")
+        ui.line("  영문·숫자로 시작하고, 영문·숫자·_·- 만 60자까지 (점은 안 됩니다).")
         ui.line("  input_signature 가 이 이름으로 폴더를 만들기 때문에 여기서 막습니다.")
         return 2
 
@@ -286,6 +291,7 @@ def main(argv=None):
             ui.line("  게임이 뜨지 않아 종료합니다. 게임을 켜고 다시 실행해 주세요.")
             return 2
         ctx["game_pid"] = pid
+        pm.set_game_pid(pid)
         # 게임이 떴으니 이제 추정이 아니라 프로세스에서 경로를 얻을 수 있다.
         # 게임 관련 모듈을 띄우기 **전에** 갱신해야 그 값을 물려받는다.
         found = publish_game_dir(refresh=True)
@@ -320,6 +326,8 @@ def main(argv=None):
             running = [s for s in pm.states.values() if s.status == RUNNING]
             longest = sum(max([s.module.stop_grace_s or 10.0 for s in running
                                if s.module.needs_game == g] or [0.0]) for g in (True, False))
+            if pm.final_targets():
+                longest += FINAL_WAIT_S        # 그 앞에 마지막 검사를 한 번 더 돌린다
             ui.line(f"  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (길면 {longest:.0f}초쯤).")
         except Exception:
             ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요.")

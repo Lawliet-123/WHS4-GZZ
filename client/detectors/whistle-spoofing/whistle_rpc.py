@@ -276,25 +276,35 @@ def _game_started_at(exe=GAME_EXE):
         k32.CloseHandle(h)
 
 
-def _hook_not_live(path, now=None):
-    """후크가 지금 게임에 살아 있지 않으면 그 이유, 살아 있으면 None."""
+def _hook_state(path, now=None):
+    """후크가 지금 게임에 살아 있는가. (사유 종류, 설명), 살아 있으면 (None, None).
+
+    종류
+      before_game  로그가 지금 게임이 켜지기 전에 마지막으로 쓰였다 — 새 줄도 전부 그 전 것
+      stale        HOOK_STALE_S 넘게 안 바뀌었다 — 후크가 멈췄거나 게임이 꺼졌다
+    """
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return None             # 파일 없음은 호출부가 따로 알린다
+        return None, None       # 파일 없음은 호출부가 따로 알린다
     now = time.time() if now is None else now
     game = _game_started_at()
     if game is not None and mtime < game:
-        return (f"후크 로그가 지금 게임이 켜지기 전({game - mtime:,.0f}초 전)에 "
-                f"마지막으로 쓰였습니다. 이번 게임에는 후크가 없습니다.")
+        return "before_game", (f"후크 로그가 지금 게임이 켜지기 전({game - mtime:,.0f}초 전)에 "
+                               f"마지막으로 쓰였습니다. 이번 게임에는 후크가 없습니다.")
     age = now - mtime
     if age > HOOK_STALE_S:
-        return (f"후크 로그가 {age:,.0f}초째 갱신되지 않았습니다. 후크는 살아 있으면 "
-                f"3초마다 기록합니다 — 이번 게임에 후크가 없거나 멈췄습니다.")
-    return None
+        return "stale", (f"후크 로그가 {age:,.0f}초째 갱신되지 않았습니다. 후크는 살아 있으면 "
+                         f"3초마다 기록합니다 — 이번 게임에 후크가 없거나 멈췄습니다.")
+    return None, None
 
 
-def begin_watch(path=None, state_file=None):
+def _hook_not_live(path, now=None):
+    """후크가 지금 게임에 살아 있지 않으면 그 이유, 살아 있으면 None."""
+    return _hook_state(path, now)[1]
+
+
+def begin_watch(path=None, state_file=None, t0=None):
     """반복 관측을 시작한다. 지금 로그 끝을 기준점으로 잡는다.
 
     `state_file` 을 주면 기준점을 그 파일에 저장하고, 다음에 같은 파일로 시작할 때
@@ -302,7 +312,10 @@ def begin_watch(path=None, state_file=None):
     메모리에만 두면 실행마다 기준점이 사라져서, 프로세스가 바뀔 때마다 로그를
     처음부터 다시 읽는다. 그러면 위반이 한 번 찍힌 뒤 모든 바퀴가 DETECTED 가 된다.
 
-    상태 파일은 세션 이름을 따라가므로, 새 세션이면 자동으로 새로 시작한다.
+    상태 파일은 세션 이름을 따라간다. 그런데 런처 `--overwrite` 로 **같은 이름을 다시
+    쓰면** 지난 실행의 상태 파일이 남아, 그 뒤 쌓인 지난 게임 위반을 새 세션 첫 검사가
+    읽었다(10/3 검토에서 재현). 그래서 `t0`(세션 기준 시각, 런처 실행마다 다름)를 같이
+    저장하고 **다르면 이어받지 않는다.**
     """
     global _WATCH, _STATE_FILE
     _STATE_FILE = state_file
@@ -311,8 +324,9 @@ def begin_watch(path=None, state_file=None):
         try:
             with open(state_file, encoding="utf-8") as f:
                 saved = json.load(f)
-            # 로그 파일이 바뀌었으면 이어받지 않는다. 남의 기준점을 쓰면 안 된다.
-            if isinstance(saved, dict) and saved.get("path") == (path or default_log()):
+            # 로그 파일이 바뀌었거나 다른 실행의 기준점이면 이어받지 않는다.
+            if (isinstance(saved, dict) and saved.get("path") == (path or default_log())
+                    and (t0 is None or saved.get("t0") == t0)):
                 st = saved
                 st.setdefault("exec_hooks", [])
         except Exception:
@@ -320,7 +334,7 @@ def begin_watch(path=None, state_file=None):
     if st is None:
         st = {"path": path or default_log(), "offset": 0, "started": False,
               "hooks_total": 0, "exec_hooks": [], "pe": 0, "calls": 0,
-              "restarts": 0}
+              "restarts": 0, "t0": t0}
         if os.path.exists(st["path"]):
             _consume(st)        # 후크 상태만 챙기고 기존 위반은 버린다
     _WATCH = st
@@ -404,8 +418,16 @@ def _scan_window(st):
     if not st["started"]:
         return r.fail("후크 시작 기록이 없습니다. DLL 이 로드되지 않았습니다.")
     # start 줄은 지난 게임 것일 수 있다. 지금 살아 있는지 따로 본다(위 HOOK_STALE_S).
-    dead = _hook_not_live(st["path"])
-    if dead:
+    #
+    # 다만 후크가 **멈춘(stale)** 경우, 기준점 뒤에 새로 쓰인 위반은 버리지 않는다.
+    # 기준점은 이 세션의 첫 검사 때 로그 끝에서 잡으므로(begin_watch, 세션 시각이 다르면
+    # 이어받지 않음) 그 뒤 줄은 이번 세션 것이고, 이미 읽어 기준점을 옮겼으니 여기서
+    # 버리면 다시는 못 본다. 게임이 꺼진 직후 런처가 돌리는 마지막 검사가 이 경우다
+    # (Module.final_run) — 위반 뒤 후크가 멈춰 15초가 지났을 수 있다.
+    # 로그가 **지금 게임 전에** 쓰였으면(before_game) 새 줄도 전부 지난 게임 것이라
+    # 구제하지 않는다. 위반이 없을 때도 ERROR 다 — 멈춘 후크의 조용함을 정상으로 안 읽는다.
+    kind, dead = _hook_state(st["path"])
+    if dead and (kind == "before_game" or not violations):
         return r.fail(dead + "\n    ac_whistle DLL 을 이번 게임에 주입했는지 확인하세요.")
     if not st["exec_hooks"]:
         return r.fail("도발 UFunction 의 ExecFunction 을 하나도 걸지 못했습니다. "
@@ -419,6 +441,10 @@ def _scan_window(st):
     r.meta["hooked_vtables"] = st["hooks_total"]
     if st["restarts"]:
         r.meta["log_restarts"] = st["restarts"]
+    if dead:
+        # 위반은 점수로 내되, 지금은 후크가 멈췄다는 것도 같이 남긴다.
+        r.meta["hook_live"] = False
+        r.meta["hook_note"] = dead
 
     if not violations:
         # 단발 모드와 달리 **호출 0건이 ERROR 가 아니다.** 이 구간에 휘파람을

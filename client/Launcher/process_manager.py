@@ -53,6 +53,10 @@ STOPPED = "STOPPED"        # 우리가 끝냈다
 # Ctrl+C/Ctrl+Break 를 윈도 기본 처리로 받고 끝난 프로세스의 종료 코드.
 STATUS_CONTROL_C_EXIT = 0xC000013A
 
+# 세션 끝 마지막 검사(Module.final_run)에 주는 시간(초). 돌고 있던 주기 검사가 끝나기를
+# 기다리는 시간까지 합친 값이다. 휘파람 한 바퀴는 게임이 꺼진 뒤라면 몇 초면 끝난다.
+FINAL_WAIT_S = 20.0
+
 
 def is_admin() -> bool:
     try:
@@ -112,6 +116,7 @@ class ProcessManager:
         self.session = session
         self.player = player
         self.t0 = t0
+        self.game_pid: Optional[int] = None
         self.say = say
         self.states: Dict[str, ModuleState] = {}
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -131,11 +136,16 @@ class ProcessManager:
                 st.detail = "관리자 권한으로 실행해야 합니다"
             self.states[m.name] = st
 
+    def set_game_pid(self, game_pid: int) -> None:
+        if isinstance(game_pid, bool) or not isinstance(game_pid, int) or game_pid <= 0:
+            raise ValueError("game_pid must be a positive integer")
+        self.game_pid = game_pid
+
     def _restartable(self, st: ModuleState) -> bool:
         return st.module.mode == CONTINUOUS and st.module.restart
 
     # ── 실행 ───────────────────────────────────────────────────────────
-    def start(self, name: str) -> bool:
+    def start(self, name: str, final: bool = False) -> bool:
         st = self.states[name]
         if st.status in (MISSING, SKIPPED):
             return False
@@ -145,6 +155,7 @@ class ProcessManager:
         ctx = {
             "session": self.session, "player": self.player,
             "t0": f"{self.t0:.3f}", "window": st.runs,
+            "game_pid": self.game_pid,
             # 런처가 찾은 게임 실행 폴더(main.publish_game_dir 가 채운다). UE4SS 모드
             # 로그처럼 게임 폴더 아래 파일을 읽는 모듈에 넘긴다. 못 찾았으면 기본값.
             "game_bin": os.environ.get("GZZ_GAME_BIN") or GAME_DIR,
@@ -152,6 +163,8 @@ class ProcessManager:
             "telemetry": "managed" if os.environ.get("GZZ_TELEMETRY_URL") else "off",
         }
         argv = st.module.resolved(ctx)
+        if final:
+            argv += list(st.module.final_run or [])     # 마지막 검사에만 붙는 인자
         skipped = st.module.missing_optional(ctx)
         cwd = st.module.cwd or REPO
         try:
@@ -162,11 +175,14 @@ class ProcessManager:
                     self._adopt(st, *live)
                     return True
                 proc = registry.spawn(argv, cwd, st.log_path,
-                                      note=f"launcher run #{st.runs + 1}")
+                                      note=f"launcher run #{st.runs + 1}"
+                                           + (" (세션 끝 마지막 검사)" if final else ""),
+                                      env_extra=st.module.env)
                 try:
                     registry.register(name, proc, by="launcher",
                                       restartable=self._restartable(st),
-                                      argv=argv, cwd=cwd, log=st.log_path)
+                                      argv=argv, cwd=cwd, log=st.log_path,
+                                      env=st.module.env)
                 except BaseException:
                     # 등록을 못 하면 방금 띄운 것을 남기지 않는다. 아무도 추적하지 못하고
                     # stop_all 도 모르는 프로세스가 되어 세션이 끝난 뒤에도 남는다.
@@ -227,6 +243,12 @@ class ProcessManager:
                         exited = True
                         if st.module.mode == ONESHOT:
                             self._oneshot_exit(st, code, now)
+                        elif code == 0 and st.module.needs_game and self._game_gone():
+                            # 게임이 꺼져서 스스로 끝났다(hide_anywhere 는 대상이 죽으면 0 으로
+                            # 끝난다). 런처의 게임 종료 감지보다 먼저 보면 예전에는 되살리거나
+                            # FAILED 로 셌다 — 누가 먼저 보느냐에 따라 종료코드가 갈렸다.
+                            st.status = STOPPED
+                            st.detail = "게임이 꺼져 스스로 끝남"
                         else:
                             self._down(st, f"종료됨 (code {code})")
                 elif st.adopted_pid and not registry.is_alive(st.adopted_pid, st.adopted_ctime):
@@ -249,6 +271,10 @@ class ProcessManager:
                     pass          # _save 가 살아 있는 것만으로 modules 를 다시 쓴다
             except Exception:
                 pass
+
+    def _game_gone(self) -> bool:
+        """게임이 꺼졌는가. 게임 PID 를 아직 모르면 꺼졌다고 하지 않는다."""
+        return self.game_pid is not None and not registry.is_alive(self.game_pid)
 
     def _oneshot_exit(self, st: ModuleState, code: int, now: float) -> None:
         # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패 / 3 크래시.
@@ -324,8 +350,83 @@ class ProcessManager:
     def running_count(self) -> int:
         return sum(1 for s in self.states.values() if s.status == RUNNING)
 
+    # ── 세션 끝 마지막 검사 ─────────────────────────────────────────────
+    def final_targets(self) -> List[ModuleState]:
+        """끝날 때 한 번 더 돌릴 주기 검사들 (Module.final_run).
+
+        **한 번이라도 돈 것만** 고른다. 게임이 안 떠서 시작도 못 한 모듈을 끝에 처음
+        돌리면 그 결과는 세션의 어느 구간도 대표하지 않는다. 비정상 종료 한도에 걸려
+        멈춘 것(FAILED)도 뺀다 — 한도를 둔 이유가 그만 부르는 것이다.
+        """
+        return [st for st in self.states.values()
+                if st.module.final_run is not None and st.module.mode == ONESHOT
+                and st.module.every_s and st.runs > 0
+                and st.status not in (MISSING, SKIPPED, FAILED)]
+
+    def _wait_exit(self, st: ModuleState, deadline: float) -> bool:
+        """주기 검사 하나가 끝나기를 deadline 까지 기다린다. 끝났으면 결과를 적고 True."""
+        while st.proc is not None:
+            code = st.proc.poll()
+            if code is not None:
+                st.proc = None
+                st.last_code = code
+                self._oneshot_exit(st, code, time.time())
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.1)
+        return True
+
+    def _final_pass(self, wait_s: float) -> List[str]:
+        """세션이 끝날 때 주기 검사를 한 번 더 돌린다. 결과 한 줄씩을 돌려준다.
+
+        whistle_rpc 처럼 **지난 검사 뒤에 새로 쌓인 것**을 읽는 모듈은 다음 주기에
+        그 구간을 본다. 세션이 끝나면 다음 주기가 없으니, 마지막 검사 뒤의 구간
+        (최대 every_s)이 통째로 빠진다(10/3 은지님 검토에서 짚음).
+
+        돌고 있던 주기 검사는 **끊지 않고 끝나기를 기다린 뒤** 새로 띄운다. 끊으면
+        그 검사가 보던 구간까지 빠진다. 시간 안에 안 끝난 것은 그대로 두고, 이어지는
+        _stop_all 이 다른 모듈과 똑같이 종료를 요청한다.
+
+        stop_all 안에서 부른다. 그 안에서는 Ctrl+C 를 무시하므로 이걸 기다리는 도중
+        한 번 더 눌러도 정리가 건너뛰어지지 않는다.
+        """
+        targets = self.final_targets()
+        if not targets:
+            return []
+        self.say(f"  마지막 검사를 한 번 더 돌립니다: {', '.join(st.name for st in targets)}"
+                 f" (최대 {wait_s:.0f}초)")
+        deadline = time.time() + wait_s
+        lines: List[str] = []
+        ready = []
+        for st in targets:
+            if not self._wait_exit(st, deadline):
+                lines.append(f"{st.name}: 돌고 있던 검사가 제때 안 끝나 마지막 검사를 못 함")
+            elif st.status == FAILED:
+                # 기다리던 그 검사가 비정상 종료 한도를 채웠다. 고를 때는 RUNNING 이라 못 걸렀다.
+                # 여기서 또 띄우면 한도를 넘겨 부르고, 그 결과가 FAILED 를 덮어 런처
+                # 종료코드까지 0 이 된다(10/3 검토에서 재현).
+                lines.append(f"{st.name}: 비정상 종료 한도에 걸려 마지막 검사를 안 함")
+            else:
+                ready.append(st)
+        started = []
+        for st in ready:
+            if self.start(st.name, final=True):
+                started.append(st)
+            else:
+                lines.append(f"{st.name}: 마지막 검사를 띄우지 못함 — {st.detail}")
+        for st in started:
+            window = st.runs - 1                 # start() 가 띄우면서 runs 를 올렸다
+            if self._wait_exit(st, deadline):
+                lines.append(f"{st.name}: window {window} 끝 — {st.detail} (자세한 결과는 세션 로그)")
+            else:
+                lines.append(f"{st.name}: 마지막 검사(window {window})가 {wait_s:.0f}초 안에"
+                             f" 안 끝나 종료를 요청합니다")
+        return lines
+
     # ── 종료 ───────────────────────────────────────────────────────────
-    def stop_all(self, grace_s: float = 10.0) -> Dict[str, List[str]]:
+    def stop_all(self, grace_s: float = 10.0,
+                 final_wait_s: float = FINAL_WAIT_S) -> Dict[str, List[str]]:
         """전부 끝낸다. 요청하고, 기다리고, 그래도 안 끝난 것만 강제로 끈다.
 
         예전에는 terminate() 로 끝냈다. 윈도에서 그건 TerminateProcess 라 모듈의
@@ -338,6 +439,7 @@ class ProcessManager:
         넣었다. 여기에 순서·결과 보고·재입력 방지를 더했다).
 
         순서
+          0. 마지막 검사              final_run 인 주기 검사를 한 번 더 (final_wait_s 안에)
           1. stopping 을 켠다         안 그러면 끄는 사이 워치독이 되살린다
           2. 진행 중인 재시작을 기다린다
           3. 게임 관련 모듈 먼저       탐지기가 먼저 정리를 끝내야 한다
@@ -356,7 +458,8 @@ class ProcessManager:
         중에 빠져나가 모듈이 고아로 남는다.
 
         돌려주는 값: {"graceful": [...], "forced": [...], "unsignaled": [...],
-                      "defaulted": [...]}
+                      "defaulted": [...], "final": [...]}
+          final       마지막 검사 결과 한 줄씩 (_final_pass)
           graceful    요청 후 스스로 끝남
           defaulted   graceful 중 윈도 기본 처리로 끝난 것(0xC000013A). 신호 처리
                       한 줄이 없는 모듈이 이렇게 끝나지만, 한 줄은 있고 KeyboardInterrupt
@@ -373,7 +476,15 @@ class ProcessManager:
             except (ValueError, OSError):      # 메인 스레드가 아니면 못 바꾼다
                 pass
         try:
-            return self._stop_all(grace_s)
+            # 마지막 검사가 어떻게 실패해도 아래 정리는 반드시 돈다. 안 그러면 모듈이 고아로 남는다.
+            try:
+                final = self._final_pass(final_wait_s)
+            except Exception as e:
+                final = [f"마지막 검사 중 오류: {e}"]
+            out = self._stop_all(grace_s)
+            if final:
+                out["final"] = final
+            return out
         finally:
             for s, h in prev.items():
                 try:

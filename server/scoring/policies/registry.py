@@ -9,7 +9,16 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from . import aimbot, autopaint, noclip
+from . import (
+    aimbot,
+    autopaint,
+    esp,
+    godmode,
+    hide_anywhere,
+    localguard,
+    noclip,
+    whistle,
+)
 from .contract import PolicyEvaluation, PolicyRegistry
 
 
@@ -17,13 +26,24 @@ def build_default_registry() -> PolicyRegistry:
     """현재 Scoring에서 지원하는 detector 정책을 새 Registry에 등록한다.
 
     테스트나 향후 확장 코드가 독립 Registry를 만들 수 있도록 매 호출마다
-    새로운 객체를 반환한다. Godmode와 A 담당 정책은 구현 완료 후 여기에
-    같은 방식으로 추가한다.
+    새로운 객체를 반환한다. 구현·검증된 A/B 정책을 실제 Shared module
+    이름으로 연결한다.
     """
     registry = PolicyRegistry()
     registry.register("noclip", noclip.evaluate)
     registry.register("aimbot", aimbot.evaluate)
     registry.register("autopaint", autopaint.evaluate)
+    registry.register("godmode", godmode.evaluate)
+
+    # A 담당 LocalGuard는 실제 Shared module 이름별로 같은 handler를 연결한다.
+    for module in localguard.SUPPORTED_MODULES:
+        registry.register(module, localguard.evaluate)
+
+    registry.register("whistle", whistle.evaluate)
+    registry.register("whistle_rpc", whistle.evaluate)
+    registry.register("hide_anywhere", hide_anywhere.evaluate)
+    registry.register("esp", esp.evaluate)
+
     return registry
 
 

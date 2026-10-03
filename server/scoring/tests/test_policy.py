@@ -52,10 +52,35 @@ class PolicyDraftTests(unittest.TestCase):
         self.assertIsNone(preview.raw_fraction_pct)
         self.assertIn("source entities", " ".join(preview.issues))
 
-    def test_absent_esp_profile_is_waiting_not_zero_risk(self):
-        """ESP 규격이 없다는 사실을 0 위험도로 처리하지 않는지 확인."""
-        preview = inspect_event(event("esp", 1))
-        self.assertEqual(preview.state, "AWAITING_DETECTOR")
+    def test_esp_profile_tracks_positive_only_evidence_stream(self):
+        """ESP Shared 근거 스트림을 pending이 아닌 positive-only로 해석한다."""
+        preview = inspect_event(event(
+            "esp",
+            2,
+            {
+                "event_type": "process_access",
+                "categories": ["memory_read"],
+            },
+        ))
+
+        self.assertEqual(preview.emission, "positive_only")
+        self.assertEqual(preview.state, "POLICY_NOT_CALIBRATED")
+        self.assertIsNone(preview.raw_fraction_pct)
+        self.assertIn("not current health", " ".join(preview.issues))
+
+    def test_esp_score_above_current_audited_bound_requires_review(self):
+        """현재 controller 기준 1..3을 넘는 ESP raw score는 구현 재조사를 요구한다."""
+        preview = inspect_event(event(
+            "esp",
+            4,
+            {
+                "event_type": "process_access",
+                "categories": ["memory_write"],
+            },
+        ))
+
+        self.assertEqual(preview.emission, "positive_only")
+        self.assertEqual(preview.state, "OUT_OF_AUDITED_RANGE")
         self.assertIsNone(preview.raw_fraction_pct)
 
     def test_unknown_future_module_does_not_crash_or_get_bogus_zero(self):
@@ -98,7 +123,7 @@ class PolicyDraftTests(unittest.TestCase):
 
     def test_remaining_positive_only_feed_still_warns_about_silence(self):
         """실제로 양수만 보내는 모듈의 침묵은 정상 상태로 바꾸지 않음."""
-        preview = inspect_event(event("localguard_executable_hash", 1))
+        preview = inspect_event(event("esp", 1))
         self.assertEqual(preview.emission, "positive_only")
         self.assertIn("not current health", " ".join(preview.issues))
 

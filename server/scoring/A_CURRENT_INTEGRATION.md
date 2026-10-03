@@ -1,0 +1,192 @@
+# A 정책·Receiver 최신 통합 확인 (2026-10-03)
+
+## 1. 기준과 범위
+
+팀 `main`의 `90e90cc`를 기준으로 작업함. PR #83의 Replay calibration/RiskInput,
+PR #84의 InputSignature 0점 전송, PR #86의 종료 직전 RPC 검사가 병합된 상태임.
+기존 작업 폴더의 미커밋 조사 파일은 그대로 보존하고 별도 브랜치에서 수정함.
+충돌로 미병합인 PR #85의 모듈 이름·개인정보·런처 변경은 이번 작업에 섞지 않음.
+
+기존 조사 문서와 원본 Replay는 삭제하거나 고쳐 쓰지 않음. 이전 설명은 당시
+확인 기록이며, 현재 상태는 이 문서와 각 정책 문서의 마지막 갱신 절을 참조함.
+
+A의 분석 함수·테스트·Receiver 호환성 확인을 수행함. 원본 점수, Shared 최상위
+7필드, 공통 Registry 등록, Replay calibration 임계값은 그대로 유지함.
+공통 저장 코드에서는 PR #86의 `sample_id=0`을 인식하는 최소 호환 수정만 수행함.
+공통 Profile에서는 현재 Hide 경로와 Hash의 0점 snapshot 의미를 갱신함.
+이 두 공통 파일 변경은 B 검토가 필요한 별도 호환 패치이며, 임의의 가중치·TTL·
+종합 위험도·최종 판정이나 새로운 테이블을 구현한 것은 아님.
+
+## 2. Hide Anywhere 생산자 변경에 맞춰 수정함
+
+이전에 단일 패턴 일치만으로 3점이 발생하고 읽기 실패 구분이 부족했으나,
+현재 생산자는 `client/detectors/mecha_detector_shared/`로 이동하여 지속적인
+`Rule(required=3)`과 유효성 필드를 사용하도록 수정됨. A 정책과 검증 도구가
+삭제된 경로와 이전 reason을 사용하고 있어 현재 생산자 계약으로 갱신함.
+
+| 관측 | 실제 생산자 점수·보고 | A 해석 |
+|---|---|---|
+| 동일 Pawn에서 값 1·2회 일치 | 핵심 점수 0, pending reason | 확인 완료로 승격하지 않음 |
+| 동일 Pawn에서 3회 연속 일치 | 3점, confirmed reason·확인 횟수 | 확인 보고를 보존함. 실제 숨기 행동 성공의 증명은 아님 |
+| 확인 후 계속 같은 패턴 | 반복 3점 | snapshot이며 새 사건 점수로 누적하지 않음 |
+| 읽기 실패·누락 | 유효성/오류 필드와 ERROR | 정상 0점과 구분함. 확인 횟수 초기화를 실제 생성기로 검증함 |
+| Pawn 변경 | 새 연속 횟수로 시작 | 이전 Pawn의 확인 횟수를 이어 쓰지 않음 |
+| DLL 또는 Viewport 보조 근거 | 합계 최대 2점 | 핵심 확인 점수에 다시 더하지 않음 |
+| 핵심 값 확인 성공·보조 조회 실패 | 핵심 3점, observation_status=unavailable | 핵심 패턴과 부가 조회의 유효성을 구분함 |
+
+`hide_value_confirmed`, `consecutive_matches`, `required_matches`, measurement_valid와
+confirmed reason이 대응할 때만 확인된 패턴으로 주석을 생성함. 과거 Replay의
+`Hide Anywhere Value Pattern Matched`는 원점수를 보존하되 3회 확인 데이터로
+재라벨링하지 않음.
+
+ServerBridge는 현재 `shared.logger.send_detection(event)`를 호출하며 Shared가
+전송 ID를 생성함. 이전 `UUID hex:순번` 오류와 잘못된 logger import가 현재
+코드에서 수정된 것을 확인하고, 조사 도구의 과거 오류 재현을 현재 계약 검증으로
+바꿈. bridge의 큐 등록 검사는 모의 receipt를 사용하며 운영 서버 ACK 검증이 아님.
+
+## 3. 0점과 측정 불가를 구분함
+
+- PR #82 이후 MemoryIntegrity·Whistle 공통 러너는 NORMAL 0점과 ERROR/OFFLINE
+  0점도 전송함. A 함수의 양수-only 설명을 현재 동작으로 수정함.
+- PR #84 이후 InputSignature도 실제 생성한 0점 Event를 중앙 sink에 전달함.
+  `ReplaySession.emit()`에 0·3점을 입력하여 두 건 모두 전달되는 것을 검증함.
+- 실행 파일 해시 Profile은 `positive_only`에서 `snapshot`으로 수정함.
+  검사 성공 0점은 최신 관측 갱신이며 검사 실패·부분 무일치를 전체 정상으로
+  보완하지 않음. 검사를 못 해서 Event가 없을 때 가짜 0점을 만들지 않음.
+- YARA A 함수는 유효한 0점에도 `yara_pid:<pid>:<scope>`를 반환하도록 수정함.
+  다른 PID/검사 범위의 결과를 같은 대상의 정상 복귀로 보지 않음.
+- ERROR/OFFLINE/measurement_valid=false는 `MEASUREMENT_UNAVAILABLE`로 유지함.
+  약한 이상 근거의 `NORMAL + raw_score>0`도 raw_score를 임의로 0으로 바꾸지 않음.
+- Heartbeat는 생존 확인 경로를 유지함. 개별 검사 결과나 Scoring 점수로 합치지 않음.
+
+### YARA 공통 저장 연동은 아직 남음
+
+현재 공통 저장소는 YARA를 module-level 최신 한 건으로 보관함. A의 entity_key만
+추가해도 대상별 SQLite 상태가 생기지는 않음. 전체 snapshot으로 바꾸면 PID A의
+양수 이후 PID B의 0점이 양수 상태를 덮을 수 있으므로 이번 작업에서 그렇게 바꾸지 않음.
+
+Profile의 기존 `per_entity_positive_only` 호환 분류는 보수적으로 유지하고 note에
+PR #84의 0점 전송 및 PID/scope 저장 미연결을 명시함. 이는 sender가 여전히
+양수만 보낸다는 뜻이 아님. B에서 PID·scope별 저장/조회·해소 범위를 확정한 뒤
+Profile/RiskInput까지 함께 변경해야 함. 지금 YARA 최신 한 건을 전체 현재 위험도로
+사용하면 안 됨. YARA의 기본 상한 3과 사용자 규칙 상한 10도 기존 검토 제한을 유지함.
+
+## 4. PR #86의 마지막 RPC 검사까지 연결함
+
+일반 검사에서는 `sample_id=1`, RPC 전용 마지막 검사에서는 `sample_id=0`이
+나오나 기존 Scoring은 1만 의미 중복 키로 인정하는 문제가 있었음. 실제 생산자 →
+HTTP Receiver 테스트에서 별도 event_id의 같은 마지막 구간이 history에 두 번
+쌓이는 것을 재현하여 `storage.py`의 허용값을 정수 0/1로 수정함.
+문자열·bool·음수·다른 sample 번호는 의미 중복 키로 신뢰하지 않음.
+
+- Shared 재전송: 기존 event_id idempotency를 사용함.
+- RPC 의미 중복: `(session_id, player_id, module, evidence.window_id,
+  evidence.sample_id)`를 사용함. 0도 같은 규칙으로 처리함.
+- 같은 구간의 다른 내용: 최초 이력을 덮지 않고 기존 conflict audit를 유지함.
+- 후크가 멈춰 `meta.hook_live=false`라도 새 구간에 기록된 양수 위반은 보존함.
+  hook_live만으로 측정 불가로 바꾸지 않음.
+- 새 위반이 없고 후크가 stale이면 ERROR 0점임. 후크가 살아 있는 새 무위반
+  구간의 NORMAL 0점과 구분함. 정상 구간이 이전 양수 history를 삭제하지 않음.
+- 지금 게임 시작 이전 로그의 위반은 종료 구간으로 구제하지 않음.
+- cursor를 같은 t0로 이어 읽으면 한 번만 평가하며, `--overwrite`로 세션 시각이
+  달라지면 이전 unread 위반을 새 세션으로 가져오지 않는 것을 검증함.
+
+테이블/DB 형식은 바꾸지 않음. 이 수정 이전에 이미 `semantic_key_valid=0`으로
+저장된 sample 0 이력을 자동으로 재작성하지도 않음. 기존 DB에 그런 자료가
+있다면 B와 별도 점검해야 하며, 원본 JSONL/DB를 삭제해서 해결하지 않음.
+
+## 5. 근거가 대응할 때만 overlap 후보를 생성함
+
+LocalGuard·Hide의 overlap_tags가 비어 있어 동일 원인을 상관 분석으로 연결하지
+못했으나 B와 나눈 후보 방향에 맞춰 `policies/overlap.py`를 추가함.
+태그는 상관 후보이며 자동 감점·병합·최종 점수 보정이 아님.
+
+| 후보 태그 | A 쪽 성립 조건 |
+|---|---|
+| hide_anywhere_injection | Hide의 유효한 meccha.dll 관측과 module 조회 성공 / Injection의 알려진 주입 reason과 정확한 meccha.dll 토큰 |
+| hide_anywhere_value_tamper | Hide의 유효한 3회 확인 / Value Tamper의 Hide 6개 필드 중 reason과 관측 필드가 대응 |
+| process_injection | Injection의 알려진 주입 reason과 runtime-bridge.dll 관측 |
+| autopaint_artifact | 알려진 AutoPaint bridge 파일 / 운영 YARA 규칙 / AutoPaint 실행 이미지 카탈로그 ID 중 실제 근거가 존재 |
+| godmode_behavior | Runtime의 알려진 무적 reason·값 근거·ReadProcessMemory 출처 |
+| aimbot_behavior | Runtime의 알려진 회전 reason·값 근거·ReadProcessMemory 출처 |
+| noclip_behavior | Runtime의 알려진 충돌 reason·값 근거·ReadProcessMemory 출처 |
+
+PID 일치, 양수 점수, 임의 detail 문자열만으로 태그를 만들지 않음. 테스트용
+YARA 규칙, Godmode도 공유하는 LoadLibrary 규칙, 이름이 비슷한 다른 DLL은
+AutoPaint 또는 Hide 근거로 승격하지 않음. 실패·0점·조사 범위 초과에서도 태그를
+만들지 않음. ESP와 Whistle 자체의 태그는 대응 기준을 추가로 합의하기 전까지
+비워 두며 다른 탐지기와 무조건 합치지 않음.
+
+기존 correlation은 같은 session/player·공통 tag·시간 창으로 후보를 만듦.
+대상 key가 서로 다르다고 자동 제외하지 않으므로, B의 실제 risk 보정에서는
+원인·대상·시간이 대응하는지 추가 확인해야 함. 태그 공유만으로 최종 감산하면 안 됨.
+
+## 6. 검증 범위와 실행
+
+Windows Python 3.13의 격리 테스트 환경에서 서버 requirements-dev와 지정된
+yara-python 4.5.4를 설치해 검사함. 단위/로컬 통합 검증이며 실제 게임 탐지율,
+클라우드 HTTPS, 런처 종료 타이밍의 실게임 재현 완료를 의미하지 않음.
+
+| 최종 검증 그룹 | 결과 |
+|---|---|
+| Scoring 전체 (생산자 HTTP E2E 6개 포함) | 276개 통과 |
+| Receiver detection·heartbeat | 30개 통과 |
+| Shared 전송·기록·재시도 | 48개 통과 |
+| External Access 핸들·모듈 무결성 | 44개 통과 |
+| InputSignature/YARA/Hash/Heartbeat | 72개 통과 |
+| Launcher 단위 테스트 | 25개 통과 |
+| ESP 실제 생성 경로 호환성 도구 | 8개 통과 |
+| A 계약 조사 도구의 합성 probe | assertion 통과 |
+
+서로 다른 실행 그룹 결과이며 이를 실게임 표본 수로 합산하지 않음.
+
+```powershell
+python -X utf8 -m unittest discover -s server/scoring/tests
+python -X utf8 -m unittest discover -s server/receiver/tests
+python -X utf8 -m unittest discover -s shared/tests
+python -X utf8 -m unittest discover -s client/LocalGuard/external_access -t .
+python -X utf8 -m unittest discover -s client/LocalGuard/input_signature/tests
+python -X utf8 -m unittest discover -s client/Launcher/tests
+python -X utf8 server/scoring/tools/audit_a_contracts.py
+python -X utf8 server/scoring/tools/audit_esp_policy.py --repo-root .
+```
+
+HTTP E2E는 FastAPI TestClient → 실제 Shared writer → 실제 Scoring SQLite를
+사용함. 검사 내용은 다음과 같음.
+
+- 기존 external_access scoped state 교차 덮어쓰기 방지·RPC 중복·conflict·503 복구.
+- 현재 Hide 생산자의 0/0/3점·실패 상태를 원본 7필드 그대로 저장함.
+- 마지막 RPC sample 0의 exact retry·의미 중복·정상/오류 history·재시작.
+- 현재 Hide와 LocalGuard 캡처를 시험 세션에 재생하여 기본 Registry가 대응하는
+  두 Hide overlap 후보만 생성하며 점수 3/40/100은 변경하지 않는 것을 확인함.
+
+FastAPI/Starlette의 폐기 예정 API 경고는 발생하나 검사 실패는 아님.
+
+## 7. 체크리스트와 후속 담당
+
+### 이번 작업 완료
+
+- [x] 최신 병합 코드의 생산자·A 정책 계약을 다시 맞춤.
+- [x] Hide의 3회 확인·읽기 실패·보조 조회 실패·구버전 캡처 의미를 구분함.
+- [x] PR #82/#84의 정상 0점 전송과 Hash snapshot Profile을 반영함.
+- [x] YARA 유효 0점의 PID/scope key를 준비함. 실제 scoped 저장 완료와 구분함.
+- [x] 마지막 RPC sample 0 중복 방지 오류를 수정하고 HTTP/재시작 회귀 검사를 추가함.
+- [x] 근거 조건부 overlap 태그와 양성·음성·기본 Registry 호환 검사를 추가함.
+- [x] 이전 조사 내용·Replay·사용자의 미커밋 파일을 보존함.
+
+### B와 연결/결정해야 함
+
+- [ ] 공통 storage.py/Profile의 최소 호환 변경을 B가 검토해야 함.
+- [ ] YARA PID/scope 상태 저장·정상 복귀·종료 PID 처리 범위를 구현/합의해야 함.
+- [ ] overlap 후보의 실제 감산 여부와 대상·시간 대응 기준을 정해야 함.
+- [ ] whistle_rpc TTL 및 종합 risk/최종 판정 정책을 Replay 기반으로 확정해야 함.
+- [ ] 이전 DB에 sample 0의 비의미 이력이 있으면 보존한 채 점검해야 함.
+
+### C·런처·실게임 검증
+
+- [ ] C에서 writer → configure_scoring → recovery → Receiver 활성화 순서를 연결함.
+- [ ] B가 Final Verdict 공개 API/반환형을 확정하면 C의 Dashboard 조회 API와 연결함.
+- [ ] 실제 클라이언트 → 운영 HTTPS 수신/재전송 및 게임 종료 마지막 window를 검증함.
+- [ ] 충돌 PR #85는 별도 계약 검토/해소 후 반영함. 이번 패치로 해결 처리하지 않음.
+
+가중치·TTL·최종 판정처럼 팀 결정이 필요한 값은 임의로 채우지 않음.

@@ -72,11 +72,18 @@ class DefaultPolicyRegistryTests(unittest.TestCase):
         self.assertEqual(result.annotations.overlap_tags, ())
         self.assertEqual(result.annotations.notes, ())
 
-    def test_godmode_is_not_registered_prematurely(self):
+    def test_godmode_is_registered_after_shared_compatibility(self):
         result = evaluate_event_policy(event("godmode", 1))
         self.assertEqual(result.signal.emission, "event_delta")
-        self.assertEqual(result.annotations.overlap_tags, ())
-        self.assertEqual(result.annotations.notes, ())
+        self.assertIn("godmode_behavior", result.annotations.overlap_tags)
+        self.assertIn(
+            "new_score",
+            " ".join(result.annotations.notes),
+        )
+        self.assertIn(
+            "event_delta_history",
+            " ".join(result.annotations.notes),
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,42 @@
+{
+  "game_executable": "PenguinHotel-Win64-Shipping.exe",
+  "poll_interval_seconds": 0.5,
+  "overlay_scan_interval_seconds": 2.0,
+  "database_path": "data/anti_esp.sqlite3",
+  "event_window_seconds": 900,
+  "overlay": {
+    "enabled": true,
+    "minimum_overlap_ratio": 0.55,
+    "cooldown_seconds": 30
+  },
+  "allowlist": {
+    "paths": [],
+    "sha256": []
+  },
+  "module_monitor": {
+    "enabled": true,
+    "scan_interval_seconds": 5,
+    "verify_signatures": true
+  },
+  "handle_monitor": {
+    "enabled": true,
+    "scan_interval_seconds": 2,
+    "cooldown_seconds": 5
+  },
+  "telemetry": {
+    "enabled": true,
+    "root": "data/sessions",
+    "session_id": null,
+    "player_id": "player_001",
+    "scenario": null,
+    "cheat_on_ms": null,
+    "cheat_off_ms": null
+  },
+  "identity": {
+    "enabled": false,
+    "pepper_environment": "MECCHA_GUARD_IDENTITY_PEPPER"
+  },
+  "response": {
+    "mode": "observe"
+  }
+}

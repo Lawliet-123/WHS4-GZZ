@@ -1,0 +1,10 @@
+<Sysmon schemaversion="4.82">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+    <RuleGroup name="Meccha game process access" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="end with">\PenguinHotel-Win64-Shipping.exe</TargetImage>
+      </ProcessAccess>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>
