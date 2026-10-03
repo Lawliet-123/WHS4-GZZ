@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .aggregate import AggregateEvidence, build_aggregate_evidence
+from .history_summary import (
+    GodmodeHistorySummary,
+    summarize_godmode_history,
+)
 from .correlation import (
     CorrelationCandidate,
     find_correlation_candidates,
@@ -299,6 +303,50 @@ def get_event_delta_history(
     return _get_store().get_event_delta_history(
         session_id, player_id, module=module,
         after_sequence=after_sequence, limit=limit,
+    )
+
+
+def get_godmode_history_summary(
+    session_id: str,
+    player_id: str,
+    *,
+    batch_size: int = 1000,
+) -> GodmodeHistorySummary:
+    """Godmode event_delta 전체 이력을 합산 없이 요약한다.
+
+    저장소 조회 limit 때문에 과거 사건이 잘리지 않도록 sequence cursor로
+    끝까지 페이지를 읽는다.
+
+    이 함수는 TTL, Aggregate Risk, Final Verdict를 계산하지 않는다.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    rows: list[DeltaEvent] = []
+    cursor = 0
+
+    while True:
+        batch = get_event_delta_history(
+            session_id,
+            player_id,
+            module="godmode",
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            break
+
+        rows.extend(batch)
+        cursor = batch[-1].sequence
+
+        if len(batch) < batch_size:
+            break
+
+    return summarize_godmode_history(
+        rows,
+        session_id=session_id,
+        player_id=player_id,
     )
 
 

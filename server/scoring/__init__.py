@@ -10,6 +10,7 @@ from .main import (
     configure_scoring,
     evaluate_event_policy,
     get_event_delta_history,
+    get_godmode_history_summary,
     get_external_access_scoped_state,
     get_whistle_window_conflicts,
     get_whistle_window_history,
@@ -23,6 +24,7 @@ from .main import (
     recover_from_writer,
 )
 from .aggregate import AggregateEvidence, AggregateSignal
+from .history_summary import GodmodeHistorySummary
 from .correlation import CorrelationCandidate
 from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
 from .storage import (
@@ -39,6 +41,7 @@ __all__ = (
     "AggregateSignal",
     "CorrelationCandidate",
     "DeltaEvent",
+    "GodmodeHistorySummary",
     "ModulePolicySnapshot",
     "ModuleState",
     "PlayerPolicySnapshot",
@@ -50,6 +53,7 @@ __all__ = (
     "configure_scoring",
     "evaluate_event_policy",
     "get_event_delta_history",
+    "get_godmode_history_summary",
     "get_external_access_scoped_state",
     "get_whistle_window_conflicts",
     "get_whistle_window_history",
