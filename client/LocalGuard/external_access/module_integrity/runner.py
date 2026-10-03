@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import ntpath
 import os
 import signal
 import sys
@@ -46,6 +49,74 @@ from .module_sensor import ModuleSensorUnavailable, ToolhelpModuleSensor
 
 Writer = Callable[[Path, Dict[str, Any]], None]
 
+_INSPECTION_ERROR_CODE = "ARTIFACT_INSPECTION_UNAVAILABLE"
+
+
+def _strip_windows_path_namespace(path: str) -> str:
+    """Return a trimmed Windows path without an extended-length namespace."""
+    value = path.strip().replace("/", "\\")
+    lowered = value.casefold()
+    if lowered.startswith("\\\\?\\unc\\"):
+        return "\\\\" + value[8:]
+    if lowered.startswith("\\\\?\\") or lowered.startswith("\\??\\"):
+        return value[4:]
+    return value
+
+
+def _normalized_absolute_module_path(path: Any) -> Optional[str]:
+    """Normalize an absolute drive/UNC path for a stable privacy digest."""
+    if not isinstance(path, str):
+        return None
+    value = _strip_windows_path_namespace(path)
+    if (
+        not value
+        or "\x00" in value
+        or not ntpath.isabs(value)
+        or not ntpath.splitdrive(value)[0]
+    ):
+        return None
+    return ntpath.normcase(ntpath.normpath(value))
+
+
+def _module_path_basename(path: Any) -> Optional[str]:
+    """Reduce an arbitrary module path to its non-sensitive final component."""
+    if not isinstance(path, str):
+        return None
+    value = _strip_windows_path_namespace(path)
+    if not value:
+        return None
+    basename = ntpath.basename(ntpath.normpath(value))
+    return basename or None
+
+
+def _privacy_sanitized_event(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy an event and remove machine-local details from central evidence."""
+    sanitized = copy.deepcopy(result)
+    evidence = sanitized.get("evidence")
+    if not isinstance(evidence, dict):
+        return sanitized
+
+    module_path = evidence.get("module_path")
+    if "module_path" in evidence:
+        evidence["module_path"] = _module_path_basename(module_path)
+    evidence.pop("module_path_path_sha256", None)
+    normalized_path = _normalized_absolute_module_path(module_path)
+    if normalized_path is not None:
+        try:
+            path_bytes = normalized_path.encode("utf-8")
+        except UnicodeEncodeError:
+            pass
+        else:
+            evidence["module_path_path_sha256"] = hashlib.sha256(
+                path_bytes
+            ).hexdigest()
+
+    inspection_error = evidence.pop("inspection_error", None)
+    evidence.pop("inspection_error_code", None)
+    if isinstance(inspection_error, str) and inspection_error:
+        evidence["inspection_error_code"] = _INSPECTION_ERROR_CODE
+    return sanitized
+
 
 def _configure_shared_client() -> bool:
     """Configure shared once while allowing local-only detection to continue."""
@@ -64,7 +135,7 @@ def _write_local_and_send(path: Path, result: Dict[str, Any]) -> None:
     if result["raw_score"] <= 0:
         return
     try:
-        receipt = send_detection(result)
+        receipt = send_detection(_privacy_sanitized_event(result))
     except SharedError as error:
         print(f"[shared] detection not queued: {type(error).__name__}")
         return

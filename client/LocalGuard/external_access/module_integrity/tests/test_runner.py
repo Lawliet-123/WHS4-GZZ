@@ -119,6 +119,126 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
             with patch.object(runner_module, "send_detection", side_effect=fake_send):
                 runner_module._write_local_and_send(output, event)
 
+    def test_central_copy_redacts_module_path_and_inspection_error(self):
+        module_path = r"\\?\C:/Users/Alice/Game/Mods/../Private/Unknown.DLL"
+        inspection_error = (
+            "[WinError 5] denied: "
+            r"'C:\Users\Alice\Game\Private\Unknown.DLL'"
+        )
+        event = {
+            "session_id": "esp_001",
+            "player_id": "player_042",
+            "module": "module_integrity",
+            "timestamp_ms": 1234,
+            "evidence": {
+                "submodule": "module_integrity",
+                "status": "SUSPICIOUS",
+                "module_path": module_path,
+                "inspection_error": inspection_error,
+            },
+            "reasons": ["Module appeared after the process baseline"],
+            "raw_score": 1,
+        }
+        original_event = json.loads(json.dumps(event))
+        receipt = SimpleNamespace(
+            event_id="00000000-0000-0000-0000-000000000001",
+            status="queued",
+        )
+        sent = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "events.jsonl"
+            with patch.object(
+                runner_module,
+                "send_detection",
+                side_effect=lambda payload: sent.append(payload) or receipt,
+            ):
+                runner_module._write_local_and_send(output, event)
+
+            local_event = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(local_event, original_event)
+        self.assertEqual(event, original_event)
+        self.assertIsNot(sent[0], event)
+        self.assertIsNot(sent[0]["evidence"], event["evidence"])
+        self.assertEqual(sent[0]["evidence"]["module_path"], "Unknown.DLL")
+        normalized_path = r"c:\users\alice\game\private\unknown.dll"
+        self.assertEqual(
+            sent[0]["evidence"]["module_path_path_sha256"],
+            hashlib.sha256(normalized_path.encode("utf-8")).hexdigest(),
+        )
+        self.assertNotIn("inspection_error", sent[0]["evidence"])
+        self.assertEqual(
+            sent[0]["evidence"]["inspection_error_code"],
+            "ARTIFACT_INSPECTION_UNAVAILABLE",
+        )
+        public_payload = json.dumps(sent[0], ensure_ascii=False).casefold()
+        self.assertNotIn("alice", public_payload)
+        self.assertNotIn("winerror 5", public_payload)
+
+    def test_path_digest_uses_only_strict_absolute_windows_paths(self):
+        base_event = {
+            "session_id": "esp_001",
+            "player_id": "player_042",
+            "module": "module_integrity",
+            "timestamp_ms": 1234,
+            "evidence": {
+                "submodule": "module_integrity",
+                "status": "SUSPICIOUS",
+            },
+            "reasons": ["Module appeared after the process baseline"],
+            "raw_score": 1,
+        }
+        equivalent_paths = (
+            r"C:\Game\Mods\..\Plugin.DLL",
+            r"\\?\C:/GAME/Plugin.DLL",
+            r"\??\c:\game\PLUGIN.dll",
+        )
+        expected_drive_digest = hashlib.sha256(
+            r"c:\game\plugin.dll".encode("utf-8")
+        ).hexdigest()
+        for module_path in equivalent_paths:
+            with self.subTest(module_path=module_path):
+                event = json.loads(json.dumps(base_event))
+                event["evidence"]["module_path"] = module_path
+                sanitized = runner_module._privacy_sanitized_event(event)
+                self.assertEqual(
+                    sanitized["evidence"]["module_path_path_sha256"],
+                    expected_drive_digest,
+                )
+
+        unc_event = json.loads(json.dumps(base_event))
+        unc_event["evidence"]["module_path"] = (
+            r"\\?\UNC\SERVER\Share\Mods\Plugin.DLL"
+        )
+        unc_sanitized = runner_module._privacy_sanitized_event(unc_event)
+        expected_unc_digest = hashlib.sha256(
+            r"\\server\share\mods\plugin.dll".encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            unc_sanitized["evidence"]["module_path_path_sha256"],
+            expected_unc_digest,
+        )
+
+        for module_path, expected_basename in (
+            ("Plugin.DLL", "Plugin.DLL"),
+            (r"C:Plugin.DLL", "Plugin.DLL"),
+            (r"\Game\Plugin.DLL", "Plugin.DLL"),
+            ("C:\\Game\\bad\x00Plugin.DLL", "bad\x00Plugin.DLL"),
+        ):
+            with self.subTest(invalid_module_path=module_path):
+                event = json.loads(json.dumps(base_event))
+                event["evidence"]["module_path"] = module_path
+                sanitized = runner_module._privacy_sanitized_event(event)
+                self.assertEqual(
+                    sanitized["evidence"]["module_path"],
+                    expected_basename,
+                )
+                self.assertNotIn(
+                    "module_path_path_sha256",
+                    sanitized["evidence"],
+                )
+
     def test_zero_status_events_are_local_only(self):
         for status in ("NORMAL", "OFFLINE", "ERROR"):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:

@@ -64,16 +64,30 @@ _PAINT_FIELDS = frozenset((
     "maxreplicatedpaintstrokespertick", "autoflushthreshold",
     "bautoflushstrokes", "brealtimenetworksync",
 ))
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 def _valid_pid(value: Any) -> bool:
     return type(value) is int and 0 < value <= 0xFFFFFFFF
 
 
-def _module_scope(evidence: Mapping[str, Any]) -> str | None:
-    """게임 PID와 절대 Windows DLL 경로의 관측 범위. 파일/네트워크 접근 없음.
+def _strict_path_digest(value: Any) -> str | None:
+    """Accept only a complete SHA-256 hex digest emitted by a path sanitizer."""
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in _HEX_DIGITS for character in value)
+    ):
+        return None
+    return value.casefold()
 
-    해시는 경로 문자열의 길이 제한용이지 파일 무결성 해시가 아니다.
+
+def _module_scope(evidence: Mapping[str, Any]) -> str | None:
+    """게임 PID와 정규화 Windows DLL 경로 항등성의 관측 범위.
+
+    파일/네트워크 접근은 하지 않는다. 해시는 절대 경로에서 도출하거나
+    프라이버시 어댑터가 정규화한 경로의 다이제스트를 전달한 것이지,
+    파일 무결성 해시가 아니다.
     change_type/시각은 키에 넣지 않음: 사건 ID나 재전송 중복 키가 아님.
     """
     pid, path = evidence.get("target_pid"), evidence.get("module_path")
@@ -88,10 +102,24 @@ def _module_scope(evidence: Mapping[str, Any]) -> str | None:
     elif lowered.startswith("\\??\\"):
         value = value[4:]
     # 상대 경로나 드라이브 없는 경로를 서버의 현재 폴더로 보완하지 않는다.
-    if "\x00" in value or not ntpath.isabs(value) or not ntpath.splitdrive(value)[0]:
+    if "\x00" in value:
         return None
-    normalized = ntpath.normcase(ntpath.normpath(value))
-    digest = sha256(normalized.encode("utf-8")).hexdigest()
+    if ntpath.isabs(value) and ntpath.splitdrive(value)[0]:
+        normalized = ntpath.normcase(ntpath.normpath(value))
+        digest = sha256(normalized.encode("utf-8")).hexdigest()
+        if (
+            "module_path_path_sha256" in evidence
+            and _strict_path_digest(evidence.get("module_path_path_sha256")) != digest
+        ):
+            # Reject two conflicting identities for the same module record.
+            return None
+    else:
+        # Privacy-safe central evidence keeps the basename in module_path and
+        # the normalized full-path identity in this exact companion field.
+        # Never substitute the module's file-content ``sha256`` value.
+        digest = _strict_path_digest(evidence.get("module_path_path_sha256"))
+        if digest is None:
+            return None
     return f"game_module:{pid}:{digest}"
 
 
@@ -142,12 +170,16 @@ def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
         elif event["raw_score"] > 0:
             notes.append("양수 DLL 결과의 change_type이 없거나 미분류다. 변화 종류를 추정하지 않는다.")
             return None
-        if evidence.get("inspection_error") or evidence.get("signature_status") == "unknown":
+        if (
+            evidence.get("inspection_error")
+            or evidence.get("inspection_error_code")
+            or evidence.get("signature_status") == "unknown"
+        ):
             notes.append("파일 신뢰 조회 실패와 DLL 매핑 관측은 구분한다. 조회 실패로 서명/파일 해시를 확정하지 않는다.")
         if event["raw_score"] > 0:
             key = _module_scope(evidence)
             if key is None:
-                notes.append("유효한 target_pid·절대 DLL 경로가 없어 관측 범위 키를 만들지 않는다. DLL 이름·주소·첫 번째 다른 근거로 대신하지 않는다.")
+                notes.append("유효한 target_pid·절대 DLL 경로 또는 엄격한 정규화-경로 다이제스트 쌍이 없어 관측 범위 키를 만들지 않는다. DLL 이름·주소·첫 번째 다른 근거로 대신하지 않는다.")
             else:
                 notes.append("game_module 키는 PID+정규화 경로의 범위다. 경로 해시는 파일 해시가 아니며 개별 로드 사건·계정·재전송 ID도 아니다.")
             return key

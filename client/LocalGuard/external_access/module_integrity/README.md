@@ -144,6 +144,12 @@ JSONL writer에 프로세스 간 잠금이 없으므로 서로 다른 출력 파
 중앙에는 양수 DLL 변화만 전송한다. 주기적인 0점 상태는 로컬 JSONL에만 남겨
 한 번 수신된 양수 탐지가 다음 0점 상태로 즉시 덮어써지는 일을 막는다.
 
+조사용 로컬 JSONL에는 원래 `module_path`와 상세 검사 오류를 보존한다. 중앙 전송본은
+개인정보가 포함될 수 있는 전체 경로를 DLL 파일명과 정규화 경로의 SHA-256
+(`module_path_path_sha256`)으로 바꾸고, 자유 형식 `inspection_error`는 고정된
+`inspection_error_code`로 치환한다. 서버 scoring은 이 경로 지문을 파일 내용의
+SHA-256과 구분해 동일 DLL 관측 범위를 연결한다.
+
 로컬 JSONL 기록이 성공한 뒤에만 `send_detection()`을 호출한다. `queued`는 shared
 outbox 저장 성공이며 중앙 receiver의 수신 확인이 아니다. 종료할 때 `flush_client()`와
 `shutdown_client()`를 호출하고, 서버 설정이 없거나 전송이 실패해도 로컬 관찰은 계속한다.
