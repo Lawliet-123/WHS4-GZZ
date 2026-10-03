@@ -77,7 +77,7 @@ optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
 |---|---|
 | `mode=CONTINUOUS` | 자기가 알아서 계속 돈다. 런처는 살아 있는지만 본다 |
 | `mode=ONESHOT` + `every_s` | 한 번 돌고 끝난다. 런처가 그 주기로 다시 부른다 |
-| `final_run=True` | (주기 검사만) 세션이 끝날 때 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 지금은 휘파람 |
+| `final_run=[...]` | (주기 검사만) 세션이 끝날 때 그 인자를 붙여 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 스냅샷 검사는 넣지 않는다(게임이 꺼진 뒤 OFFLINE 이 세션 중 탐지를 덮는다). 지금은 휘파람 `["--only", "whistle_rpc"]` |
 | `needs_game=False` | 게임보다 **먼저** 뜬다 (SelfDefense·KernelWatcher) |
 | `needs_admin=True` | 관리자 권한이 없으면 건너뛴다 |
 

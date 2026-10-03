@@ -163,6 +163,8 @@ class ProcessManager:
             "telemetry": "managed" if os.environ.get("GZZ_TELEMETRY_URL") else "off",
         }
         argv = st.module.resolved(ctx)
+        if final:
+            argv += list(st.module.final_run or [])     # 마지막 검사에만 붙는 인자
         skipped = st.module.missing_optional(ctx)
         cwd = st.module.cwd or REPO
         try:
@@ -345,8 +347,9 @@ class ProcessManager:
         멈춘 것(FAILED)도 뺀다 — 한도를 둔 이유가 그만 부르는 것이다.
         """
         return [st for st in self.states.values()
-                if st.module.final_run and st.module.mode == ONESHOT and st.module.every_s
-                and st.runs > 0 and st.status not in (MISSING, SKIPPED, FAILED)]
+                if st.module.final_run is not None and st.module.mode == ONESHOT
+                and st.module.every_s and st.runs > 0
+                and st.status not in (MISSING, SKIPPED, FAILED)]
 
     def _wait_exit(self, st: ModuleState, deadline: float) -> bool:
         """주기 검사 하나가 끝나기를 deadline 까지 기다린다. 끝났으면 결과를 적고 True."""
@@ -383,10 +386,17 @@ class ProcessManager:
                  f" (최대 {wait_s:.0f}초)")
         deadline = time.time() + wait_s
         lines: List[str] = []
-        ready = [st for st in targets if self._wait_exit(st, deadline)]
+        ready = []
         for st in targets:
-            if st not in ready:
+            if not self._wait_exit(st, deadline):
                 lines.append(f"{st.name}: 돌고 있던 검사가 제때 안 끝나 마지막 검사를 못 함")
+            elif st.status == FAILED:
+                # 기다리던 그 검사가 비정상 종료 한도를 채웠다. 고를 때는 RUNNING 이라 못 걸렀다.
+                # 여기서 또 띄우면 한도를 넘겨 부르고, 그 결과가 FAILED 를 덮어 런처
+                # 종료코드까지 0 이 된다(10/3 검토에서 재현).
+                lines.append(f"{st.name}: 비정상 종료 한도에 걸려 마지막 검사를 안 함")
+            else:
+                ready.append(st)
         started = []
         for st in ready:
             if self.start(st.name, final=True):
