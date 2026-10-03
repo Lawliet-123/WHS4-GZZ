@@ -16,6 +16,7 @@ from .main import (
     get_whistle_window_conflicts,
     get_whistle_window_history,
     get_player_aggregate_evidence,
+    get_player_aggregate_risk,
     get_player_correlation_candidates,
     get_player_policy_snapshot,
     get_player_risk_input,
@@ -25,6 +26,7 @@ from .main import (
     recover_from_writer,
 )
 from .aggregate import AggregateEvidence, AggregateSignal
+from .aggregate_risk import AggregateRisk
 from .history_summary import GodmodeHistorySummary
 from .fusion import FusionEvidenceUnit, FusionPlan
 from .overlap import OverlapGroup
@@ -41,6 +43,7 @@ from .storage import (
 
 __all__ = (
     "AggregateEvidence",
+    "AggregateRisk",
     "AggregateSignal",
     "CorrelationCandidate",
     "DeltaEvent",
@@ -65,6 +68,7 @@ __all__ = (
     "get_whistle_window_conflicts",
     "get_whistle_window_history",
     "get_player_aggregate_evidence",
+    "get_player_aggregate_risk",
     "get_player_correlation_candidates",
     "get_player_policy_snapshot",
     "get_player_risk_input",

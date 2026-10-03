@@ -49,6 +49,7 @@ class FusionPlan:
     unresolved_modules: tuple[str, ...]
     deferred_modules: tuple[str, ...]
     unavailable_modules: tuple[str, ...]
+    advisory_modules: tuple[str, ...] = ()
 
 
 def build_fusion_plan(
@@ -132,4 +133,5 @@ def build_fusion_plan(
         unresolved_modules=evidence.unresolved_modules,
         deferred_modules=evidence.deferred_modules,
         unavailable_modules=evidence.unavailable_modules,
+        advisory_modules=evidence.advisory_modules,
     )

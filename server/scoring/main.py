@@ -18,6 +18,7 @@ from .history_summary import (
     summarize_godmode_history,
 )
 from .fusion import FusionPlan, build_fusion_plan
+from .aggregate_risk import AggregateRisk, build_aggregate_risk
 from .correlation import (
     CorrelationCandidate,
     find_correlation_candidates,
@@ -179,6 +180,28 @@ def get_player_fusion_plan(
     """
     return build_fusion_plan(
         get_player_aggregate_evidence(
+            session_id,
+            player_id,
+            max_time_distance_ms=max_time_distance_ms,
+        )
+    )
+
+
+def get_player_aggregate_risk(
+    session_id: str,
+    player_id: str,
+    *,
+    max_time_distance_ms: int | None = None,
+) -> AggregateRisk:
+    """현재 플레이어의 overlap 보정 Aggregate Risk 근거를 반환한다.
+
+    B Scoring 내부 공개 함수이며 HTTP endpoint가 아니다.
+
+    현재 버전은 임의 가중치/확률을 만들지 않고,
+    independent evidence와 overlap cluster를 evidence unit 단위로 집계한다.
+    """
+    return build_aggregate_risk(
+        get_player_fusion_plan(
             session_id,
             player_id,
             max_time_distance_ms=max_time_distance_ms,
