@@ -22,7 +22,7 @@ A의 분석 함수·테스트·Receiver 호환성 확인을 수행함. 원본 �
 ## 2. Hide Anywhere 생산자 변경에 맞춰 수정함
 
 이전에 단일 패턴 일치만으로 3점이 발생하고 읽기 실패 구분이 부족했으나,
-현재 생산자는 `client/detectors/mecha_detector_shared/`로 이동하여 지속적인
+현재 생산자는 `client/detectors/hide_anywhere/`로 이동하여 지속적인
 `Rule(required=3)`과 유효성 필드를 사용하도록 수정됨. A 정책과 검증 도구가
 삭제된 경로와 이전 reason을 사용하고 있어 현재 생산자 계약으로 갱신함.
 
@@ -224,3 +224,52 @@ FastAPI/Starlette의 폐기 예정 API 경고는 발생하나 검사 실패는 �
 - [ ] 충돌 PR #85는 별도 계약 검토/해소 후 반영함. 이번 패치로 해결 처리하지 않음.
 
 가중치·TTL·최종 판정처럼 팀 결정이 필요한 값은 임의로 채우지 않음.
+
+## 8. PR #89 및 최신 main 후속 갱신 (2026-10-04)
+
+PR #88과 PR #89가 팀 main에 병합된 뒤의 코드를 다시 확인함. B에서 다음 항목을
+완료함.
+
+- `localguard_yara`를 `PID + scope` 기준 scoped state로 독립 저장하고 Profile을
+  `per_entity_snapshot`으로 변경함. 다른 대상의 NORMAL 0점이 기존 양수 상태를
+  덮지 않으며 같은 PID/scope의 0점만 해당 상태를 정상으로 갱신함.
+- A가 만든 reason/evidence 기반 overlap tag만 사용하고, 단순 PID 일치나 양수
+  점수만으로 중복 처리하지 않음.
+- overlap 후보를 같은 원인의 evidence unit으로 묶되 서로 다른 tag의 연쇄 관계를
+  하나로 축소하지 않도록 보호함.
+- Godmode event_delta를 합산하지 않고 이력에서 qualifying event 존재 여부로
+  해석함.
+- Receiver → Shared writer → Scoring → Final Verdict 경로를 E2E로 연결함.
+  v1 최종 상태는 `SUSPICIOUS`, `INCONCLUSIVE`, `NO_ACTIVE_EVIDENCE`이며,
+  `SUSPICIOUS`는 치트 확정을 의미하지 않음.
+
+PR #89 직후 Hide 생산자 폴더가 `client/detectors/hide_anywhere/`로 이동하고
+`--t0` 및 `SessionClock` 지원이 추가됨. 폴더 이동 뒤 남아 있던 이전 경로 때문에
+A Scoring 회귀 3건이 실패하고 런처가 존재하지 않는 스크립트를 가리키는 문제를
+재현함. 다음 호환 수정을 적용함.
+
+- Launcher의 Hide 실행 파일·출력·세션 로그 경로를 새 폴더로 변경함.
+- Launcher가 Hide에 공통 `{t0}`를 전달하도록 연결함. 실제 런처 실행 Event는
+  `timestamp_basis=launcher_session_start`를 사용하므로 다른 공통 시계 탐지기와
+  시간창 비교가 가능함.
+- Scoring Profile, A 계약 감사 도구, Hide 정책/E2E 테스트의 생산자 경로를 새
+  폴더로 변경함.
+- 런처 등록 테스트에 새 경로·PID·session/player·t0·전송 on/off 인자를 추가함.
+
+최신 main과 위 수정을 합친 상태에서 Scoring 341개, Receiver 30개, Launcher
+27개, Hide 33개가 통과함. Hide 6개는 SDK/실행 파일 자료가 없는 환경 의존 검사로
+skip됨. A 계약 감사와 ESP 생산자 호환 검사 8개도 통과함.
+
+B의 `local_session_start` 차단 guard는 `--t0` 없이 Hide를 단독 실행한 Event에
+대해서는 계속 필요함. 런처 공통 t0가 전달된 Event에는 해당 guard가 적용되지
+않으므로 정상적인 time-window correlation 후보를 만들 수 있음.
+
+### 최신 남은 작업
+
+- [x] YARA PID/scope scoped state와 `per_entity_snapshot`을 B에서 연결함.
+- [x] Hide 런처에 공통 t0를 전달하고 새 생산자 경로를 연결함.
+- [x] B의 Aggregate Risk·Final Verdict 및 Receiver E2E를 구현함.
+- [ ] Whistle RPC TTL/Expiry는 실제 주기·Replay 근거로 확정해야 함.
+- [ ] ESP가 Hide 수집기 PID를 자기탐지에서 제외하도록 수정해야 함.
+- [ ] C에서 production startup과 Dashboard 조회 API를 최종 연결해야 함.
+- [ ] 운영 HTTPS 및 실제 게임 세션에서 Launcher → Receiver → Final Verdict를 검증해야 함.
