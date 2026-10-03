@@ -404,8 +404,14 @@ def _scan_window(st):
     if not st["started"]:
         return r.fail("후크 시작 기록이 없습니다. DLL 이 로드되지 않았습니다.")
     # start 줄은 지난 게임 것일 수 있다. 지금 살아 있는지 따로 본다(위 HOOK_STALE_S).
+    #
+    # 다만 **기준점 뒤에 새로 쓰인 위반이 있으면 버리지 않는다.** 기준점은 이 세션의
+    # 첫 검사 때 로그 끝에서 잡으므로 그 뒤 줄은 이번 세션 것이고, 이미 읽어서 기준점을
+    # 옮겼으니 여기서 버리면 다시는 못 본다. 게임이 꺼진 직후 런처가 돌리는 마지막
+    # 검사가 이 경우다(Module.final_run) — 위반 뒤 후크가 멈춰 15초가 지났을 수 있다.
+    # 위반이 없을 때만 ERROR 다. "멈춘 후크의 조용함"을 정상으로 읽지 않는다.
     dead = _hook_not_live(st["path"])
-    if dead:
+    if dead and not violations:
         return r.fail(dead + "\n    ac_whistle DLL 을 이번 게임에 주입했는지 확인하세요.")
     if not st["exec_hooks"]:
         return r.fail("도발 UFunction 의 ExecFunction 을 하나도 걸지 못했습니다. "
@@ -419,6 +425,10 @@ def _scan_window(st):
     r.meta["hooked_vtables"] = st["hooks_total"]
     if st["restarts"]:
         r.meta["log_restarts"] = st["restarts"]
+    if dead:
+        # 위반은 점수로 내되, 지금은 후크가 멈췄다는 것도 같이 남긴다.
+        r.meta["hook_live"] = False
+        r.meta["hook_note"] = dead
 
     if not violations:
         # 단발 모드와 달리 **호출 0건이 ERROR 가 아니다.** 이 구간에 휘파람을

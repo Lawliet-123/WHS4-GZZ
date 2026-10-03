@@ -66,6 +66,10 @@ class Module:
     # 게임 쪽 UE4SS 모드 폴더처럼 PC 마다 깔렸을 수도 안 깔렸을 수도 있는데,
     # 없는 경로를 넘기면 모듈이 시작을 거부하는 경우에 쓴다.
     optional_paths: List[Tuple[str, str]] = field(default_factory=list)
+    # 세션이 끝날 때(게임 종료·Ctrl+C) 주기 검사(ONESHOT + every_s)를 한 번 더 돌릴지.
+    # 주기 사이에 쌓인 것을 다음 주기에 읽는 모듈은, 이게 없으면 마지막 검사 뒤의
+    # 구간(최대 every_s)을 영영 못 본다. 그 시점의 상태만 보는 스냅샷 검사는 필요 없다.
+    final_run: bool = False
     note: str = ""
 
     @staticmethod
@@ -208,6 +212,10 @@ MODULES: List[Module] = [
         mode=ONESHOT,
         every_s=30.0,
         session_log_dir="client/detectors/whistle-spoofing/logs/detection",
+        # whistle_rpc 는 후크 로그에서 지난 검사 뒤에 새로 쓰인 줄만 읽는다. 끝에 한 번
+        # 더 안 돌리면 마지막 검사 뒤 30초 미만 구간의 위반이 빠진다(10/3 은지님 검토).
+        # memory_integrity 는 그 순간의 메모리를 보는 스냅샷이라 넣지 않았다.
+        final_run=True,
         note="휘파람 후킹 흔적 + 도발 RPC",
     ),
     Module(

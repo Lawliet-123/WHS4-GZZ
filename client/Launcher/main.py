@@ -45,7 +45,8 @@ import game_launcher                                          # noqa: E402
 import registry                                               # noqa: E402
 import ui                                                     # noqa: E402
 from modules import MODULES, REPO                              # noqa: E402
-from process_manager import MISSING, RUNNING, ProcessManager, SKIPPED, is_admin  # noqa: E402
+from process_manager import (FINAL_WAIT_S, MISSING, RUNNING, ProcessManager,  # noqa: E402
+                             SKIPPED, is_admin)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLAYER_FILE = os.path.join(HERE, "player_id.txt")
@@ -151,6 +152,8 @@ def report_stop(ended):
     강제로 끝난 모듈은 정리 코드가 안 돌았다. manifest 가 RUNNING 으로 남았을
     수 있으니, 그 세션 로그를 쓸 사람은 알아야 한다. 조용히 넘기지 않는다.
     """
+    for line in ended.get("final", []):
+        ui.line(f"  마지막 검사 — {line}")
     g, f, u = ended.get("graceful", []), ended.get("forced", []), ended.get("unsignaled", [])
     d = ended.get("defaulted", [])
     if not (g or f or u):
@@ -321,6 +324,8 @@ def main(argv=None):
             running = [s for s in pm.states.values() if s.status == RUNNING]
             longest = sum(max([s.module.stop_grace_s or 10.0 for s in running
                                if s.module.needs_game == g] or [0.0]) for g in (True, False))
+            if pm.final_targets():
+                longest += FINAL_WAIT_S        # 그 앞에 마지막 검사를 한 번 더 돌린다
             ui.line(f"  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (길면 {longest:.0f}초쯤).")
         except Exception:
             ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요.")
