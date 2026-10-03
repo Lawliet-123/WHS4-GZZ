@@ -31,6 +31,8 @@ class Tests(unittest.TestCase):
         """각 테스트에 격리된 합성 세션과 가짜 프로세스를 준비한다."""
         self.temp = tempfile.TemporaryDirectory()
         self.session = ReplaySession(self.temp.name,'test',data_origin='controlled_fixture',modules=['localguard_yara'])
+        self.forwarded = []
+        self.session.event_sink = self.forwarded.append
         self.process = SimpleNamespace(pid=123,check=lambda:None)
         self.raw = io.StringIO()
     def tearDown(self): self.session.finish(); self.temp.cleanup()
@@ -40,6 +42,9 @@ class Tests(unittest.TestCase):
         event = scan_once(rules,self.process,self.session,self.raw)
         self.assertEqual(event['raw_score'],0)
         self.assertFalse(event['evidence']['active_cheat_proven'])
+        transmitted = dict(event)
+        transmitted.pop('_matched_strings_for_console')
+        self.assertEqual(self.forwarded, [transmitted])
     def test_failure_no_zero(self):
         """접근 거부는 검사 실패로 기록하고 정상 0점으로 바꾸지 않는다."""
         def fail(**kw): raise PermissionError('denied')
@@ -47,17 +52,20 @@ class Tests(unittest.TestCase):
         self.assertIsNone(event)
         self.assertEqual(self.session.counts,{})
         self.assertIn('scan_error',self.raw.getvalue())
+        self.assertEqual(self.forwarded, [])
     def test_timeout_no_zero(self):
         """YARA 시간 제한에 걸린 검사는 불완전하므로 점수를 내지 않는다."""
         import yara
         def fail(**kw): raise yara.TimeoutError('timeout')
         self.assertIsNone(scan_once(SimpleNamespace(match=fail),self.process,self.session,self.raw))
+        self.assertEqual(self.forwarded, [])
     def test_yara_warning_not_success(self):
         """YARA 부분 검사 경고가 있으면 겉보기 빈 일치도 정상으로 취급하지 않는다."""
         def partial(**kw):
             kw['warnings_callback'](1,'too many matches')
             return []
         self.assertIsNone(scan_once(SimpleNamespace(match=partial),self.process,self.session,self.raw))
+        self.assertEqual(self.forwarded, [])
     def test_identity_change_no_score(self):
         """스캔 중 PID의 대상이 바뀌면 해당 결과를 버린다."""
         calls = []
