@@ -399,3 +399,26 @@ A의 별도 점수·저장 변경을 추가한 것은 아니며 B 공통 코드�
 - [ ] Hide Anywhere 원본 문제 수정 여부를 담당자와 재확인함.
 - [ ] PR 제출 시 팀 main의 추가 변경을 다시 확인하고 A 작업 PR을 제출함.
 - [ ] 데이터 검증을 바탕으로 최종 위험도·가중치·임계값을 별도로 확정함.
+
+## 10. 최신 병합 이후 A·Receiver 호환성 갱신 (2026-10-03)
+
+위 1~9절은 당시 조사 기록을 삭제하지 않고 보존함. 최신 기준은 팀 main
+`90e90cc`이며 PR #83/#84/#86과 Hide Anywhere 원본 수정이 포함됨.
+현재 전체 갱신 내용·검증 경로·체크리스트는
+[A 최신 통합 확인](A_CURRENT_INTEGRATION.md)에 별도로 정리함.
+
+- Hide 생산자의 이동·3회 연속 확인·측정 유효성·Shared bridge 수정에 A 정책을 맞춤.
+- MemoryIntegrity/Whistle/InputSignature의 실제 0점 전송 반영을 확인함.
+  따라서 위의 양수-only·Runtime 점수 미연결·Hide 전송 결함 설명은 현재 미수정 목록이 아님.
+- 기본 Registry에는 이미 A 정책이 등록돼 있음. 별도 Registry 신규 등록은 필요하지 않음.
+- Hash Profile을 snapshot으로 갱신함. YARA는 유효 0점에도 PID/scope key를 반환하지만
+  공통 scoped 저장은 B와 연결해야 하므로 module 전체를 0점으로 정상화하지 않음.
+- 마지막 RPC 검사 sample_id=0이 기존 의미 중복 키에서 제외되는 문제를 실제 생산자와
+  HTTP 경로로 재현하여 허용값 0/1로 수정함. 기존 DB를 삭제하거나 테이블을 재설계하지 않음.
+- LocalGuard/Hide의 실제 대응 근거에만 overlap 후보 태그를 붙임. 원점수와 기존 calibration,
+  최종 가중치·TTL은 변경하지 않음.
+- 원본 Replay를 재작성하지 않고 최신 생산 코드의 합성 관측과 과거 캡처 해석을 구분함.
+
+공통 저장/Profile의 최소 호환 패치는 B 검토 대상으로 분리함. YARA scoped state,
+실제 overlap 보정·RPC TTL·Final Verdict는 여전히 B/팀 결정 범위이며, 서버 실행·운영
+HTTPS·Dashboard 연결은 C와의 후속 통합 범위임.

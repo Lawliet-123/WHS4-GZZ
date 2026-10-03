@@ -117,3 +117,13 @@ raw score를 합치거나 최종 위험도를 조정하지 않는다.
 
 Correlation 후보도 함께 보고 싶을 때만 `max_time_distance_ms`를 명시한다. 팀에서
 합의된 기본 시간 창이 아직 없으므로 값을 생략하면 correlation은 계산하지 않는다.
+
+## 2026-10-03 현재 통합 상태
+
+위 구현 과정은 보존함. 최신 `registry.py`에는 B의 네 정책과 A의 LocalGuard,
+Whistle/Whistle RPC, Hide Anywhere, ESP 정책이 모두 등록돼 있음.
+추가한 `overlap.py`는 A 정책의 알려진 근거에 조건부 후보 태그만 부여함.
+원점수/Replay calibration/최종 판정은 변경하지 않음.
+
+최신 생산자 계약, PR #86 sample 0 호환 수정과 YARA scoped 저장 미연결을 포함한
+현재 작업 범위는 [A 최신 통합 확인](../A_CURRENT_INTEGRATION.md)에 기록함.
