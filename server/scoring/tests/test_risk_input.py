@@ -153,6 +153,30 @@ class RiskInputTests(unittest.TestCase):
         )
         self.assertEqual(result.signals[0].entity_key, "pid:1234")
 
+    def test_entity_scoped_snapshot_is_marked(self) -> None:
+        snapshot = PlayerPolicySnapshot(
+            session_id="session_1",
+            player_id="player_1",
+            modules=(
+                _module_snapshot(
+                    "localguard_yara",
+                    emission="per_entity_snapshot",
+                    policy_state="POLICY_NOT_CALIBRATED",
+                    raw_fraction_pct=None,
+                    entity_key="yara_pid:900:selected_local_process_memory",
+                ),
+            ),
+            correlation_candidates=(),
+        )
+
+        result = build_player_risk_input(snapshot)
+
+        self.assertTrue(result.signals[0].requires_entity_scope)
+        self.assertEqual(
+            result.entity_scoped_modules,
+            ("localguard_yara",),
+        )
+
     def test_unresolved_module_is_kept_instead_of_dropped(self) -> None:
         snapshot = PlayerPolicySnapshot(
             session_id="session_1",

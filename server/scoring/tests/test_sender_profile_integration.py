@@ -72,14 +72,18 @@ class SenderProfileIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(inspect_event(event("localguard_executable_hash", 0)).emission, "snapshot")
 
-    def test_yara_profile_stays_conservative_pending_scoped_state(self):
+    def test_yara_profile_uses_per_entity_snapshot_after_scoped_state(self):
         self.assertEqual(
             inspect_event(event("localguard_yara", 3)).emission,
-            "per_entity_positive_only",
+            "per_entity_snapshot",
+        )
+        self.assertEqual(
+            inspect_event(event("localguard_yara", 0)).emission,
+            "per_entity_snapshot",
         )
         from server.scoring.policy import PROFILES
-        self.assertIn("sender includes measured zeros", PROFILES["localguard_yara"].note)
-        self.assertIn("pending PID/scope state integration", PROFILES["localguard_yara"].note)
+        self.assertIn("measured zeros and positives per PID/scope", PROFILES["localguard_yara"].note)
+        self.assertIn("one target's NORMAL 0 does not clear another", PROFILES["localguard_yara"].note)
 
     def test_yara_custom_rule_score_remains_outside_current_audited_bound(self):
         preview = inspect_event(event("localguard_yara", 10))
