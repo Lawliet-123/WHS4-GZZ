@@ -90,6 +90,26 @@ def whistle_rpc_event(
     }
 
 
+def godmode_event(
+    *,
+    score: int = 2,
+    timestamp_ms: int = 1000,
+):
+    return {
+        "session_id": "e2e_session",
+        "player_id": "player_1",
+        "module": "godmode",
+        "timestamp_ms": timestamp_ms,
+        "evidence": {
+            "invincible": True,
+        },
+        "reasons": [
+            "godmode e2e incident",
+        ] if score else [],
+        "raw_score": score,
+    }
+
+
 class ReceiverScoringE2ETests(unittest.TestCase):
 
     def setUp(self):
@@ -502,6 +522,151 @@ class ReceiverScoringE2ETests(unittest.TestCase):
 
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0].event_id, event_id)
+
+
+    def test_receiver_shared_scoring_reaches_final_verdict(self):
+        """HTTP 수신부터 B Final Verdict까지 실제 전체 경로를 검증한다."""
+
+        first_id = uid()
+        second_id = uid()
+
+        first = self.post(
+            godmode_event(
+                score=2,
+                timestamp_ms=1000,
+            ),
+            first_id,
+        )
+
+        second = self.post(
+            godmode_event(
+                score=3,
+                timestamp_ms=2000,
+            ),
+            second_id,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+
+        self.assertEqual(
+            first.json()["status"],
+            "stored",
+        )
+        self.assertEqual(
+            second.json()["status"],
+            "stored",
+        )
+
+        # A Shared 원본도 두 건 모두 보존되어야 한다.
+        self.assertEqual(
+            len(self.writer.iter_stored()),
+            2,
+        )
+
+        # Godmode는 event_delta이므로 두 사건 모두 history에 남는다.
+        history = self.store.get_event_delta_history(
+            "e2e_session",
+            "player_1",
+        )
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(
+            [item.raw_score for item in history],
+            [2, 3],
+        )
+
+        # 최종 B pipeline:
+        # policy -> calibration -> aggregate -> verdict
+        verdict = scoring_main.get_player_final_verdict(
+            "e2e_session",
+            "player_1",
+        )
+
+        self.assertEqual(
+            verdict.status,
+            "SUSPICIOUS",
+        )
+
+        # 2 + 3 = 5로 합산하는 것이 아니라
+        # Godmode라는 하나의 evidence unit으로 반영한다.
+        self.assertEqual(
+            verdict.evidence_unit_count,
+            1,
+        )
+
+        self.assertEqual(
+            verdict.active_module_count,
+            1,
+        )
+
+        self.assertEqual(
+            verdict.active_modules,
+            ("godmode",),
+        )
+
+        self.assertIn(
+            "CALIBRATED_ACTIVE_EVIDENCE",
+            verdict.reason_codes,
+        )
+
+    def test_receiver_retry_does_not_duplicate_final_risk(self):
+        """같은 HTTP Event 재전송이 Final Risk를 중복 증가시키지 않는다."""
+
+        event_id = uid()
+
+        event = godmode_event(
+            score=2,
+            timestamp_ms=1000,
+        )
+
+        first = self.post(
+            event,
+            event_id,
+        )
+
+        retry = self.post(
+            event,
+            event_id,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+
+        self.assertEqual(
+            first.json()["status"],
+            "stored",
+        )
+
+        self.assertEqual(
+            retry.json()["status"],
+            "duplicate",
+        )
+
+        history = self.store.get_event_delta_history(
+            "e2e_session",
+            "player_1",
+        )
+
+        self.assertEqual(
+            len(history),
+            1,
+        )
+
+        verdict = scoring_main.get_player_final_verdict(
+            "e2e_session",
+            "player_1",
+        )
+
+        self.assertEqual(
+            verdict.status,
+            "SUSPICIOUS",
+        )
+
+        self.assertEqual(
+            verdict.evidence_unit_count,
+            1,
+        )
 
 
 if __name__ == "__main__":
