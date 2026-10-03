@@ -61,7 +61,7 @@ _PROFILE_ITEMS = (
                     False, "raw_score=result.new_score, not cumulative score."),
     DetectorProfile("autopaint", "client/detectors/autopaint/gzz_anticheat/detector.py", "snapshot", 35,
                     True, "Raw=max(integrity,valid behavior); 35 is source-code upper bound, not an operating threshold."),
-    DetectorProfile("hide_anywhere", "client/detectors/hide_anywhere/mecha_detector_v9.py", "snapshot", 3,
+    DetectorProfile("hide_anywhere", "client/detectors/mecha_detector_shared/mecha_detector_v9.py", "snapshot", 3,
                     True, "Current producer requires three consecutive valid same-Pawn pattern samples; auxiliary signals score up to two."),
     DetectorProfile("external_access", "client/LocalGuard/external_access/process_access/detector.py", "per_entity_positive_only", 10,
                     False, "Each event can refer to a different source process/handle."),

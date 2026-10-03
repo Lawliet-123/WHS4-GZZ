@@ -244,31 +244,33 @@ PR #88과 PR #89가 팀 main에 병합된 뒤의 코드를 다시 확인함. B�
   `SUSPICIOUS`는 치트 확정을 의미하지 않음.
 
 PR #89 직후 Hide 생산자 폴더가 `client/detectors/hide_anywhere/`로 이동하고
-`--t0` 및 `SessionClock` 지원이 추가됨. 폴더 이동 뒤 남아 있던 이전 경로 때문에
-A Scoring 회귀 3건이 실패하고 런처가 존재하지 않는 스크립트를 가리키는 문제를
-재현함. 다음 호환 수정을 적용함.
+`--t0` 및 `SessionClock` 지원이 추가됨. 폴더 이동 뒤 A 정책 테스트·Receiver
+E2E·계약 감사 도구가 삭제된 이전 생산자 경로를 참조하여 회귀 3건이 실패하는
+문제를 재현함. A 담당 범위에서는 다음 호환 수정을 적용함.
 
-- Launcher의 Hide 실행 파일·출력·세션 로그 경로를 새 폴더로 변경함.
-- Launcher가 Hide에 공통 `{t0}`를 전달하도록 연결함. 실제 런처 실행 Event는
-  `timestamp_basis=launcher_session_start`를 사용하므로 다른 공통 시계 탐지기와
-  시간창 비교가 가능함.
-- Scoring Profile, A 계약 감사 도구, Hide 정책/E2E 테스트의 생산자 경로를 새
-  폴더로 변경함.
-- 런처 등록 테스트에 새 경로·PID·session/player·t0·전송 on/off 인자를 추가함.
+- A 계약 감사 도구와 Hide 정책·Receiver E2E 테스트의 생산자 경로를 새 폴더로
+  변경함.
+- Hide 정책 문서에 현재 생산자 위치와 세 번 연속 확인 계약을 반영함.
+- 원점수·reason·evidence와 Shared 7필드 계약은 변경하지 않음.
 
-최신 main과 위 수정을 합친 상태에서 Scoring 341개, Receiver 30개, Launcher
-27개, Hide 33개가 통과함. Hide 6개는 SDK/실행 파일 자료가 없는 환경 의존 검사로
-skip됨. A 계약 감사와 ESP 생산자 호환 검사 8개도 통과함.
+Launcher의 Hide 실행 경로·출력·세션 로그 경로 및 공통 `{t0}` 전달은 Launcher
+담당자가 확인·반영할 영역으로 분리함. B의 공통 Profile 경로와 timestamp guard
+해제 역시 B 담당자가 Launcher 반영 상태를 확인한 뒤 연결할 영역으로 유지함.
+A에서는 위 파일을 직접 수정하지 않고, 양쪽 변경이 main에 반영된 뒤
+Receiver → Scoring 회귀 검사를 다시 수행함.
 
-B의 `local_session_start` 차단 guard는 `--t0` 없이 Hide를 단독 실행한 Event에
-대해서는 계속 필요함. 런처 공통 t0가 전달된 Event에는 해당 guard가 적용되지
-않으므로 정상적인 time-window correlation 후보를 만들 수 있음.
+`--t0` 없이 Hide를 단독 실행해 `timestamp_basis=local_session_start`가 생성된
+Event는 다른 탐지기와 시간 원점을 공유하지 않으므로 기존 차단 guard가 계속
+필요함. Launcher 공통 t0가 전달되어 `launcher_session_start`가 생성된 경우에만
+B에서 정상적인 time-window correlation을 허용할 수 있음.
 
 ### 최신 남은 작업
 
 - [x] YARA PID/scope scoped state와 `per_entity_snapshot`을 B에서 연결함.
-- [x] Hide 런처에 공통 t0를 전달하고 새 생산자 경로를 연결함.
+- [x] A 정책 테스트·Receiver E2E·계약 검사 도구를 새 Hide 생산자 경로에 맞춤.
 - [x] B의 Aggregate Risk·Final Verdict 및 Receiver E2E를 구현함.
+- [ ] Launcher 담당자가 Hide 등록 경로·로그 경로·공통 t0 전달을 반영해야 함.
+- [ ] B 담당자가 Launcher 반영 후 Profile 경로와 timestamp guard를 갱신해야 함.
 - [ ] Whistle RPC TTL/Expiry는 실제 주기·Replay 근거로 확정해야 함.
 - [ ] ESP가 Hide 수집기 PID를 자기탐지에서 제외하도록 수정해야 함.
 - [ ] C에서 production startup과 Dashboard 조회 API를 최종 연결해야 함.

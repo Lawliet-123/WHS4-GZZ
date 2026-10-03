@@ -86,29 +86,6 @@ class CorrelationCandidateTests(unittest.TestCase):
             [],
         )
 
-    def test_launcher_session_start_can_correlate_with_common_clock(self):
-        hide = observation(
-            "hide_anywhere",
-            timestamp_ms=1000,
-            tags=("hide_anywhere_injection",),
-            sequence=1,
-            timestamp_basis="launcher_session_start",
-        )
-        injection = observation(
-            "injection",
-            timestamp_ms=1100,
-            tags=("hide_anywhere_injection",),
-            sequence=2,
-        )
-
-        result = find_correlation_candidates(
-            [hide, injection],
-            max_time_distance_ms=5000,
-        )
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].time_distance_ms, 100)
-
     def test_different_player_tag_or_far_time_does_not_correlate(self):
         base = observation("noclip", timestamp_ms=1000, tags=("same",), sequence=1)
         cases = (

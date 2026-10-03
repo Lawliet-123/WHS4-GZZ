@@ -335,12 +335,11 @@ MODULES: List[Module] = [
         owner="Hide Anywhere (찬준)",
         # 같은 폴더의 mecha_detector_v9·server_bridge 를 최상위로 import 해서 -m 으로는
         # 못 띄운다. 스크립트로 띄우고 shared 는 아래 env 의 PYTHONPATH 로 찾게 한다.
-        argv=[PY, "client/detectors/hide_anywhere/mecha_logger.py",
+        argv=[PY, "client/detectors/mecha_detector_shared/mecha_logger.py",
               "--pid", "{game_pid}",
               "--session-id", "{session}", "--player-id", "{player}",
-              "--t0", "{t0}",
               # 기본값 logs 는 실행 위치 기준이라 그대로면 레포 루트에 생긴다.
-              "--out", "client/detectors/hide_anywhere/logs"],
+              "--out", "client/detectors/mecha_detector_shared/logs"],
         # 서버 설정이 없으면 ServerBridge 가 시작을 거부하고 종료코드 1 로 끝난다.
         telemetry_off_args=["--local-only"],
         # README_v11: "런처에서 shared/ 부모 경로를 PYTHONPATH에 공급한다"
@@ -350,8 +349,8 @@ MODULES: List[Module] = [
         restart=False,
         # 끝날 때 shared flush(5초) + shutdown(5초). 기본 10초면 비우는 도중 끊길 수 있다.
         stop_grace_s=15.0,
-        session_log_dir="client/detectors/hide_anywhere/logs",
-        # 공통 --t0 를 받아 다른 탐지기와 같은 launcher_session_start 기준을 쓴다.
+        session_log_dir="client/detectors/mecha_detector_shared/logs",
+        # --t0 는 아직 못 받는다. timestamp_ms 는 이 수집기 자체 시작 기준이다.
         # manifest 라벨은 세션 이름이 normal_ 로 시작하면 NORMAL, 아니면 CHEAT 로 추정한다
         # (기본 이름 ac_... 도 CHEAT 가 된다 — 검증 세션은 normal_/hide_anywhere_ 로 이름 짓기).
         # 주의: 세션 내내 게임을 읽기 핸들로 열어 두므로, esp 와 같이 켜면 ESP 가 이 수집기를
