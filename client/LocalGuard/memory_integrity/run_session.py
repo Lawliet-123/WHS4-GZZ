@@ -327,7 +327,7 @@ def run(session_id=None, only=None, log_dir=None,
         # 후크 로그를 매번 처음부터 읽으면 위반이 한 번 찍힌 뒤 모든 바퀴가 DETECTED
         # 가 되고 이전 게임 실행의 위반까지 섞인다. 기준점을 파일로 넘겨 이어 읽는다.
         # log_name 이 있다 = 런처가 부르는 누적 모드다.
-        watching = _begin_watch(picked, log_dir if log_name else None, stem)
+        watching = _begin_watch(picked, log_dir if log_name else None, stem, t0)
         try:
             one_round(window)
         except KeyboardInterrupt:
@@ -351,7 +351,7 @@ def run(session_id=None, only=None, log_dir=None,
             "rounds": 0, "ended_ms": 0}, fresh=True)
         markers = Markers(os.path.join(log_dir, f"{stem}.markers.jsonl"),
                           t0, run_id, session_id, initial)
-        watching = _begin_watch(picked, log_dir if log_name else None, stem)
+        watching = _begin_watch(picked, log_dir if log_name else None, stem, t0)
         _say(f"세션 {session_id}  —  {watch:g}초 동안 {interval:g}초마다 스캔")
         _say(f"  핵 {initial} 상태로 시작합니다. 핵을 켜거나 끌 때마다 Enter.")
         _say("  터미널은 클릭하지 말고 Alt+Tab 으로 오가세요 "
@@ -401,7 +401,7 @@ def run(session_id=None, only=None, log_dir=None,
     return summary, exit_code(events)
 
 
-def _begin_watch(picked, state_dir=None, stem=None):
+def _begin_watch(picked, state_dir=None, stem=None, t0=None):
     """반복 관측을 지원하는 탐지기에 "지금부터 새로 본다"를 알린다.
 
     `state_dir` 를 주면 기준점을 파일로 남겨 **다음 실행이 이어받는다.**
@@ -424,9 +424,14 @@ def _begin_watch(picked, state_dir=None, stem=None):
                 kw = {}
                 if state_dir and stem:
                     try:
-                        if "state_file" in inspect.signature(mod.begin_watch).parameters:
+                        params = inspect.signature(mod.begin_watch).parameters
+                        if "state_file" in params:
                             kw["state_file"] = os.path.join(
                                 state_dir, f"{stem}.{name}.watch.json")
+                            # 기준 시각이 같을 때만 이어받게 한다. 같은 세션 이름을
+                            # 다시 쓴(--overwrite) 실행이 지난 기준점을 물려받지 않도록.
+                            if "t0" in params and t0 is not None:
+                                kw["t0"] = t0
                     except (TypeError, ValueError):
                         pass        # 서명을 못 읽는 탐지기는 그냥 예전 방식으로 부른다
                 mod.begin_watch(**kw)
