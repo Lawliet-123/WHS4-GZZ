@@ -118,6 +118,15 @@ changes detected - reusing last build"). **버전은 zip 이름이 아니라 로
 
 ## 설치 절차
 
+설치 준비 코드는 `game_launcher.py`에 있다. 팀 ZIP이면 `PINNED_UE4SS_ZIP_SHA256`,
+압축 해제 폴더면 `PINNED_UE4SS_DIRECTORY_SHA256`을 확정한다. 별도 게임 전용
+시그니처는 `PINNED_SIGNATURE_SHA256`으로 고정하고,
+`GZZ_UE4SS_BUNDLE`·`GZZ_UE4SS_SIGNATURE`로 위치를 지정한다. 함수는
+`READY`(파일 준비), `MISSING`, `CONFLICT`, `GAME_RUNNING`, `ERROR`를 구분한다.
+`READY`도 게임 안에서 로드됐다는 뜻은 아니다. 새 게임 실행 뒤
+`verify_ue4ss_log(game_root, session_id, started_after)`로 다시 확인해야 한다.
+현재 `main.py`에서는 이 두 함수를 아직 호출하지 않는다.
+
 ### 1. 게임 위치 찾기
 Steam 설치 위치를 찾고, 못 찾으면 **사용자에게 한 번 물어서 저장**한다.
 `C:\Program Files (x86)\...` 를 모든 PC 에 고정하면 안 된다(은지·성민님 둘 다).
@@ -151,6 +160,9 @@ NoclipLogger : 1
 GodModeTelemetry : 1
 ```
 다른 팀 모드도 지우지 않는다.
+단, 새 설치에서 기존 `mods.txt`가 없다면 배포 묶음의 기본 목록은 가져오지 않고
+위 팀 모드 두 개만 만든다. 받은 묶음에는 `CheatManagerEnablerMod : 1`처럼
+안티치트 런처가 자동 활성화하면 안 되는 기본 항목이 있기 때문이다.
 
 > 랑언 PC 의 `mods.txt` 에는 `GodMode : 1` 같은 **치트 모드가 들어 있다.** 실제로 만나는
 > 상황이니 참고. 측정용이라 지우지는 않지만, **정상 세션을 찍을 때는 반드시 `: 0`** 이어야
@@ -232,6 +244,11 @@ paint_calls.jsonl,  기존 세션 로그,  main.lua.backup-*
 
 ## 아직 안 정해진 것
 
+1. 검증된 UE4SS ZIP 실물과 전체 SHA-256
+2. 게임 전용 `StaticConstructObject.lua` 실물과 전체 SHA-256
+3. 실제 ZIP 내부 구조가 설치 코드의 필수 파일 목록과 맞는지 실물로 확인
+4. `main.py`에서 설치·실행 후 검증을 언제 호출할지, 실패 시 어떤 탐지기만 건너뛸지
+5. 쓰기 권한이 없으면 관리자 권한을 강요하지 않고 `ERROR`를 표시한다.
 1. UE4SS 묶음을 레포에 넣을지, 지금처럼 디스코드로 배포할지 (버전은 위에서 정함)
 2. `UE4SS_Signatures/StaticConstructObject.lua` 를 누가 주는지 (은지님 것으로 보임, 레포에 없음)
 3. 설치 충돌이 났을 때 런처 동작 — 멈출지, 그 모듈만 끄고 갈지

@@ -21,6 +21,24 @@ python client/Launcher/main.py
 에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
 확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 
+게임 경로는 실행 중인 게임·저장된 사용자 선택·Steam 라이브러리 순서로 검증한다.
+모두 실패하면 콘솔 유무와 관계없이 게임 exe 선택 창을 한 번 열고 `%LOCALAPPDATA%`에
+저장한다. GUI를 열 수 없고 콘솔이 있다면 경로를 직접 입력받는다.
+`GZZ_GAME_DIR`로 설치 루트 또는 게임 exe 경로를 직접 지정할 수도 있다.
+폴더만 존재하는 경로는 쓰지 않고 `PenguinHotel-Win64-Shipping.exe`까지 확인한다.
+게임 exe를 직접 실행했는데 곧바로 종료되면 Steam URL로 한 번 재시도한다.
+
+`game_launcher.prepare_ue4ss()`는 팀 ZIP 또는 압축을 푼 폴더와 게임 전용 시그니처의
+고정 SHA-256이 없으면 설치하지 않는다. ZIP은 전체 파일 해시를, 폴더는 실제 설치할
+필수 파일의 경로·길이·내용을 묶은 지문을 사용한다. 기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를
+돌려준다. `READY`는 파일 준비 상태일 뿐, 게임 실행 후에는
+`verify_ue4ss_log()`로 실제 로드를 별도로 확인해야 한다. 현재 팀 실물과 해시가
+확인이 없어 `main.py` 자동 호출은 아직 연결되지 않았다. 로컬 테스트는
+`python -B -m unittest discover -s client/Launcher/tests -q`로 실행한다.
+새 설치에서는 UE4SS 묶음의 기본 `mods.txt`를 그대로 복사하지 않는다.
+`CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 모드 두 개만 새로
+등록한다. 이미 있는 사용자 `mods.txt`의 다른 줄은 보존한다.
+
 ---
 
 ## 내 모듈을 붙이려면 — `modules.py` 에 한 줄
@@ -141,6 +159,8 @@ signal.signal(signal.SIGBREAK, signal.default_int_handler)
 `status`: `MISSING` / `SKIPPED` / `PENDING` / `RUNNING` / `DONE` / `WARN` / `RESTART` / `FAILED` / `STOPPED`
 (`RESTART` = 상주 모듈이 죽어서 되살리는 중)
 서버 연결 상태는 `ctx["server"]` 로 들어갑니다(하트비트 붙이면 그 값만 채우면 됩니다).
+현재 UI의 `RUNNING`은 자식 프로세스가 살아 있다는 뜻일 뿐, 검사 성공이나 중앙 서버
+전송 성공을 뜻하지 않는다. UE4SS 상태가 전달되지 않으면 `검증 정보 없음`으로 표시한다.
 
 ---
 
