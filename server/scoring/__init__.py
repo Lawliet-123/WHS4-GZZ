@@ -25,6 +25,7 @@ from .main import (
 )
 from .aggregate import AggregateEvidence, AggregateSignal
 from .history_summary import GodmodeHistorySummary
+from .overlap import OverlapGroup
 from .correlation import CorrelationCandidate
 from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
 from .storage import (
@@ -44,6 +45,7 @@ __all__ = (
     "GodmodeHistorySummary",
     "ModulePolicySnapshot",
     "ModuleState",
+    "OverlapGroup",
     "PlayerPolicySnapshot",
     "ProcessReceipt",
     "ScoringStore",

@@ -21,6 +21,7 @@ from typing import Literal
 
 from .correlation import CorrelationCandidate
 from .history_summary import GodmodeHistorySummary
+from .overlap import OverlapGroup, build_overlap_groups
 from .risk_input import PlayerRiskInput, RiskSignalInput
 
 
@@ -69,6 +70,7 @@ class AggregateEvidence:
     unavailable_modules: tuple[str, ...]
 
     correlation_candidates: tuple[CorrelationCandidate, ...]
+    overlap_groups: tuple[OverlapGroup, ...]
 
 
 def _classify(
@@ -186,6 +188,11 @@ def build_aggregate_evidence(
 
         buckets[status].append(signal.module)
 
+    overlap_groups = build_overlap_groups(
+        risk_input.correlation_candidates,
+        active_modules=active,
+    )
+
     return AggregateEvidence(
         session_id=risk_input.session_id,
         player_id=risk_input.player_id,
@@ -197,4 +204,5 @@ def build_aggregate_evidence(
         unresolved_modules=tuple(unresolved),
         unavailable_modules=tuple(unavailable),
         correlation_candidates=risk_input.correlation_candidates,
+        overlap_groups=overlap_groups,
     )
