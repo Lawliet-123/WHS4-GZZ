@@ -143,7 +143,7 @@ class HideAnywherePolicyTests(unittest.TestCase):
             self.registry.evaluate(event)
 
     def test_current_producer_requires_three_consecutive_samples_and_resets_on_failure(self):
-        path = REPO_ROOT / "client/detectors/mecha_detector_shared/mecha_detector_v9.py"
+        path = REPO_ROOT / "client/detectors/hide_anywhere/mecha_detector_v9.py"
         spec = importlib.util.spec_from_file_location("_hide_v9_fixture", path)
         producer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(producer)

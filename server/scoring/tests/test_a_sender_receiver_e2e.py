@@ -132,7 +132,7 @@ class ASenderReceiverE2ETests(unittest.TestCase):
             self.assertEqual(fresh["evidence"]["status"], "NORMAL")
 
     def test_current_hide_confirmation_and_failed_read_reach_receiver_unchanged(self):
-        producer = load("_hide_a_e2e", "client/detectors/mecha_detector_shared/mecha_detector_v9.py")
+        producer = load("_hide_a_e2e", "client/detectors/hide_anywhere/mecha_detector_v9.py")
         rule = producer.Rule(required=3)
         events = [producer.make_common_event("e2e_session", "player_1", "hide_anywhere", idx * 1000,
                   values, injected_module=False, viewport_hook=False, rule=rule, identity="pawn")
@@ -146,7 +146,7 @@ class ASenderReceiverE2ETests(unittest.TestCase):
         self.assertEqual(self.store.get_module_state("e2e_session", "player_1", "hide_anywhere").evidence["status"], "ERROR")
 
     def test_current_hide_overlap_tags_are_kept_but_mixed_clock_candidates_are_blocked(self):
-        producer = load("_hide_overlap_e2e", "client/detectors/mecha_detector_shared/mecha_detector_v9.py")
+        producer = load("_hide_overlap_e2e", "client/detectors/hide_anywhere/mecha_detector_v9.py")
         rule = producer.Rule(required=3)
         for _ in range(3):
             hide = producer.make_common_event("e2e_session", "player_1", "hide_anywhere", 4000,
