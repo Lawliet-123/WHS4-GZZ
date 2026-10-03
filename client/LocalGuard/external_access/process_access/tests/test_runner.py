@@ -62,7 +62,7 @@ class ProcessAccessRunnerTests(unittest.TestCase):
         self.assertIn("Process executable trust information is unavailable", saved[0]["reasons"])
         self.assertIn("scan_duration_ms", saved[0]["evidence"])
 
-    def test_game_not_running_does_not_write_a_result(self):
+    def test_game_not_running_writes_offline_zero(self):
         saved = []
         runner = ProcessAccessRunner(
             game_executable_name="game.exe",
@@ -77,9 +77,11 @@ class ProcessAccessRunnerTests(unittest.TestCase):
         report = runner.scan_once()
 
         self.assertFalse(report.game_found)
-        self.assertEqual(saved, [])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["raw_score"], 0)
+        self.assertEqual(saved[0]["evidence"]["status"], "OFFLINE")
 
-    def test_sensor_permission_failure_returns_error_without_writing(self):
+    def test_sensor_permission_failure_writes_error_zero(self):
         saved = []
         game = TargetProcess(500, "game.exe", Path("C:/game.exe"), 1.0)
         clock_values = iter([10.0, 10.0, 10.010])
@@ -99,7 +101,9 @@ class ProcessAccessRunnerTests(unittest.TestCase):
         self.assertTrue(report.game_found)
         self.assertEqual(report.emitted_detections, 0)
         self.assertEqual(report.error, "access denied")
-        self.assertEqual(saved, [])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["raw_score"], 0)
+        self.assertEqual(saved[0]["evidence"]["status"], "ERROR")
 
     def test_exact_name_and_hash_allowlist_suppresses_a_reviewed_process(self):
         saved = []
@@ -124,7 +128,9 @@ class ProcessAccessRunnerTests(unittest.TestCase):
 
         self.assertEqual(report.allowed_processes, 1)
         self.assertEqual(report.emitted_detections, 0)
-        self.assertEqual(saved, [])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["raw_score"], 0)
+        self.assertEqual(saved[0]["evidence"]["status"], "NORMAL")
 
 
 if __name__ == "__main__":

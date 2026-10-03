@@ -1,4 +1,4 @@
-"""PR #82 sender 변경과 B Scoring Profile의 통합 계약을 검증한다."""
+"""PR #82/#84 sender 변경과 B Scoring Profile의 통합 계약을 검증한다."""
 
 from __future__ import annotations
 
@@ -65,15 +65,21 @@ class SenderProfileIntegrationTests(unittest.TestCase):
                     "OUT_OF_AUDITED_RANGE",
                 )
 
-    def test_input_signature_remains_positive_only(self):
+    def test_hash_profile_tracks_pr84_zero_snapshots(self):
         self.assertEqual(
             inspect_event(event("localguard_executable_hash", 1)).emission,
-            "positive_only",
+            "snapshot",
         )
+        self.assertEqual(inspect_event(event("localguard_executable_hash", 0)).emission, "snapshot")
+
+    def test_yara_profile_stays_conservative_pending_scoped_state(self):
         self.assertEqual(
             inspect_event(event("localguard_yara", 3)).emission,
             "per_entity_positive_only",
         )
+        from server.scoring.policy import PROFILES
+        self.assertIn("sender includes measured zeros", PROFILES["localguard_yara"].note)
+        self.assertIn("pending PID/scope state integration", PROFILES["localguard_yara"].note)
 
     def test_yara_custom_rule_score_remains_outside_current_audited_bound(self):
         preview = inspect_event(event("localguard_yara", 10))

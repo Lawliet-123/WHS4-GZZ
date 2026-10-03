@@ -103,24 +103,25 @@ def probe_external_access():
 
 
 def probe_hide():
-    detector = load("audit_hide_detector", "client/detectors/Hide_anywhere_detector/mecha_detector_v9.py")
-    bridge_mod = load("audit_hide_bridge", "client/detectors/Hide_anywhere_detector/server_bridge.py")
-    events = [detector.make_common_event("audit_synthetic", "audit_player", "hide_anywhere", 1000, values)
-              for values in ({}, detector.EXPECTED)]
+    detector = load("audit_hide_detector", "client/detectors/mecha_detector_shared/mecha_detector_v9.py")
+    bridge_mod = load("audit_hide_bridge", "client/detectors/mecha_detector_shared/server_bridge.py")
+    rule = detector.Rule(required=3)
+    events = [detector.make_common_event("audit_synthetic", "audit_player", "hide_anywhere", 1000, values,
+              injected_module=False, viewport_hook=False, rule=rule, identity="audit_pawn")
+              for values in ({}, detector.EXPECTED, detector.EXPECTED, detector.EXPECTED)]
     for event in events:
         encode_event(event)
-    assert [event["raw_score"] for event in events] == [0, 3]
+    assert [event["raw_score"] for event in events] == [0, 0, 0, 3]
     bridge = bridge_mod.ServerBridge.__new__(bridge_mod.ServerBridge)
-    bridge.run_id, bridge.sequence = "a" * 32, 0
     records = []
-    def check_send(event, *, event_id):
+    def check_send(event):
         encode_event(event)
-        validate_event_id(event_id)
+        return SimpleNamespace(event_id="00000000-0000-0000-0000-000000000001")
     bridge.api = SimpleNamespace(send_detection=check_send)
     bridge.emit = lambda kind, **data: records.append({"kind": kind, **data})
-    bridge.send(events[1])
-    assert records[0]["kind"] == "server_enqueue_error"
-    assert records[0]["error_type"] == "ValidationError"
+    bridge.send(events[-1])
+    assert records[0]["kind"] == "server_queued"
+    validate_event_id(records[0]["event_id"])
     return {"events": events, "actual_bridge_result": records[0]}
 
 
@@ -158,10 +159,10 @@ def probe_runtime_scores(result_adapter):
         event = result_adapter.to_shared_event(result_adapter.to_team_event(
             result, "audit_synthetic", timestamp_ms=1000, player_id="audit_player"))
         encode_event(event)
-        assert event["raw_score"] == 0
+        assert 0 < event["raw_score"] <= {"godmode_runtime": 5, "noclip_runtime": 1, "aimbot_runtime": 1}[name]
         results[name] = {"raw_score": event["raw_score"], "status": event["evidence"]["status"],
                          "reasons": event["reasons"], "evidence_count": len(result.evidence),
-                         "passes_positive_send_gate": event["raw_score"] > 0}
+                         "shared_schema_valid": True}
     return results
 
 
@@ -177,8 +178,8 @@ def probe_input_signature_gate():
     for score in (0, 3):
         event = session.emit("localguard_yara", "audit_player", {}, [], score)
         encode_event(event)
-    assert len(session.file.getvalue().splitlines()) == 2 and len(forwarded) == 1
-    return {"local_events": 2, "central_events": 1, "central_score": forwarded[0]["raw_score"]}
+    assert len(session.file.getvalue().splitlines()) == 2 and len(forwarded) == 2
+    return {"local_events": 2, "central_events": 2, "central_scores": [event["raw_score"] for event in forwarded]}
 
 
 def main():
