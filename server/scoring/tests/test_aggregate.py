@@ -128,3 +128,126 @@ class AggregateEvidenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AggregateGodmodeHistoryTests(unittest.TestCase):
+    def _summary(
+        self,
+        *,
+        total: int,
+        qualifying: int,
+        maximum: float | None,
+    ):
+        from server.scoring.history_summary import GodmodeHistorySummary
+
+        return GodmodeHistorySummary(
+            session_id="s",
+            player_id="p",
+            calibration_version="replay-v1",
+            threshold=2.0,
+            total_events=total,
+            qualifying_events=qualifying,
+            max_raw_score=maximum,
+            first_timestamp_ms=1000 if total else None,
+            last_timestamp_ms=2000 if total else None,
+            first_sequence=1 if total else None,
+            last_sequence=total if total else None,
+            reasons=("godmode",) if total else (),
+        )
+
+    def test_godmode_history_with_qualifying_event_becomes_active(self):
+        item = signal(
+            "godmode",
+            threshold_met=True,
+            calibration_mode="event_threshold",
+            requires_event_history=True,
+        )
+
+        result = build_aggregate_evidence(
+            player(item),
+            godmode_history=self._summary(
+                total=3,
+                qualifying=3,
+                maximum=5.0,
+            ),
+        )
+
+        self.assertEqual(result.active_modules, ("godmode",))
+        self.assertEqual(result.deferred_modules, ())
+
+        resolved = result.signals[0]
+        self.assertTrue(resolved.history_resolved)
+        self.assertEqual(resolved.history_total_events, 3)
+        self.assertEqual(resolved.history_qualifying_events, 3)
+        self.assertEqual(resolved.history_max_raw_score, 5.0)
+
+    def test_godmode_history_without_qualifying_event_becomes_inactive(self):
+        item = signal(
+            "godmode",
+            threshold_met=False,
+            calibration_mode="event_threshold",
+            requires_event_history=True,
+        )
+
+        result = build_aggregate_evidence(
+            player(item),
+            godmode_history=self._summary(
+                total=2,
+                qualifying=0,
+                maximum=1.0,
+            ),
+        )
+
+        self.assertEqual(result.inactive_modules, ("godmode",))
+        self.assertEqual(result.deferred_modules, ())
+
+    def test_empty_godmode_history_remains_deferred(self):
+        item = signal(
+            "godmode",
+            threshold_met=True,
+            calibration_mode="event_threshold",
+            requires_event_history=True,
+        )
+
+        result = build_aggregate_evidence(
+            player(item),
+            godmode_history=self._summary(
+                total=0,
+                qualifying=0,
+                maximum=None,
+            ),
+        )
+
+        self.assertEqual(result.deferred_modules, ("godmode",))
+        self.assertFalse(result.signals[0].history_resolved)
+
+    def test_rejects_history_for_different_player(self):
+        from server.scoring.history_summary import GodmodeHistorySummary
+
+        item = signal(
+            "godmode",
+            threshold_met=True,
+            calibration_mode="event_threshold",
+            requires_event_history=True,
+        )
+
+        wrong = GodmodeHistorySummary(
+            session_id="s",
+            player_id="other",
+            calibration_version="replay-v1",
+            threshold=2.0,
+            total_events=1,
+            qualifying_events=1,
+            max_raw_score=2.0,
+            first_timestamp_ms=1000,
+            last_timestamp_ms=1000,
+            first_sequence=1,
+            last_sequence=1,
+            reasons=("x",),
+        )
+
+        with self.assertRaises(ValueError):
+            build_aggregate_evidence(
+                player(item),
+                godmode_history=wrong,
+            )

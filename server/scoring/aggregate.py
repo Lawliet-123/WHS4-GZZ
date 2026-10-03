@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .correlation import CorrelationCandidate
+from .history_summary import GodmodeHistorySummary
 from .risk_input import PlayerRiskInput, RiskSignalInput
 
 
@@ -45,6 +46,11 @@ class AggregateSignal:
     threshold_met: bool | None
     overlap_tags: tuple[str, ...]
     entity_key: str | None
+
+    history_resolved: bool = False
+    history_total_events: int | None = None
+    history_qualifying_events: int | None = None
+    history_max_raw_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -94,8 +100,16 @@ def _classify(
 
 def build_aggregate_evidence(
     risk_input: PlayerRiskInput,
+    *,
+    godmode_history: GodmodeHistorySummary | None = None,
 ) -> AggregateEvidence:
-    """PlayerRiskInput을 합산 전 증거 분류 결과로 변환한다."""
+    """PlayerRiskInput을 합산 전 증거 분류 결과로 변환한다.
+
+    Godmode event_delta는 history summary가 제공된 경우에만
+    DEFERRED 상태를 ACTIVE/INACTIVE로 해소한다.
+
+    qualifying 사건 개수나 raw_score를 합산해 risk 점수로 바꾸지는 않는다.
+    """
 
     if not isinstance(risk_input, PlayerRiskInput):
         raise TypeError("risk_input must be PlayerRiskInput")
@@ -121,6 +135,36 @@ def build_aggregate_evidence(
     for signal in risk_input.signals:
         status = _classify(signal, risk_input)
 
+        history_resolved = False
+        history_total_events = None
+        history_qualifying_events = None
+        history_max_raw_score = None
+
+        if signal.module == "godmode" and signal.requires_event_history:
+            if godmode_history is not None:
+                if godmode_history.session_id != risk_input.session_id:
+                    raise ValueError(
+                        "godmode history session_id does not match risk input"
+                    )
+                if godmode_history.player_id != risk_input.player_id:
+                    raise ValueError(
+                        "godmode history player_id does not match risk input"
+                    )
+
+                history_total_events = godmode_history.total_events
+                history_qualifying_events = (
+                    godmode_history.qualifying_events
+                )
+                history_max_raw_score = godmode_history.max_raw_score
+
+                if godmode_history.total_events > 0:
+                    history_resolved = True
+
+                    if godmode_history.qualifying_events > 0:
+                        status = "ACTIVE"
+                    else:
+                        status = "INACTIVE"
+
         signals.append(
             AggregateSignal(
                 module=signal.module,
@@ -133,6 +177,10 @@ def build_aggregate_evidence(
                 threshold_met=signal.threshold_met,
                 overlap_tags=signal.overlap_tags,
                 entity_key=signal.entity_key,
+                history_resolved=history_resolved,
+                history_total_events=history_total_events,
+                history_qualifying_events=history_qualifying_events,
+                history_max_raw_score=history_max_raw_score,
             )
         )
 

@@ -144,12 +144,22 @@ def get_player_aggregate_evidence(
     아직 가중치, 합산 점수, 중복 감산, Final Verdict는 계산하지 않는다.
     event/window history가 필요한 신호는 DEFERRED로 남긴다.
     """
-    return build_aggregate_evidence(
-        get_player_risk_input(
+    risk_input = get_player_risk_input(
+        session_id,
+        player_id,
+        max_time_distance_ms=max_time_distance_ms,
+    )
+
+    godmode_history = None
+    if "godmode" in risk_input.event_history_modules:
+        godmode_history = get_godmode_history_summary(
             session_id,
             player_id,
-            max_time_distance_ms=max_time_distance_ms,
         )
+
+    return build_aggregate_evidence(
+        risk_input,
+        godmode_history=godmode_history,
     )
 
 
