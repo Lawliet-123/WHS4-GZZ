@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,7 @@ from client.LocalGuard.external_access.module_integrity.module_sensor import (
 )
 from client.LocalGuard.external_access.module_integrity.runner import (
     ModuleIntegrityRunner,
+    _load_allowlists,
 )
 from client.LocalGuard.external_access.module_integrity import runner as runner_module
 from shared.schema import decode_event, encode_event
@@ -83,7 +85,7 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
         self.assertFalse(report.game_found)
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["timestamp_ms"], 10_000)
-        self.assertEqual(saved[0]["module"], "external_access")
+        self.assertEqual(saved[0]["module"], "module_integrity")
         self.assertEqual(saved[0]["evidence"]["submodule"], "module_integrity")
         self.assertEqual(saved[0]["evidence"]["status"], "OFFLINE")
         self.assertEqual(decode_event(encode_event(saved[0])), saved[0])
@@ -92,7 +94,7 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
         event = {
             "session_id": "esp_001",
             "player_id": "player_042",
-            "module": "external_access",
+            "module": "module_integrity",
             "timestamp_ms": 1234,
             "evidence": {
                 "submodule": "module_integrity",
@@ -116,6 +118,237 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
 
             with patch.object(runner_module, "send_detection", side_effect=fake_send):
                 runner_module._write_local_and_send(output, event)
+
+    def test_central_copy_redacts_module_path_and_inspection_error(self):
+        module_path = r"\\?\C:/Users/Alice/Game/Mods/../Private/Unknown.DLL"
+        inspection_error = (
+            "[WinError 5] denied: "
+            r"'C:\Users\Alice\Game\Private\Unknown.DLL'"
+        )
+        event = {
+            "session_id": "esp_001",
+            "player_id": "player_042",
+            "module": "module_integrity",
+            "timestamp_ms": 1234,
+            "evidence": {
+                "submodule": "module_integrity",
+                "status": "SUSPICIOUS",
+                "module_path": module_path,
+                "inspection_error": inspection_error,
+            },
+            "reasons": ["Module appeared after the process baseline"],
+            "raw_score": 1,
+        }
+        original_event = json.loads(json.dumps(event))
+        receipt = SimpleNamespace(
+            event_id="00000000-0000-0000-0000-000000000001",
+            status="queued",
+        )
+        sent = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "events.jsonl"
+            with patch.object(
+                runner_module,
+                "send_detection",
+                side_effect=lambda payload: sent.append(payload) or receipt,
+            ):
+                runner_module._write_local_and_send(output, event)
+
+            local_event = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(local_event, original_event)
+        self.assertEqual(event, original_event)
+        self.assertIsNot(sent[0], event)
+        self.assertIsNot(sent[0]["evidence"], event["evidence"])
+        self.assertEqual(sent[0]["evidence"]["module_path"], "Unknown.DLL")
+        normalized_path = r"c:\users\alice\game\private\unknown.dll"
+        self.assertEqual(
+            sent[0]["evidence"]["module_path_path_sha256"],
+            hashlib.sha256(normalized_path.encode("utf-8")).hexdigest(),
+        )
+        self.assertNotIn("inspection_error", sent[0]["evidence"])
+        self.assertEqual(
+            sent[0]["evidence"]["inspection_error_code"],
+            "ARTIFACT_INSPECTION_UNAVAILABLE",
+        )
+        public_payload = json.dumps(sent[0], ensure_ascii=False).casefold()
+        self.assertNotIn("alice", public_payload)
+        self.assertNotIn("winerror 5", public_payload)
+
+    def test_path_digest_uses_only_strict_absolute_windows_paths(self):
+        base_event = {
+            "session_id": "esp_001",
+            "player_id": "player_042",
+            "module": "module_integrity",
+            "timestamp_ms": 1234,
+            "evidence": {
+                "submodule": "module_integrity",
+                "status": "SUSPICIOUS",
+            },
+            "reasons": ["Module appeared after the process baseline"],
+            "raw_score": 1,
+        }
+        equivalent_paths = (
+            r"C:\Game\Mods\..\Plugin.DLL",
+            r"\\?\C:/GAME/Plugin.DLL",
+            r"\??\c:\game\PLUGIN.dll",
+        )
+        expected_drive_digest = hashlib.sha256(
+            r"c:\game\plugin.dll".encode("utf-8")
+        ).hexdigest()
+        for module_path in equivalent_paths:
+            with self.subTest(module_path=module_path):
+                event = json.loads(json.dumps(base_event))
+                event["evidence"]["module_path"] = module_path
+                sanitized = runner_module._privacy_sanitized_event(event)
+                self.assertEqual(
+                    sanitized["evidence"]["module_path_path_sha256"],
+                    expected_drive_digest,
+                )
+
+        unc_event = json.loads(json.dumps(base_event))
+        unc_event["evidence"]["module_path"] = (
+            r"\\?\UNC\SERVER\Share\Mods\Plugin.DLL"
+        )
+        unc_sanitized = runner_module._privacy_sanitized_event(unc_event)
+        expected_unc_digest = hashlib.sha256(
+            r"\\server\share\mods\plugin.dll".encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            unc_sanitized["evidence"]["module_path_path_sha256"],
+            expected_unc_digest,
+        )
+
+        for module_path, expected_basename in (
+            ("Plugin.DLL", "Plugin.DLL"),
+            (r"C:Plugin.DLL", "Plugin.DLL"),
+            (r"\Game\Plugin.DLL", "Plugin.DLL"),
+            ("C:\\Game\\bad\x00Plugin.DLL", "bad\x00Plugin.DLL"),
+        ):
+            with self.subTest(invalid_module_path=module_path):
+                event = json.loads(json.dumps(base_event))
+                event["evidence"]["module_path"] = module_path
+                sanitized = runner_module._privacy_sanitized_event(event)
+                self.assertEqual(
+                    sanitized["evidence"]["module_path"],
+                    expected_basename,
+                )
+                self.assertNotIn(
+                    "module_path_path_sha256",
+                    sanitized["evidence"],
+                )
+
+    def test_zero_status_events_are_local_only(self):
+        for status in ("NORMAL", "OFFLINE", "ERROR"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "events.jsonl"
+                event = {
+                    "session_id": "normal_001",
+                    "player_id": "player_042",
+                    "module": "module_integrity",
+                    "timestamp_ms": 1234,
+                    "evidence": {
+                        "submodule": "module_integrity",
+                        "status": status,
+                    },
+                    "reasons": [],
+                    "raw_score": 0,
+                }
+                with patch.object(runner_module, "send_detection") as send:
+                    runner_module._write_local_and_send(output, event)
+
+                self.assertIn(
+                    f'"status":"{status}"',
+                    output.read_text(encoding="utf-8"),
+                )
+                send.assert_not_called()
+
+    def test_dynamic_ue4ss_exceptions_do_not_enable_initial_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game_root = root / "game"
+            dll = game_root / "Chameleon" / "Binaries" / "Win64" / "dwmapi.dll"
+            dll.parent.mkdir(parents=True)
+            dll.write_bytes(b"reviewed proxy")
+            digest = hashlib.sha256(dll.read_bytes()).hexdigest()
+            static = root / "allowlist.json"
+            static.write_text('{"entries":[]}', encoding="utf-8")
+            manifest = root / "ue4ss_install.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "game_root": str(game_root),
+                        "files": {
+                            "Chameleon/Binaries/Win64/dwmapi.dll": digest,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            allowlist, auto_initial_audit = _load_allowlists(
+                static,
+                manifest,
+                game_root,
+            )
+
+        self.assertFalse(auto_initial_audit)
+        self.assertIsNotNone(
+            allowlist.find("dwmapi.dll", digest, module_path=dll.resolve())
+        )
+
+    def test_self_hook_exceptions_are_merged_without_enabling_initial_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hook = (
+                root
+                / "client"
+                / "detectors"
+                / "whistle-spoofing"
+                / "native"
+                / "whistle_hook"
+                / "bin"
+                / "Release"
+                / "ac_whistle_v10.dll"
+            )
+            hook.parent.mkdir(parents=True)
+            hook.write_bytes(b"reviewed observer hook")
+            digest = hashlib.sha256(hook.read_bytes()).hexdigest()
+            static = root / "allowlist.json"
+            static.write_text('{"entries":[]}', encoding="utf-8")
+            ue4ss = root / "missing-ue4ss.json"
+            self_hooks = root / "self_hook_manifest.json"
+            self_hooks.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "repository_root": str(root),
+                        "hooks": [
+                            {
+                                "role": "whistle_observer",
+                                "path": str(hook.resolve()),
+                                "sha256": digest,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            allowlist, auto_initial_audit = _load_allowlists(
+                static,
+                ue4ss,
+                None,
+                self_hooks,
+                root,
+            )
+
+            self.assertFalse(auto_initial_audit)
+            self.assertIsNotNone(
+                allowlist.find(hook.name, digest, module_path=hook.resolve())
+            )
 
     def test_initial_snapshot_can_be_strictly_audited(self):
         with tempfile.TemporaryDirectory() as directory:

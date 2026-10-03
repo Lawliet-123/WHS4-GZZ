@@ -55,7 +55,7 @@ class EspProducerCompatibilityTests(unittest.TestCase):
     def test_actual_module_adapters_preserve_mapping_and_trust_distinctions(self):
         for event_type, payload, score in (
             ("module_added", {"target_pid": 500, "module_path": "C:/Game/extra.dll"}, 1),
-            ("module_changed", {"target_pid": 500, "after": {"path": "C:/Game/extra.dll"}}, 1),
+            ("module_changed", {"target_pid": 500, "module_path": "C:/Game/extra.dll", "previous_image_size": 2048}, 1),
             ("module_trust", {"target_pid": 500, "module_path": "C:/Game/extra.dll", "signature_status": "unsigned"}, 1),
             ("module_trust", {"target_pid": 500, "module_path": "C:/Game/extra.dll", "known_bad_hash": True}, 3),
         ):

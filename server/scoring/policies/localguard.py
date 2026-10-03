@@ -12,7 +12,7 @@ from .contract import PolicyAnnotations
 
 
 SUPPORTED_MODULES = (
-    "external_access", "localguard_yara", "localguard_executable_hash",
+    "external_access", "module_integrity", "localguard_yara", "localguard_executable_hash",
     "filesystem", "injection", "value_tamper", "overlay_hook",
     "godmode_runtime", "noclip_runtime", "aimbot_runtime",
 )
@@ -64,16 +64,30 @@ _PAINT_FIELDS = frozenset((
     "maxreplicatedpaintstrokespertick", "autoflushthreshold",
     "bautoflushstrokes", "brealtimenetworksync",
 ))
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 def _valid_pid(value: Any) -> bool:
     return type(value) is int and 0 < value <= 0xFFFFFFFF
 
 
-def _module_scope(evidence: Mapping[str, Any]) -> str | None:
-    """게임 PID와 절대 Windows DLL 경로의 관측 범위. 파일/네트워크 접근 없음.
+def _strict_path_digest(value: Any) -> str | None:
+    """Accept only a complete SHA-256 hex digest emitted by a path sanitizer."""
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in _HEX_DIGITS for character in value)
+    ):
+        return None
+    return value.casefold()
 
-    해시는 경로 문자열의 길이 제한용이지 파일 무결성 해시가 아니다.
+
+def _module_scope(evidence: Mapping[str, Any]) -> str | None:
+    """게임 PID와 정규화 Windows DLL 경로 항등성의 관측 범위.
+
+    파일/네트워크 접근은 하지 않는다. 해시는 절대 경로에서 도출하거나
+    프라이버시 어댑터가 정규화한 경로의 다이제스트를 전달한 것이지,
+    파일 무결성 해시가 아니다.
     change_type/시각은 키에 넣지 않음: 사건 ID나 재전송 중복 키가 아님.
     """
     pid, path = evidence.get("target_pid"), evidence.get("module_path")
@@ -88,17 +102,38 @@ def _module_scope(evidence: Mapping[str, Any]) -> str | None:
     elif lowered.startswith("\\??\\"):
         value = value[4:]
     # 상대 경로나 드라이브 없는 경로를 서버의 현재 폴더로 보완하지 않는다.
-    if "\x00" in value or not ntpath.isabs(value) or not ntpath.splitdrive(value)[0]:
+    if "\x00" in value:
         return None
-    normalized = ntpath.normcase(ntpath.normpath(value))
-    digest = sha256(normalized.encode("utf-8")).hexdigest()
+    if ntpath.isabs(value) and ntpath.splitdrive(value)[0]:
+        normalized = ntpath.normcase(ntpath.normpath(value))
+        digest = sha256(normalized.encode("utf-8")).hexdigest()
+        if (
+            "module_path_path_sha256" in evidence
+            and _strict_path_digest(evidence.get("module_path_path_sha256")) != digest
+        ):
+            # Reject two conflicting identities for the same module record.
+            return None
+    else:
+        # Privacy-safe central evidence keeps the basename in module_path and
+        # the normalized full-path identity in this exact companion field.
+        # Never substitute the module's file-content ``sha256`` value.
+        digest = _strict_path_digest(evidence.get("module_path_path_sha256"))
+        if digest is None:
+            return None
     return f"game_module:{pid}:{digest}"
 
 
 def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
     evidence = event["evidence"]
     submodule = evidence.get("submodule")
-    notes.append("external_access는 핸들 관측과 DLL 변화의 혼합 스트림이다. entity_key는 SQLite의 module 저장 키를 분리하지 않는다.")
+    if event["module"] == "module_integrity":
+        notes.append("module_integrity는 DLL 변화 전용 module이며 external_access 핸들 상태와 별도 저장된다.")
+        if submodule not in (None, "module_integrity"):
+            notes.append("module_integrity 이벤트의 submodule이 예상 계약과 다르므로 관측 범위를 만들지 않는다.")
+            return None
+        submodule = "module_integrity"
+    else:
+        notes.append("external_access는 외부 프로세스 핸들 관측 module이다. 과거 버전의 DLL 하위 채널도 호환 해석한다.")
     if submodule is None and "source_pid" in evidence:
         submodule = "external_process"
         notes.append("submodule이 없는 과거 source_pid 형식은 외부 프로세스 관측 범위로만 해석한다. 원본에 submodule을 추가하지 않는다.")
@@ -121,9 +156,10 @@ def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
     if submodule == "module_integrity":
         notes.append("module_integrity는 PR #78의 DLL 추가·매핑 변경·초기 기준선 감사 채널이다. 핸들 접근 신호가 아니다.")
         notes.append("후속 NORMAL 0점은 새 의심 변화가 없다는 뜻이다. 이전 DLL의 제거·무해함 또는 모든 과거 변화의 해소를 뜻하지 않는다.")
-        notes.append("현재 module-only 최신 상태는 이 하위 채널과 핸들 관측을 서로 덮어쓸 수 있다. 저장 분리·변화 이력은 B와 별도 합의한다.")
+        if event["module"] == "external_access":
+            notes.append("과거 external_access 형식은 핸들 상태와 최신값이 충돌할 수 있다. 신규 생산자는 module_integrity 이름을 사용한다.")
         if event["raw_score"] > 3:
-            notes.append("DLL 변화 채널의 조사 상한은 3점이다. external_access 공통 상한 10만으로 이 하위 채널의 범위를 검증할 수 없다.")
+            notes.append("DLL 변화 채널의 조사 상한은 3점이다. 생산자 버전과 점수 계약을 확인한다.")
         change = evidence.get("change_type")
         if change == "baseline_unreviewed":
             notes.append("초기 미검토 DLL 관측이다. 안티치트 시작 후 새로 주입된 DLL로 해석하지 않는다.")
@@ -134,12 +170,16 @@ def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
         elif event["raw_score"] > 0:
             notes.append("양수 DLL 결과의 change_type이 없거나 미분류다. 변화 종류를 추정하지 않는다.")
             return None
-        if evidence.get("inspection_error") or evidence.get("signature_status") == "unknown":
+        if (
+            evidence.get("inspection_error")
+            or evidence.get("inspection_error_code")
+            or evidence.get("signature_status") == "unknown"
+        ):
             notes.append("파일 신뢰 조회 실패와 DLL 매핑 관측은 구분한다. 조회 실패로 서명/파일 해시를 확정하지 않는다.")
         if event["raw_score"] > 0:
             key = _module_scope(evidence)
             if key is None:
-                notes.append("유효한 target_pid·절대 DLL 경로가 없어 관측 범위 키를 만들지 않는다. DLL 이름·주소·첫 번째 다른 근거로 대신하지 않는다.")
+                notes.append("유효한 target_pid·절대 DLL 경로 또는 엄격한 정규화-경로 다이제스트 쌍이 없어 관측 범위 키를 만들지 않는다. DLL 이름·주소·첫 번째 다른 근거로 대신하지 않는다.")
             else:
                 notes.append("game_module 키는 PID+정규화 경로의 범위다. 경로 해시는 파일 해시가 아니며 개별 로드 사건·계정·재전송 ID도 아니다.")
             return key
@@ -264,7 +304,7 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
         notes.append("공통 조사 상한을 벗어난 입력이다. 원점수를 자르지 않고 탐지기 버전·점수 계약을 확인한다.")
     if event["raw_score"] == 0 and evidence.get("status") != "NORMAL" and evidence.get("measurement_valid") is not True:
         notes.append("0점만으로 검사 성공/NORMAL을 추정하지 않는다.")
-    if module == "external_access":
+    if module in ("external_access", "module_integrity"):
         key = _external_access(event, notes)
     elif module == "localguard_yara":
         key = _yara(event, notes)

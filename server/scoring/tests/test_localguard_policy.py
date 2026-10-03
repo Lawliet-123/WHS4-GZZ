@@ -109,15 +109,71 @@ class LocalGuardPolicyTests(unittest.TestCase):
             self.assert_note(result, "어느 채널인지 임의로 선택하지 않는다")
 
     def test_dll_scope_is_not_handle_scope(self):
-        result = self.analyse(sample(evidence=dll_evidence(source_pid=900)))
+        result = self.analyse(sample("module_integrity", evidence=dll_evidence(source_pid=900)))
         self.assertTrue(result.annotations.entity_key.startswith("game_module:500:"))
         self.assert_note(result, "핸들 접근 신호가 아니다")
-        self.assert_note(result, "서로 덮어쓸 수 있다")
+        self.assert_note(result, "별도 저장")
+
+    def test_legacy_external_access_dll_event_remains_readable(self):
+        result = self.analyse(sample(evidence=dll_evidence()))
+        self.assertTrue(result.annotations.entity_key.startswith("game_module:500:"))
+        self.assert_note(result, "과거 external_access 형식")
 
     def test_dll_scope_canonicalizes_case_slashes_and_dot_segments(self):
         paths = ["C:/Game/extra.dll", "c:\\GAME\\unused\\..\\EXTRA.DLL", "\\\\?\\C:\\Game\\extra.dll", "\\??\\C:\\Game\\extra.dll"]
-        keys = [self.analyse(sample(evidence=dll_evidence(module_path=p))).annotations.entity_key for p in paths]
+        keys = [self.analyse(sample("module_integrity", evidence=dll_evidence(module_path=p))).annotations.entity_key for p in paths]
         self.assertEqual(len(set(keys)), 1)
+
+    def test_dll_privacy_path_digest_matches_legacy_absolute_scope(self):
+        legacy = self.analyse(sample(
+            "module_integrity", evidence=dll_evidence(module_path="C:/Game/extra.dll"),
+        )).annotations.entity_key
+        self.assertIsNotNone(legacy)
+        assert legacy is not None
+        digest = legacy.rsplit(":", 1)[1]
+        result = self.analyse(sample("module_integrity", evidence=dll_evidence(
+            module_path="extra.dll", module_path_path_sha256=digest.upper(),
+        )))
+        self.assertEqual(result.annotations.entity_key, legacy)
+
+    def test_dll_privacy_path_digest_is_strict_and_not_file_hash(self):
+        invalid = (
+            None, True, 64, "", "a" * 63, "a" * 65, "g" * 64,
+            "a" * 63 + " ", "sha256:" + "a" * 64,
+        )
+        for digest in invalid:
+            with self.subTest(digest=digest):
+                result = self.analyse(sample("module_integrity", evidence=dll_evidence(
+                    module_path="extra.dll", module_path_path_sha256=digest,
+                )))
+                self.assertIsNone(result.annotations.entity_key)
+
+        for evidence in (
+            dll_evidence(module_path=None, module_path_path_sha256="a" * 64),
+            dll_evidence(module_path="extra.dll", path_path_sha256="a" * 64),
+            dll_evidence(module_path="extra.dll", sha256="a" * 64),
+        ):
+            with self.subTest(evidence=evidence):
+                result = self.analyse(sample("module_integrity", evidence=evidence))
+                self.assertIsNone(result.annotations.entity_key)
+
+    def test_dll_legacy_absolute_path_rejects_conflicting_companion_digest(self):
+        legacy = self.analyse(sample(
+            "module_integrity", evidence=dll_evidence(module_path="C:/Game/extra.dll"),
+        )).annotations.entity_key
+        result = self.analyse(sample("module_integrity", evidence=dll_evidence(
+            module_path="C:/Game/extra.dll",
+            module_path_path_sha256="f" * 64,
+            sha256="e" * 64,
+        )))
+        self.assertIsNotNone(legacy)
+        self.assertIsNone(result.annotations.entity_key)
+
+        malformed = self.analyse(sample("module_integrity", evidence=dll_evidence(
+            module_path="C:/Game/extra.dll",
+            module_path_path_sha256="not-a-digest",
+        )))
+        self.assertIsNone(malformed.annotations.entity_key)
 
     def test_unc_dll_paths_canonicalize(self):
         paths = ["\\\\server\\share\\extra.dll", "\\\\?\\UNC\\server\\share\\extra.dll"]
@@ -162,6 +218,14 @@ class LocalGuardPolicyTests(unittest.TestCase):
 
     def test_dll_trust_read_failure_does_not_discard_mapping_observation(self):
         result = self.analyse(sample(score=1, evidence=dll_evidence(signature_status="unknown", inspection_error="file disappeared")))
+        self.assertIsNotNone(result.annotations.entity_key)
+        self.assert_note(result, "조회 실패와 DLL 매핑 관측은 구분")
+
+    def test_dll_fixed_inspection_error_code_preserves_mapping_observation(self):
+        result = self.analyse(sample("module_integrity", score=1, evidence=dll_evidence(
+            signature_status=None,
+            inspection_error_code="ARTIFACT_INSPECTION_UNAVAILABLE",
+        )))
         self.assertIsNotNone(result.annotations.entity_key)
         self.assert_note(result, "조회 실패와 DLL 매핑 관측은 구분")
 

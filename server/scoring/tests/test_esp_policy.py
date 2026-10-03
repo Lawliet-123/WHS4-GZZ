@@ -1,8 +1,18 @@
 """ESP 중앙 정책은 관측 해석이며 ESP 사용 확정·최종 점수 계산이 아님."""
 
 from copy import deepcopy
+from pathlib import Path
+import sys
 import unittest
 
+ESP_PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "client/detectors/esp"
+if str(ESP_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(ESP_PACKAGE_ROOT))
+
+from anti_esp.core.events import SensorEvent
+from anti_esp.detectors.esp_detector import EspEventDetector
+from anti_esp.team_format import TeamEventAdapter
+from server.scoring import evaluate_event_policy
 from server.scoring.policies.contract import PolicyRegistry
 from server.scoring.policies.esp import evaluate
 from server.scoring.policy import inspect_event
@@ -145,6 +155,126 @@ class EspPolicyTests(unittest.TestCase):
         self.assertEqual(len({r.annotations.entity_key for r in results}), 1)
         self.assertTrue(results[0].annotations.entity_key.startswith("game_module:500:"))
         self.assert_note(results[0], "파일 바이트 해시/개별 로드 사건 ID가 아니다")
+
+    def test_privacy_path_digest_pairs_match_legacy_absolute_scope(self):
+        legacy = self.analyse(sample(
+            event_type="module_added", categories=["behavioral_signal"], score=1,
+            evidence={"module_path": "C:/Game/extra.dll"},
+        )).annotations.entity_key
+        self.assertIsNotNone(legacy)
+        assert legacy is not None
+        digest = legacy.rsplit(":", 1)[1]
+
+        for name in ("path", "module_path", "image_path"):
+            with self.subTest(name=name):
+                result = self.analyse(sample(
+                    event_type="module_added", categories=["behavioral_signal"], score=1,
+                    evidence={name: "extra.dll", f"{name}_path_sha256": digest.upper()},
+                ))
+                self.assertEqual(result.annotations.entity_key, legacy)
+
+    def test_privacy_path_digest_is_strict_and_field_paired(self):
+        invalid = (
+            None, True, 64, "", "a" * 63, "a" * 65, "g" * 64,
+            "a" * 63 + " ", "sha256:" + "a" * 64,
+        )
+        for digest in invalid:
+            with self.subTest(digest=digest):
+                result = self.analyse(sample(
+                    event_type="module_added", categories=["behavioral_signal"], score=1,
+                    evidence={"module_path": "extra.dll", "module_path_path_sha256": digest},
+                ))
+                self.assertIsNone(result.annotations.entity_key)
+
+        for evidence in (
+            {"module_path_path_sha256": "a" * 64},
+            {"module_path": "extra.dll", "path_path_sha256": "a" * 64},
+            {"module_path": "extra.dll", "sha256": "a" * 64},
+        ):
+            with self.subTest(evidence=evidence):
+                result = self.analyse(sample(
+                    event_type="module_added", categories=["behavioral_signal"], score=1,
+                    evidence=evidence,
+                ))
+                self.assertIsNone(result.annotations.entity_key)
+
+    def test_legacy_absolute_path_rejects_conflicting_companion_digest(self):
+        legacy = self.analyse(sample(
+            event_type="module_added", categories=["behavioral_signal"], score=1,
+            evidence={"module_path": "C:/Game/extra.dll"},
+        )).annotations.entity_key
+        result = self.analyse(sample(
+            event_type="module_added", categories=["behavioral_signal"], score=1,
+            evidence={
+                "module_path": "C:/Game/extra.dll",
+                "module_path_path_sha256": "f" * 64,
+                "sha256": "e" * 64,
+            },
+        ))
+        self.assertIsNotNone(legacy)
+        self.assertIsNone(result.annotations.entity_key)
+
+        malformed = self.analyse(sample(
+            event_type="module_added", categories=["behavioral_signal"], score=1,
+            evidence={
+                "module_path": "C:/Game/extra.dll",
+                "module_path_path_sha256": "not-a-digest",
+            },
+        ))
+        self.assertIsNone(malformed.annotations.entity_key)
+
+    def test_real_team_adapter_reaches_public_policy_with_private_path_redacted(self):
+        raw = SensorEvent(
+            session_id="esp_001",
+            sensor_id="loaded_modules",
+            event_type="module_added",
+            subject_id="game-process:500:100000",
+            timestamp_ms=101_000,
+            payload={
+                "target_pid": 500,
+                "module_name": "extra.dll",
+                "module_path": r"C:\Users\alice\private\extra.dll",
+                "image_size": 4096,
+            },
+        )
+        converted = TeamEventAdapter(
+            session_started_at=100.0, player_id="player_042"
+        ).convert(raw, EspEventDetector().detect(raw))
+
+        self.assertIsNotNone(converted)
+        assert converted is not None
+        event = converted.to_dict()
+        self.assertEqual(event["evidence"]["module_path"], "extra.dll")
+        digest = event["evidence"]["module_path_path_sha256"]
+        self.assertEqual(len(digest), 64)
+        self.assertNotIn("alice", repr(event).casefold())
+
+        result = evaluate_event_policy(event)
+        self.assertEqual(
+            result.annotations.entity_key,
+            f"game_module:500:{digest}",
+        )
+        self.assertEqual(result.signal.raw_score, 1)
+
+        module_integrity = evaluate_event_policy({
+            "session_id": event["session_id"],
+            "player_id": event["player_id"],
+            "module": "module_integrity",
+            "timestamp_ms": event["timestamp_ms"],
+            "evidence": {
+                "status": "SUSPICIOUS",
+                "target_pid": 500,
+                "module_path": "extra.dll",
+                "module_path_path_sha256": digest,
+                "change_type": "added",
+            },
+            "reasons": ["module added"],
+            "raw_score": 1,
+        })
+        self.assertEqual(
+            module_integrity.annotations.entity_key,
+            result.annotations.entity_key,
+        )
 
     def test_module_changed_uses_after_container_not_before_or_hash(self):
         fields = {"module": {"path": "C:/Wrong/extra.dll"}, "after": {"path": "C:/Game/extra.dll"}, "sha256": "a" * 64}

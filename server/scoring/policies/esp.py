@@ -26,6 +26,7 @@ _CATEGORY_NOTES = {
     "overlay": "게임과 겹치는 외부 창의 스타일·기하 관측이다. 정상 오버레이도 가능하며 DX 함수 후킹·ESP 화면 표시와 동일한 근거가 아니다.",
     "behavioral_signal": "DLL 변화/신뢰의 보조 근거다. 이 이름을 게임 내 비정상 행동을 관측했다는 뜻으로 사용하지 않는다.",
 }
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 def _integer(value: Any) -> int | None:
@@ -53,20 +54,20 @@ def _first_pid(evidence: Mapping[str, Any], *names: str) -> int | None:
     return None
 
 
-def _module_scope(evidence: Mapping[str, Any], event_type: str) -> str | None:
-    """PID+절대 DLL 경로의 관측 범위. 해시는 파일 바이트가 아니라 경로의 해시."""
-    pid = _pid(evidence.get("target_pid"))
-    preferred = ("after", "module") if event_type == "module_changed" else ("module",)
-    container = evidence
-    for name in preferred:
-        if isinstance(evidence.get(name), Mapping):
-            container = evidence[name]
-            break
-    path = next((container[name].strip() for name in ("path", "module_path", "image_path")
-                 if isinstance(container.get(name), str) and container[name].strip()), None)
-    if pid is None or path is None:
+def _strict_path_digest(value: Any) -> str | None:
+    """Return one canonical SHA-256 string, without accepting lookalike values."""
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in _HEX_DIGITS for character in value)
+    ):
         return None
-    value = path.replace("/", "\\")
+    return value.casefold()
+
+
+def _legacy_absolute_path_digest(path: str) -> str | None:
+    """Derive the historical entity digest from an absolute Windows path."""
+    value = path.strip().replace("/", "\\")
     lowered = value.casefold()
     if lowered.startswith("\\\\?\\unc\\"):
         value = "\\\\" + value[8:]
@@ -76,8 +77,43 @@ def _module_scope(evidence: Mapping[str, Any], event_type: str) -> str | None:
         value = value[4:]
     if "\x00" in value or not ntpath.isabs(value) or not ntpath.splitdrive(value)[0]:
         return None
-    digest = sha256(ntpath.normcase(ntpath.normpath(value)).encode("utf-8")).hexdigest()
-    return f"game_module:{pid}:{digest}"
+    return sha256(ntpath.normcase(ntpath.normpath(value)).encode("utf-8")).hexdigest()
+
+
+def _module_scope(evidence: Mapping[str, Any], event_type: str) -> str | None:
+    """PID+normalized DLL path identity; no file-content hash is accepted."""
+    pid = _pid(evidence.get("target_pid"))
+    preferred = ("after", "module") if event_type == "module_changed" else ("module",)
+    container = evidence
+    for name in preferred:
+        if isinstance(evidence.get(name), Mapping):
+            container = evidence[name]
+            break
+    if pid is None:
+        return None
+    for name in ("path", "module_path", "image_path"):
+        path = container.get(name)
+        if not isinstance(path, str) or not path.strip() or "\x00" in path:
+            continue
+        # Preserve the legacy contract whenever the full absolute path is present.
+        digest = _legacy_absolute_path_digest(path)
+        companion_name = f"{name}_path_sha256"
+        if digest is not None and companion_name in container:
+            # An event carrying both representations must not give the same
+            # module two possible identities.
+            if _strict_path_digest(container.get(companion_name)) != digest:
+                return None
+        elif digest is None:
+            # Privacy adapters retain a basename and send the digest of the
+            # normalized full path in the companion field.  A generic file
+            # ``sha256`` is deliberately not a path identity.
+            digest = _strict_path_digest(container.get(companion_name))
+        if digest is not None:
+            return f"game_module:{pid}:{digest}"
+        # Match the historical first-path behavior and do not mix aliases from
+        # one malformed or ambiguous module record.
+        return None
+    return None
 
 
 def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotations:
@@ -155,9 +191,9 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
             notes.append("유효한 외부 창 PID/HWND가 없어 범위 키를 만들지 않는다. 창 제목·겹침 비율을 ID로 대신하지 않는다.")
     else:
         key = _module_scope(evidence, event_type)
-        notes.append("game_module 키는 게임 PID+정규화 DLL 경로의 범위이며 경로 해시는 파일 바이트 해시/개별 로드 사건 ID가 아니다.")
+        notes.append("game_module 키는 게임 PID+정규화 DLL 경로 다이제스트의 범위이며 경로 다이제스트는 파일 바이트 해시/개별 로드 사건 ID가 아니다.")
         if key is None:
-            notes.append("유효한 게임 PID·절대 DLL 경로가 없다. DLL 이름·파일 해시·서명 상태를 대상 범위의 대체 ID로 사용하지 않는다.")
+            notes.append("유효한 게임 PID·절대 DLL 경로 또는 엄격한 정규화-경로 다이제스트 쌍이 없다. DLL 이름·파일 해시·서명 상태를 대상 범위의 대체 ID로 사용하지 않는다.")
         if event_type == "module_added":
             notes.append("직전 성공 기준선 뒤 DLL 추가 관측이다. 정상 로드도 가능하며 단독으로 악성 주입을 확정하지 않는다.")
         elif event_type == "module_changed":
