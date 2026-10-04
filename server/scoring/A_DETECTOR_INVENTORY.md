@@ -1,6 +1,6 @@
 # 중앙 서버 A 담당 탐지기 전송 규격 조사
 
-> 최신 결과는 [9. 후속 조사·분석 함수 구현 및 A·B 합의](#9-후속-조사분석-함수-구현-및-ab-합의-2026-10-03)를 우선 참조함.
+> 최신 결과는 [11. Runtime 3종 현재 계약 정정](#11-runtime-3종-현재-계약-정정-2026-10-05)을 우선 참조함.
 > 아래 1~8절은 최초 조사 당시 기록으로 보존함. runtime 점수 누락·ESP 제외·양수만 전송이라는 설명을 현재 구현 및 새 합의와 혼동하지 않도록 구분함.
 
 조사일: 2026-10-02. 기준: 팀 `main`의 `f098b5d`에서 분기한 `feat/scoring-a-detector-policies`.
@@ -422,3 +422,27 @@ A의 별도 점수·저장 변경을 추가한 것은 아니며 B 공통 코드�
 공통 저장/Profile의 최소 호환 패치는 B 검토 대상으로 분리함. YARA scoped state,
 실제 overlap 보정·RPC TTL·Final Verdict는 여전히 B/팀 결정 범위이며, 서버 실행·운영
 HTTPS·Dashboard 연결은 C와의 후속 통합 범위임.
+
+## 11. Runtime 3종 현재 계약 정정 (2026-10-05)
+
+1~8절의 runtime 3종 0점·양수 미전송 설명은 최초 조사 당시 기록으로 보존함.
+현재 팀 `main`에서는 PR #74와 PR #82가 반영되어 해당 설명을 현재 계약으로 사용하지 않음.
+
+| `module` | 현재 `raw_score` | 현재 중앙 전송 | 상태 해석 |
+|---|---:|---|---|
+| `godmode_runtime` | `Invincible` 2점 + `GodModeState` 3점, 최대 5점 | 정상 0점, 양수, ERROR/OFFLINE을 모두 `to_shared_event()`로 전달함 | 현재 메모리 상태를 반복 관측하는 snapshot임 |
+| `noclip_runtime` | 충돌 비트 해제 1점 | 위와 같음 | 현재 충돌 비트 상태를 반복 관측하는 snapshot임 |
+| `aimbot_runtime` | 회전 패턴 1점 | 위와 같음 | 한 관측 구간의 회전 패턴을 나타내는 snapshot임 |
+
+코드 근거는 `godmode_runtime.py:24-26,148-151`, `noclip_runtime.py:16,118-120`,
+`aimbot_runtime.py:23,234-236`, `run_session.py:315`임.
+
+세 모듈의 양수 점수는 내부 LocalGuard 등급 기준 20점보다 낮아 로컬 `status`가
+`NORMAL`로 보일 수 있음. 중앙 정책은 `status` 문자열만 보지 않고 `raw_score`,
+`reasons`, `evidence.status`를 함께 해석해야 함. 정상 0점은 현재 상태 갱신에 사용하고,
+ERROR/OFFLINE 0점은 정상 복귀로 보지 않고 `MEASUREMENT_UNAVAILABLE`로 구분함.
+
+현재 B Profile에는 `godmode_runtime=5`, `noclip_runtime=1`, `aimbot_runtime=1` 상한과
+snapshot 의미가 반영되어 있음. 남은 작업은 각 핵 실제 E2E에서 2번
+`memory_integrity` runner를 함께 실행하여 정상 0점·양수·ERROR/OFFLINE 표본을 확보하고,
+대응하는 독립 탐지기와의 중복·가중치를 Replay 결과로 검증하는 것임.
