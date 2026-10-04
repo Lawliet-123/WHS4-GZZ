@@ -37,3 +37,10 @@
 - Data remained available after server restart
 
 Production deployment and live-game E2E testing remain pending.
+
+## Scoring Integration Notes
+
+- Dashboard verdict returns HTTP 404 when no scoring snapshot exists for the requested session/player.
+- Time-based overlap correlation is not enabled because the team has not agreed on a default time window.
+- max_time_distance_ms is intentionally omitted.
+- Once the team agrees on a time window, C will expose it as a configurable setting.

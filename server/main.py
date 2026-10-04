@@ -1,4 +1,3 @@
-
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -20,6 +19,7 @@ from server.scoring.main import (
     configure_scoring,
     process,
     recover_from_writer,
+    get_player_snapshot,
     get_player_final_verdict,
 )
 
@@ -198,6 +198,19 @@ def dashboard_verdict(
     player_id = check_identifier(player_id)
 
     try:
+        # 기록 자체가 없는 플레이어와 평가 가능한 기록이 있는
+        # 플레이어의 NO_ACTIVE_EVIDENCE 판정을 구분한다.
+        snapshot = get_player_snapshot(
+            session_id,
+            player_id,
+        )
+        if not snapshot:
+            raise HTTPException(
+                status_code=404,
+                detail="scoring data not found",
+            )
+
+        # 합의된 시간 창이 없어 max_time_distance_ms는 지정하지 않는다.
         verdict = get_player_final_verdict(
             session_id,
             player_id,
