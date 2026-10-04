@@ -395,6 +395,54 @@ dxgi.dll!CreateDXGIFactory   E9 rel32  →  모듈 밖 스텁 (+53.3MB)
     그려서 그래픽 API 를 후킹하지 않는다. 노션의 "ESP/월핵류 겨냥"은
     *게임 안에 그리는* 오버레이를 전제한 항목이다.
 
+## 양수 경로 실측 — 하네스 (2026-10-05)
+
+위 9/20 측정은 **정상 0점** 쪽만 쟀다. 찾은 후킹 573건이 전부 서명 유효여서 양수(60/100)
+경로는 한 번도 안 나왔고, 그래서 중앙 서버가 임계값을 정할 근거가 없었다
+(은지님 B calibration 요청, 10/4).
+
+게임 안에서 그 조건을 만들려면 게임 프로세스에 후크를 심어야 한다. 대신 **게임을 전혀
+건드리지 않고** 판정 경로만 쟀다. `tests/overlay_fixture.py` 가 자기 프로세스
+안에서, 자기가 호출하지 않는 익스포트 한 개의 진입부를 탐지기가 "모듈 밖으로 나가는
+점프"로 읽을 바이트로 바꾼다. 끝나면 되돌린다. **동작하는 후크가 아니다** — 트램폴린도
+가로채기도 없어서 그 함수를 부르면 죽는다. 탐지기가 바이트를 읽어 판정하는 경로만
+재는 표본이다.
+
+탐지기는 `GZZ_OVERLAY_VALIDATION_PID` 가 있으면 그 PID 를 (게임과 같은 읽기 전용
+권한 0x0410 으로) 보고, 결과에 `evidence.meta.measurement_scope = "controlled_harness"`
+를 박는다. **실제 게임 관측 자료와 섞으면 안 된다**(10/5 은지님과 합의한 라벨).
+
+```
+하네스 1개 프로세스 / 모듈 6개 · 익스포트 7,196개 검사
+  dxgi.dll(20) user32.dll(1046) kernel32.dll(1486) kernelbase.dll(1933)
+  ntdll.dll(2516) ws2_32.dll(195)
+```
+
+| 경우 | 대상 | 목적지 서명 | raw_score | status | reasons |
+|---|---|---|---|---|---|
+| 정상 진입부 | — | — | 0 | NORMAL | — |
+| 일반 익스포트 | `ws2_32.dll!WSAAsyncGetHostByName` | 서명없음 | 60 | DETECTED | `inline_hook_untrusted` |
+| 일반 익스포트 | 〃 | 확인불가 | 60 | DETECTED | `inline_hook_untrusted` |
+| 렌더링 익스포트 | `dxgi.dll!DXGIReportAdapterConfiguration` | 서명없음 | **100** | DETECTED | `inline_hook_untrusted` + `overlay_hook` |
+| 렌더링 익스포트 | 〃 | 확인불가 | **100** | DETECTED | 〃 |
+| 패턴 제거 후 (같은 프로세스) | — | — | 0 | NORMAL | — |
+| 프로세스 재시작 후 | — | — | 0 | NORMAL | — |
+
+**60점은 "서명 없음"과 "서명 확인 불가" 둘 다에서 난다.** `verify()` 가 "유효" 만
+신뢰하기 때문이다(`core/signature.py`). 채점하는 쪽은 둘을 갈라 두는 게 좋다 —
+앞은 서명 없는 모듈이 실제로 후킹한 것이고, 뒤는 **누가 후킹했는지 확인에 실패한**
+것이라 "모른다" 에 가깝다. evidence 에 `(서명: …)` 로 남는다.
+
+렌더링은 `inline_hook_untrusted` 60 에 `overlay_hook` 60 이 더 붙어 상한 100 이 된다.
+evidence 에 대상 DLL·익스포트 이름, 목적지 모듈·경로, 서명 판정이 그대로 남는다.
+
+중앙 경로도 같이 확인했다 — `run_session.py --only overlay_hook` 로 100점 Event 가
+Shared → Receiver → Scoring 까지 가고, 대시보드 판정 조회가
+`unresolved_modules: ["overlay_hook"]` 로 돌려준다(그 모듈 calibration 이 아직 없다는 뜻).
+
+시험: `tests/t_overlay_fixture.py` (위 7가지 + 지정이 없으면 게임을 보는지,
+PID 가 숫자가 아니면 조용히 게임으로 넘어가지 않는지)
+
 ---
 
 # 부록 2 — 입력 직후 호출 순서 관측 (v7)
