@@ -154,7 +154,18 @@ _ITEMS = (
 
     # 현재 중앙 risk calibration 근거가 없는 알려진 모듈들.
     ModuleCalibration("external_access", "pending", None),
-    ModuleCalibration("localguard_executable_hash", "pending", None),
+    ModuleCalibration(
+        "localguard_executable_hash",
+        "threshold",
+        1,
+        note=(
+            "PR #97 live E2E: complete NORMAL scans produce 0, "
+            "exact known executable hash produces 1, and stopping the "
+            "executable returns the next complete snapshot to 0. "
+            "A positive match proves known executable image presence, "
+            "not cheat-function activation."
+        ),
+    ),
     ModuleCalibration("localguard_yara", "pending", None),
     ModuleCalibration("overlay_hook", "pending", None),
     ModuleCalibration("godmode_runtime", "pending", None),
