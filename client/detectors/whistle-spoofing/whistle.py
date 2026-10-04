@@ -63,6 +63,7 @@ def _memory_integrity():
 
 _sys.path.insert(0, _memory_integrity())
 
+from core import ue4ss_trust
 from core.result import DetectorResult, Evidence
 from core.unreal import Runtime, PROCESS_EVENT_IDX
 
@@ -109,7 +110,19 @@ def scan():
     fns = [x for x in rows if x.exec_fn and rt.class_name(x.cls) in UFUNCTION_CLASSES]
     r.meta["ufunctions"] = len(fns)
 
-    self_hooks = []
+    # UE4SS 는 Lua 모드를 돌리려고 ExecFunction 을 후킹한다. 팀 표준 설치가 깔린 PC 는
+    # 정상 세션도 40점 SUSPICIOUS 가 됐다(10/5 실측: ClientRestart -> ue4ss.dll).
+    # **이름이 아니라 런처 설치 기록의 해시로** 가린다(core/ue4ss_trust.py).
+    # 휘파람 핵 DLL 은 그 기록에 없으므로 그대로 잡힌다.
+    paths = {}
+    for m in rt.pm.list_modules():
+        nm = m.name.decode("utf-8", "replace") if isinstance(m.name, bytes) else m.name
+        pth = m.filename.decode("utf-8", "replace") if isinstance(m.filename, bytes) else m.filename
+        paths[nm.lower()] = pth
+    trusted_ue4ss, manifest_state = ue4ss_trust.trusted_modules(paths)
+    r.meta["ue4ss_manifest"] = manifest_state
+
+    self_hooks, ue4ss_hooks = [], []
     for x in fns:
         if rt.in_game_module(x.exec_fn):
             continue
@@ -123,11 +136,21 @@ def scan():
             # 다르지"를 설명할 수 없다. core/selfid.py 참고.
             self_hooks.append(f"{fname} -> {owner}")
             continue
+        if owner and owner.lower() in trusted_ue4ss:
+            # 해시가 맞는 우리 UE4SS 다. 점수만 빼고 근거에는 남긴다.
+            ue4ss_hooks.append(f"{fname} -> {owner}")
+            continue
         # 도발 경로거나 오디오 재생 경로면 휘파람 핵으로 귀속한다
         related = _is_provo(fname) or fname.lower() in ("play", "playsound", "setsound")
         r.add("exec_function_hooked", 60 if related else 40,
               f"{fname}() 의 ExecFunction 이 {owner} 로 교체됨",
               [Evidence("address", f"0x{x.exec_fn:016X}", f"{fname} -> {owner}")])
+
+    if ue4ss_hooks:
+        r.meta["ue4ss_hooks"] = ue4ss_hooks
+        r.evidence.append(Evidence(
+            "module", f"UE4SS 후크 {len(ue4ss_hooks)}건",
+            "런처 설치 기록(해시 일치)과 맞는 모듈 — 점수에서 제외"))
 
     if self_hooks:
         r.meta["self_hooks"] = self_hooks
