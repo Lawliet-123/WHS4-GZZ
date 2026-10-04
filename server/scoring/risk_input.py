@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .calibration import ModuleCalibration, get_calibration
+from .calibration import ModuleCalibration, resolve_calibration
 from .correlation import CorrelationCandidate
 from .player_snapshot import PlayerPolicySnapshot
 
@@ -170,7 +170,11 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
             "per_entity_snapshot",
         )
 
-        calibration = get_calibration(signal.module)
+        calibration = resolve_calibration(
+            signal.module,
+            raw_score=signal.raw_score,
+            evidence=state.evidence,
+        )
 
         threshold_met = _threshold_result(
             raw_score=signal.raw_score,

@@ -21,6 +21,7 @@ def entry(
     raw_score: float,
     emission: str,
     policy_state: str,
+    evidence: dict | None = None,
 ) -> ModulePolicySnapshot:
     state = ModuleState(
         session_id="s",
@@ -30,7 +31,7 @@ def entry(
         sequence=1,
         event_id="00000000-0000-0000-0000-000000000001",
         raw_score=raw_score,
-        evidence={},
+        evidence={} if evidence is None else evidence,
         reasons=[],
     )
 
@@ -238,6 +239,109 @@ class RiskCalibrationIntegrationTests(unittest.TestCase):
 
         self.assertEqual(normal.unresolved_policy_modules, ())
         self.assertEqual(matched.unresolved_policy_modules, ())
+
+    def test_overlay_confirmed_untrusted_game_hook_is_active_candidate(self):
+        result = build(
+            entry(
+                "overlay_hook",
+                raw_score=60,
+                emission="snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+                evidence={
+                    "meta": {
+                        "measurement_scope": "game",
+                        "untrusted_hookers": [
+                            {
+                                "signature": "서명없음",
+                                "render": False,
+                            },
+                        ],
+                    },
+                },
+            )
+        )
+
+        signal = result.signals[0]
+
+        self.assertEqual(signal.calibration_mode, "threshold")
+        self.assertEqual(signal.calibration_threshold, 60.0)
+        self.assertTrue(signal.threshold_met)
+        self.assertEqual(result.unresolved_policy_modules, ())
+
+    def test_overlay_unverifiable_game_hook_is_advisory(self):
+        result = build(
+            entry(
+                "overlay_hook",
+                raw_score=60,
+                emission="snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+                evidence={
+                    "meta": {
+                        "measurement_scope": "game",
+                        "untrusted_hookers": [
+                            {
+                                "signature": "확인불가",
+                                "render": False,
+                            },
+                        ],
+                    },
+                },
+            )
+        )
+
+        signal = result.signals[0]
+
+        self.assertEqual(signal.calibration_mode, "advisory")
+        self.assertIsNone(signal.calibration_threshold)
+        self.assertIsNone(signal.threshold_met)
+        self.assertEqual(result.unresolved_policy_modules, ())
+
+    def test_overlay_controlled_harness_is_advisory(self):
+        result = build(
+            entry(
+                "overlay_hook",
+                raw_score=100,
+                emission="snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+                evidence={
+                    "meta": {
+                        "measurement_scope": "controlled_harness",
+                        "untrusted_hookers": [
+                            {
+                                "signature": "서명없음",
+                                "render": True,
+                            },
+                        ],
+                    },
+                },
+            )
+        )
+
+        signal = result.signals[0]
+
+        self.assertEqual(signal.calibration_mode, "advisory")
+        self.assertIsNone(signal.threshold_met)
+        self.assertEqual(result.unresolved_policy_modules, ())
+
+    def test_overlay_legacy_positive_remains_unresolved(self):
+        result = build(
+            entry(
+                "overlay_hook",
+                raw_score=60,
+                emission="snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+                evidence={},
+            )
+        )
+
+        signal = result.signals[0]
+
+        self.assertEqual(signal.calibration_mode, "pending")
+        self.assertIsNone(signal.threshold_met)
+        self.assertEqual(
+            result.unresolved_policy_modules,
+            ("overlay_hook",),
+        )
 
     def test_out_of_audited_range_cannot_be_resolved_by_threshold(self):
         result = build(
