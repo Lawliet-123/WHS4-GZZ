@@ -172,9 +172,43 @@ signal.signal(signal.SIGBREAK, signal.default_int_handler)
 
 `status`: `MISSING` / `SKIPPED` / `PENDING` / `RUNNING` / `DONE` / `WARN` / `RESTART` / `FAILED` / `STOPPED`
 (`RESTART` = 상주 모듈이 죽어서 되살리는 중)
-서버 연결 상태는 `ctx["server"]` 로 들어갑니다(하트비트 붙이면 그 값만 채우면 됩니다).
+서버 연결 상태는 `ctx["server"]` 로 들어갑니다. 하트비트 응답 결과로 채웁니다(아래 절).
 현재 UI의 `RUNNING`은 자식 프로세스가 살아 있다는 뜻일 뿐, 검사 성공이나 중앙 서버
 전송 성공을 뜻하지 않는다. UE4SS 상태가 전달되지 않으면 `검증 정보 없음`으로 표시한다.
+
+---
+
+## 하트비트 — 런처 한 곳에서 보낸다 (`launcher_heartbeat.py`)
+
+모듈 전체의 생존 상태를 5초마다 중앙 서버 `POST /api/heartbeat` 로 보낸다(meccha-heartbeat-3).
+탐지 점수가 아니라 "안티치트가 지금 돌고 있는가" 만 알린다. 보내는 코드는 동효님
+`client/LocalGuard/input_signature/heartbeat.py` 의 `HeartbeatClient` 를 그대로 쓴다(서버 ACK 검증·
+순번·로컬 기록 포함). 계약 문서(`TELEMETRY_CONTRACT.md`)대로 런처가 한 발신자가 되고, 자식에게는
+하트비트 주소·토큰을 넘기지 않는다(input_signature 가 따로 보내는 중복 발신 방지).
+
+| 환경변수 | 뜻 |
+|---|---|
+| `MECCHA_TELEMETRY_HEARTBEAT_URL` | 하트비트 전체 URL. 없으면 `GZZ_TELEMETRY_URL` + `/api/heartbeat` |
+| `MECCHA_HEARTBEAT_TOKEN` | 하트비트 인증(Bearer). 탐지용 `GZZ_TELEMETRY_TOKEN` 과 따로다 |
+
+원격은 HTTPS 만, http 는 `127.0.0.1`·`localhost` 시험용만 된다. 주소가 없으면 로컬 기록만 남긴다
+(`logs/heartbeat/<세션>_<t0 ms>.jsonl`, 항상 남음).
+
+`components` 는 `launcher` + 모듈마다 하나다. 상태는 런처가 실제로 확인한 프로세스 상태로만 채운다:
+`PENDING`→starting, `RUNNING`→running, `DONE`→running(주기 검사가 다음 주기를 기다림, 단발이면 stopped),
+`WARN`/`RESTART`→degraded, `FAILED`→failed, `STOPPED`→stopped, `MISSING`→unknown·`SKIPPED`→stopped(둘 다 필수 아님).
+필수 모듈이 하나라도 degraded·failed 면 전체 상태는 healthy 가 아니다. `launcher` 는 메인 루프가 10초 넘게
+안 돌면 degraded 다(게임 대기·정리 단계는 예외, `details.phase`). 정리가 끝나면 마지막 한 건을 `stopped` 로 보낸다.
+자유 문장(`detail`)은 로컬 경로·사용자 이름이 섞일 수 있어 보내지 않는다. 주기 검사의 종료코드
+(0 정상 / 1 의심 / 2 검사 실패)는 탐지 결과라 보내지 않는다 — 하트비트는 생존·신선도만이다.
+
+`client_id` 는 `launcher-<세션 시작 ms>` 다(실행마다 다름). 런처가 시작할 때 화면에 대시보드 조회
+경로를 찍는다: `GET /api/dashboard/heartbeat/<세션>/launcher-<ms>`. 런처는 하트비트 값을 읽은 뒤
+자기 환경에서 `MECCHA_HEARTBEAT_TOKEN`·`MECCHA_TELEMETRY_HEARTBEAT_URL` 을 지워 게임·모듈에 안 넘긴다.
+마지막 stopped 전송은 모듈 정리와 같은 Ctrl+C 무시 구간에서 한다(서버가 늦으면 최대 6초).
+
+화면 "서버" 칸: `연결됨` / `확인 중` / `전송 실패 N회 (오류 종류)` / `꺼짐 (서버 주소 없음, 로컬 기록만)`.
+하트비트가 실패해도 런처와 탐지는 그대로 돈다.
 
 ---
 

@@ -402,6 +402,11 @@ def spawn(argv: List[str], cwd: str, log: str, note: str = "",
     name = os.path.splitext(os.path.basename(log))[0]
     env["GZZ_TELEMETRY_OUTBOX"] = os.path.join(
         os.path.dirname(os.path.abspath(log)), "outbox", name, "client.sqlite3")
+    # 하트비트는 런처 한 곳에서만 보낸다(launcher_heartbeat.py). 자식에게 주소·토큰을
+    # 물려주면 input_signature(yara_scanner)가 MECCHA_TELEMETRY_HEARTBEAT_URL 을 기본값으로
+    # 읽어 따로 보낸다 — 계약 문서(TELEMETRY_CONTRACT.md)가 피하라고 한 중복 발신이다.
+    for k in ("MECCHA_TELEMETRY_HEARTBEAT_URL", "MECCHA_HEARTBEAT_TOKEN"):
+        env.pop(k, None)
     # 모듈마다 따로 주는 환경변수(Module.env). 전부에 넣지 않는 이유: 레포 루트를
     # 모든 모듈의 PYTHONPATH 에 넣으면 최상위 modules/·server/ 같은 이름이 다른
     # 모듈의 import 를 가로챌 수 있다. PYTHONPATH 는 사용자가 이미 준 값을 지우지 않는다.
