@@ -435,9 +435,17 @@ dxgi.dll!CreateDXGIFactory   E9 rel32  →  모듈 밖 스텁 (+53.3MB)
 | 프로세스 재시작 후 | — | — | 0 | NORMAL | — |
 
 **60점은 "서명 없음"과 "서명 확인 불가" 둘 다에서 난다.** `verify()` 가 "유효" 만
-신뢰하기 때문이다(`core/signature.py`). 채점하는 쪽은 둘을 갈라 두는 게 좋다 —
-앞은 서명 없는 모듈이 실제로 후킹한 것이고, 뒤는 **누가 후킹했는지 확인에 실패한**
-것이라 "모른다" 에 가깝다. evidence 에 `(서명: …)` 로 남는다.
+신뢰하기 때문이다(`core/signature.py`). 둘은 뜻이 다르다 — 앞은 서명 없는 모듈이
+실제로 후킹한 것이고, 뒤는 **누가 후킹했는지 확인에 실패한** 것이라 "모른다" 에 가깝다.
+
+중앙 정책이 자유 문장을 파싱하지 않고 가를 수 있도록 `evidence.meta.untrusted_hookers`
+에 구조화해서 넘긴다(10/5 송희님 요청). 이유 코드(`inline_hook_untrusted`,
+`overlay_hook`)는 서버가 이미 쓰고 있어서 그대로 뒀다.
+
+```json
+{"module": "...", "path": "...", "signature": "서명없음" | "확인불가" | "위조" | "신뢰안됨",
+ "render": true, "hooks": 1, "functions": ["dxgi.dll!DXGIReportAdapterConfiguration"]}
+```
 
 렌더링은 `inline_hook_untrusted` 60 에 `overlay_hook` 60 이 더 붙어 상한 100 이 된다.
 evidence 에 대상 DLL·익스포트 이름, 목적지 모듈·경로, 서명 판정이 그대로 남는다.
