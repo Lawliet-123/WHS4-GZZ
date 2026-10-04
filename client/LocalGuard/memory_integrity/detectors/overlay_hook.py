@@ -49,7 +49,6 @@
 """
 
 import json
-import os
 import struct
 import sys
 import time
@@ -193,43 +192,42 @@ def resolve_chain(pm, code, addr, owner, depth=4):
     return tgt
 
 
-# ── 판정 경로 검증용 대상 지정 ──────────────────────────────────────────
-#
-# 이 탐지기의 **양수** 경로(60/100)는 9/20 실측에서 한 번도 안 나왔다. 그날 찾은
-# 인라인 후킹 573건이 전부 서명 유효(스팀 오버레이 등)여서 정상 0점으로 끝났다.
-# 서버 임계값을 정하려면 양수 Event 가 필요한데, 게임 안에서 그 조건을 만들려면
-# 게임 프로세스에 후크를 심어야 한다.
-#
-# 그래서 **게임 대신 통제된 하네스 프로세스를 보게** 한다. 이 변수가 있으면 그 PID 를
-# 읽기 전용으로 열고(권한은 게임과 같은 0x0410), 결과에 `measurement_scope`
-# = "controlled_harness" 를 박는다. 하네스 실측이 실제 게임 관측 자료와 섞이면
-# 안 되기 때문이다(10/5 은지님과 합의한 라벨).
-#
-#   시험\overlay_fixture.py 가 그 하네스다. 자기 프로세스 안에서만 바이트를 바꾼다.
-VALIDATION_PID_ENV = "GZZ_OVERLAY_VALIDATION_PID"
+def scan(target_pid=None):
+    """인라인·오버레이 후킹 검사. 기본은 **게임**이다.
 
+    ## `target_pid` 는 판정 경로 검증용이다 (운영 경로에는 쓰지 않는다)
 
-def _open_target(r):
-    """(pm, scope). 검증용 PID 가 지정되면 그쪽, 없으면 게임."""
-    raw = (os.environ.get(VALIDATION_PID_ENV) or "").strip()
-    if not raw:
-        return procopen.open_game(GAME_EXE), "game"
-    if not raw.isdigit() or int(raw) <= 0:
-        raise ValueError(f"{VALIDATION_PID_ENV} 가 PID 가 아닙니다: {raw!r}")
-    return procopen.open_pid(int(raw)), "controlled_harness"
+    이 탐지기의 양수 경로(60/100)는 9/20 실측에서 한 번도 안 나왔다. 그날 찾은
+    인라인 후킹 573건이 전부 서명 유효(스팀 오버레이 등)여서 정상 0점으로 끝났고,
+    그래서 서버가 임계값을 정할 근거가 없었다. 게임 안에서 그 조건을 만들려면
+    게임 프로세스에 후크를 심어야 해서, 대신 통제된 하네스 프로세스를 본다
+    (`tests/overlay_fixture.py`, 자기 프로세스 메모리만 바꾼다).
 
+    **인자로만 받는다. 환경변수로는 못 바꾼다.** 처음엔 `GZZ_OVERLAY_VALIDATION_PID`
+    로 했는데, 런처가 환경을 자식에게 물려주므로 그 변수를 심어 두면 운영 중에도
+    탐지 대상을 깨끗한 프로세스로 바꿀 수 있었다 — 탐지 회피 경로다(10/5 은지님 지적).
+    `run_session` 도 `scan()` 을 인자 없이 부르므로 운영 경로는 항상 게임을 본다.
 
-def scan():
+    지정하면 결과에 `meta.measurement_scope = "controlled_harness"` 가 박힌다.
+    하네스 실측은 실제 게임 관측 자료와 섞이면 안 된다(10/5 합의한 라벨).
+    호출자가 이 값을 고를 수는 없다 — PID 를 줬다는 사실에서만 정해진다.
+    """
     r = DetectorResult("overlay_hook")
     t0 = time.time()
 
-    scope = "game"
+    scope = "game" if target_pid is None else "controlled_harness"
     try:
-        pm, scope = _open_target(r)
+        if target_pid is None:
+            pm = procopen.open_game(GAME_EXE)
+        else:
+            pid = int(target_pid)
+            if pid <= 0:
+                raise ValueError(f"target_pid 가 PID 가 아닙니다: {target_pid!r}")
+            pm = procopen.open_pid(pid)
     except pymem.exception.ProcessNotFound:
         return r.unavailable("게임이 실행 중이 아닙니다")
     except Exception as e:
-        return r.fail(f"{'하네스' if os.environ.get(VALIDATION_PID_ENV) else '게임'}에 "
+        return r.fail(f"{'하네스' if target_pid is not None else '게임'}에 "
                       f"붙지 못했습니다: {e}")
 
     # 모듈 범위표. 목적지가 어느 모듈인지 역추적하는 데 쓴다.
