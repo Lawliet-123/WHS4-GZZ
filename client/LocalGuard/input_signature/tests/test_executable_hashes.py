@@ -24,7 +24,8 @@ from executable_hashes import (load_blacklist, scan_running_executable_hashes,
 from hash_monitor import HashMonitor
 from replay_events import ReplaySession
 from tests.validate_session import validate
-from windows_process import process_session_id, process_session_snapshot
+from windows_process import (process_owner_snapshot, process_session_id,
+                             process_session_snapshot)
 from yara_scanner import main as yara_main
 
 
@@ -70,9 +71,10 @@ class Tests(unittest.TestCase):
     def scan(self, *, factory=None):
         """게임과 같은 세션의 단일 PID를 모의해 해시 검사를 수행한다."""
         return scan_running_executable_hashes(
-            self.catalogue, game_session_id=1,
+            self.catalogue, game_pid=999, game_session_id=1,
             process_rows=[{'pid': 123, 'name': 'anything.exe', 'parent_pid': 1}],
             session_lookup=lambda pid: 1,
+            owner_snapshot={999: b'game_account', 123: b'game_account'},
             identity_factory=factory or (lambda pid: Identity(pid, self.image)))
 
     def test_exact_hash_matches_renamed_running_image(self):
@@ -98,6 +100,35 @@ class Tests(unittest.TestCase):
         reused = self.scan(factory=lambda pid: Identity(pid, self.image, fail_check=True))
         self.assertFalse(reused['complete'])
         self.assertEqual(reused['matches'], [])
+
+    def test_account_scope_does_not_trust_process_names(self):
+        """다른 계정/소유자 불명은 별도 계수로 남기고 이름 위장은 통하지 않는다."""
+        result = scan_running_executable_hashes(
+            self.catalogue, game_pid=999, game_session_id=1,
+            process_rows=[{'pid': 123, 'name': 'csrss.exe'},
+                          {'pid': 124, 'name': 'renamed_tool.exe'},
+                          {'pid': 125, 'name': 'renamed_tool.exe'}],
+            session_lookup=lambda pid: 1,
+            owner_snapshot={999: b'game_account', 123: b'game_account',
+                            124: b'other_account', 125: None},
+            identity_factory=lambda pid: Identity(pid, self.image))
+        self.assertTrue(result['complete'])
+        self.assertEqual([match['pid'] for match in result['matches']], [123])
+        self.assertEqual(result['same_session_count'], 3)
+        self.assertEqual(result['same_account_session_count'], 1)
+        self.assertEqual(result['other_account_count'], 1)
+        self.assertEqual(result['owner_unavailable_count'], 1)
+        self.assertEqual(result['scope'],
+                         'running_game_account_same_session_executable_disk_sha256')
+
+    def test_unknown_game_owner_is_not_assumed_clean(self):
+        """게임 소유자 SID 자체를 모르면 검사 실패로 처리한다."""
+        with self.assertRaisesRegex(LookupError, 'game_process_owner_unavailable'):
+            scan_running_executable_hashes(
+                self.catalogue, game_pid=999, game_session_id=1,
+                process_rows=[{'pid': 123, 'name': 'anything.exe'}],
+                session_lookup=lambda pid: 1, owner_snapshot={123: b'user'},
+                identity_factory=lambda pid: Identity(pid, self.image))
 
     def test_nonmatching_size_avoids_file_hash(self):
         """카탈로그에 없는 크기의 이미지는 불필요한 해시 계산을 건너뛴다."""
@@ -229,7 +260,8 @@ class Tests(unittest.TestCase):
             self.assertTrue(ready.exists())
             from windows_process import process_session_id
             result = scan_running_executable_hashes(
-                catalogue, game_session_id=process_session_id(os.getpid()),
+                catalogue, game_pid=os.getpid(),
+                game_session_id=process_session_id(os.getpid()),
                 process_rows=[{'pid': child.pid, 'name': 'renamed_native_fixture.exe'}])
             self.assertEqual(result['matches'][0]['catalogue_ids'],
                              ['live_native_fixture'])
@@ -244,6 +276,11 @@ class Tests(unittest.TestCase):
         """Windows 세션 스냅샷이 현재 PID를 포함하는지 확인한다."""
         self.assertEqual(process_session_snapshot()[os.getpid()],
                          process_session_id(os.getpid()))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows process-owner test')
+    def test_native_process_owner_snapshot_includes_current_process(self):
+        """운영체제 소유자 목록에서 검사기 자신의 SID를 확인할 수 있다."""
+        self.assertIsNotNone(process_owner_snapshot().get(os.getpid()))
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows scanner integration test')
     def test_yara_runner_starts_hash_worker_and_heartbeat(self):

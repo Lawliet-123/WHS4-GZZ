@@ -619,7 +619,7 @@ def main(argv=None):
                             'entry_count': hash_catalogue['entry_count'],
                             'catalogue_sha256': hash_catalogue['catalogue_sha256'],
                             'scan_interval_seconds': args.hash_interval,
-                            'scope': 'running_same_session_executable_disk_sha256',
+                            'scope': 'running_game_account_same_session_executable_disk_sha256',
                             'known_builds_only': True}),
                        scan_interval_seconds=args.interval, scan_timeout_seconds=args.timeout,
                        scan_mode=args.scan_mode,

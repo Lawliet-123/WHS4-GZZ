@@ -31,6 +31,12 @@ class Entry(c.Structure):
                 ('pcPriClassBase', w.LONG), ('dwFlags', w.DWORD), ('szExeFile', w.WCHAR * 260)]
 
 
+class WtsProcessInfo(c.Structure):
+    """WTS_PROCESS_INFOW: 프로세스 소유자를 이름이 아닌 Windows SID로 구분한다."""
+    _fields_ = [('SessionId', w.DWORD), ('ProcessId', w.DWORD),
+                ('pProcessName', w.LPWSTR), ('pUserSid', c.c_void_p)]
+
+
 class ModuleInfo(c.Structure):
     """PSAPI가 돌려주는 모듈의 메모리 시작 주소·이미지 크기."""
     _fields_ = [('lpBaseOfDll', c.c_void_p), ('SizeOfImage', w.DWORD),
@@ -159,6 +165,52 @@ def process_session_id(pid):
     if not k.ProcessIdToSessionId(pid, c.byref(session)):
         raise c.WinError(c.get_last_error())
     return int(session.value)
+
+
+def process_owner_snapshot():
+    """PID→소유자 SID 스냅샷을 만든다. 조회 불가 SID는 None으로 남긴다.
+
+    WTS는 보호된 프로세스의 SID를 제공하지 않을 수 있다. None을 게임 계정의
+    SID로 추측하거나 프로세스 이름을 근거로 소유자를 결정하지 않는다.
+    반환하는 SID 바이트는 메모리 내 비교에만 쓰며 로그에 기록하지 않는다.
+    """
+    if sys.platform != 'win32' or c.sizeof(c.c_void_p) != 8:
+        raise RuntimeError('Windows 64-bit Python is required')
+    wts = c.WinDLL('wtsapi32', use_last_error=True)
+    security = c.WinDLL('advapi32', use_last_error=True)
+    wts.WTSEnumerateProcessesW.argtypes = [w.HANDLE, w.DWORD, w.DWORD,
+                                           c.POINTER(c.POINTER(WtsProcessInfo)),
+                                           c.POINTER(w.DWORD)]
+    wts.WTSEnumerateProcessesW.restype = w.BOOL
+    wts.WTSFreeMemory.argtypes = [c.c_void_p]
+    wts.WTSFreeMemory.restype = None
+    security.IsValidSid.argtypes = [c.c_void_p]
+    security.IsValidSid.restype = w.BOOL
+    security.GetLengthSid.argtypes = [c.c_void_p]
+    security.GetLengthSid.restype = w.DWORD
+    rows = c.POINTER(WtsProcessInfo)()
+    count = w.DWORD()
+    # WTS_CURRENT_SERVER_HANDLE=0, Version=1. 버퍼는 반드시 WTSFreeMemory로 해제.
+    if not wts.WTSEnumerateProcessesW(None, 0, 1, c.byref(rows), c.byref(count)):
+        raise c.WinError(c.get_last_error())
+    try:
+        owners = {}
+        for index in range(count.value):
+            item = rows[index]
+            if not item.ProcessId:
+                continue
+            sid = None
+            if item.pUserSid:
+                if not security.IsValidSid(item.pUserSid):
+                    raise RuntimeError('process_owner_snapshot_invalid_sid')
+                length = security.GetLengthSid(item.pUserSid)
+                if not 8 <= length <= 68:
+                    raise RuntimeError('process_owner_snapshot_invalid_sid_length')
+                sid = c.string_at(item.pUserSid, length)
+            owners[int(item.ProcessId)] = sid
+        return owners
+    finally:
+        wts.WTSFreeMemory(rows)
 
 
 def process_session_snapshot():

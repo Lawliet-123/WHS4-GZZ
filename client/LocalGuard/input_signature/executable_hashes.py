@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 import re
 
-from windows_process import ProcessIdentity, list_processes, process_session_snapshot
+from windows_process import (ProcessIdentity, list_processes, process_owner_snapshot,
+                             process_session_snapshot)
 
 
 SCHEMA_VERSION = 'meccha-known-executable-hashes-1'
@@ -95,17 +96,25 @@ def hash_stable_image(path, expected_size, *, stop_event=None):
     return digest.hexdigest()
 
 
-def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=None,
-                                   process_rows=None, session_lookup=None,
+def scan_running_executable_hashes(catalogue, *, game_pid, game_session_id,
+                                   stop_event=None, process_rows=None,
+                                   session_lookup=None, owner_snapshot=None,
                                    identity_factory=ProcessIdentity):
-    """게임과 같은 Windows 세션의 실행 중 EXE만 한 번 조사한다.
+    """게임 계정·Windows 세션에서 실행 중인 EXE만 한 번 조사한다.
 
     먼저 파일 크기로 후보를 좁히고 SHA-256을 계산한다. 프로세스 식별자를
-    검사 전후에 확인해 PID 재사용을 피한다. ``complete``는 *이번 스냅샷*에서
-    건너뛴 대상이 없다는 뜻이지, 주기 사이에 떴다 사라진 프로세스까지
-    모두 확인했다는 뜻은 아니다.
+    검사 전후에 확인해 PID 재사용을 피한다. WTS가 소유자 SID를 제공하지
+    않은 프로세스는 게임 계정 소유라고 추측하지 않고 별도 계수로 기록한다.
+    ``complete``는 *확인된 게임 계정·세션 대상*을 건너뛰지 않았다는 뜻이며,
+    소유자 불명 프로세스나 검사 주기 사이의 짧은 실행까지 확인한 뜻은 아니다.
     """
+    if type(game_pid) is not int or game_pid <= 0:
+        raise ValueError('positive game PID required')
     rows = list_processes() if process_rows is None else process_rows
+    owners = process_owner_snapshot() if owner_snapshot is None else owner_snapshot
+    game_owner = owners.get(game_pid)
+    if game_owner is None:
+        raise LookupError('game_process_owner_unavailable')
     if session_lookup is None:
         sessions = process_session_snapshot()
         def session_lookup(pid):
@@ -113,6 +122,9 @@ def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=Non
                 raise LookupError('pid_absent_from_process_session_snapshot')
             return sessions[pid]
     same_session = 0
+    same_account_session = 0
+    other_account = 0
+    owner_unavailable = 0
     size_candidates = 0
     hashed = 0
     skipped = []
@@ -126,15 +138,29 @@ def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=Non
         pid = row.get('pid')
         if type(pid) is not int or pid <= 0:
             continue
+        owner = owners.get(pid)
         try:
             if session_lookup(pid) != game_session_id:
                 continue
         except (OSError, LookupError) as exc:
-            # 세션을 모르는 PID를 임의로 대상에서 제외하면 거짓 정상 결과가 된다.
-            skipped.append({'pid': pid, 'reason': 'session_unavailable',
-                            'error_type': type(exc).__name__})
+            # 확인된 게임 계정의 PID만 검사 대상이다. 다른 계정이나 소유자
+            # 불명 PID의 세션 조회 실패는 별도 범위 공백으로 남긴다.
+            if owner == game_owner:
+                skipped.append({'pid': pid, 'reason': 'session_unavailable',
+                                'error_type': type(exc).__name__})
+            elif owner is None:
+                owner_unavailable += 1
+            else:
+                other_account += 1
             continue
         same_session += 1
+        if owner is None:
+            owner_unavailable += 1
+            continue
+        if owner != game_owner:
+            other_account += 1
+            continue
+        same_account_session += 1
         try:
             with identity_factory(pid) as process:
                 path = process.initial['image_path']
@@ -165,8 +191,11 @@ def scan_running_executable_hashes(catalogue, *, game_session_id, stop_event=Non
     matches.sort(key=lambda item: item['pid'])
     return {'matches': matches, 'complete': not skipped,
             'process_count': len(rows), 'same_session_count': same_session,
+            'same_account_session_count': same_account_session,
+            'other_account_count': other_account,
+            'owner_unavailable_count': owner_unavailable,
             'size_candidate_count': size_candidates, 'hashed_process_count': hashed,
             'skipped': skipped,
-            'scope': 'running_same_session_executable_disk_sha256',
+            'scope': 'running_game_account_same_session_executable_disk_sha256',
             'catalogue_sha256': catalogue['catalogue_sha256'],
             'catalogue_entry_count': catalogue['entry_count']}

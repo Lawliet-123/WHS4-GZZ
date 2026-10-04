@@ -40,7 +40,8 @@ class HashMonitor:
         start = self.session.elapsed()
         self.game_process.check()
         result = scan_running_executable_hashes(
-            self.catalogue, game_session_id=process_session_id(self.game_process.pid),
+            self.catalogue, game_pid=self.game_process.pid,
+            game_session_id=process_session_id(self.game_process.pid),
             stop_event=self.stop_event)
         self.game_process.check()
         end = self.session.elapsed()
@@ -57,6 +58,9 @@ class HashMonitor:
             'catalogue_entry_count': result['catalogue_entry_count'],
             'process_count': result['process_count'],
             'same_session_count': result['same_session_count'],
+            'same_account_session_count': result['same_account_session_count'],
+            'other_account_count': result['other_account_count'],
+            'owner_unavailable_count': result['owner_unavailable_count'],
             'size_candidate_count': result['size_candidate_count'],
             'hashed_process_count': result['hashed_process_count'],
             'complete': result['complete'], 'matches': matches,
@@ -73,10 +77,11 @@ class HashMonitor:
                 {'measurement_valid': True, 'scope': result['scope'],
                  'scan_start_ms': start, 'scan_duration_ms': end - start,
                  'coverage_complete': result['complete'],
+                 'owner_unavailable_count': result['owner_unavailable_count'],
                  'matched_executables': public_matches,
                  'catalogue_sha256': result['catalogue_sha256'],
                  'active_cheat_proven': False, 'cheat_confirmed': False,
-                 'zero_means': 'no_known_executable_hash_match_in_inspected_running_images_not_proven_clean'},
+                 'zero_means': 'no_known_executable_hash_match_in_confirmed_game_account_processes_not_proven_clean'},
                 ['Known executable SHA-256 matched: ' + ','.join(item['catalogue_ids'])
                  for item in public_matches],
                 1 if matches else 0, timestamp_ms=end)
@@ -87,6 +92,7 @@ class HashMonitor:
                      'catalogue_entry_count': result['catalogue_entry_count'],
                      'last_scan_completed_ms': end,
                      'coverage_complete': result['complete'],
+                     'owner_unavailable_count': result['owner_unavailable_count'],
                      'skipped_count': len(result['skipped']),
                      'matched_process_count': len(matches)})
 
