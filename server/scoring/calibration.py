@@ -134,7 +134,15 @@ _ITEMS = (
 
     # 추가 Replay 데이터가 도착하면 replay-v1 안에서 확정하거나
     # 필요하면 replay-v2로 승격한다.
-    ModuleCalibration("noclip", "pending", None),
+    ModuleCalibration(
+        "noclip",
+        "threshold",
+        3,
+        note=(
+            "Replay v1: CHEAT 3 / NORMAL 3; threshold 3 keeps "
+            "FP=0, FN=0 with avg detection latency about 5.67s."
+        ),
+    ),
     ModuleCalibration("esp", "pending", None),
     ModuleCalibration("whistle", "pending", None),
     ModuleCalibration(

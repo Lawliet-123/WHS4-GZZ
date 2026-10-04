@@ -21,6 +21,7 @@ class CalibrationTests(unittest.TestCase):
             "hide_anywhere": ("threshold", 3),
             "injection": ("threshold", 40),
             "value_tamper": ("threshold", 100),
+            "noclip": ("threshold", 3),
         }
 
         for module, (mode, threshold) in expected.items():
@@ -37,6 +38,13 @@ class CalibrationTests(unittest.TestCase):
         self.assertFalse(calibration.meets_threshold(3))
         self.assertTrue(calibration.meets_threshold(4))
         self.assertTrue(calibration.meets_threshold(8))
+
+    def test_noclip_threshold_boundary_is_inclusive(self):
+        calibration = require_calibration("noclip")
+
+        self.assertFalse(calibration.meets_threshold(2))
+        self.assertTrue(calibration.meets_threshold(3))
+        self.assertTrue(calibration.meets_threshold(5))
 
     def test_godmode_event_threshold_is_not_snapshot_rule(self):
         calibration = require_calibration("godmode")
@@ -56,7 +64,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertIsNone(calibration.meets_threshold(100))
 
     def test_pending_modules_are_not_forced_clean_or_positive(self):
-        for module in ("noclip", "esp", "whistle", "whistle_rpc"):
+        for module in ("esp", "whistle", "whistle_rpc"):
             with self.subTest(module=module):
                 calibration = require_calibration(module)
                 self.assertEqual(calibration.mode, "pending")

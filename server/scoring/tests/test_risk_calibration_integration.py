@@ -167,8 +167,17 @@ class RiskCalibrationIntegrationTests(unittest.TestCase):
         # 알려진 advisory라는 의미가 확정됐으므로 unresolved는 아니다.
         self.assertEqual(result.unresolved_policy_modules, ())
 
-    def test_noclip_remains_pending(self):
-        result = build(
+    def test_noclip_threshold_is_applied(self):
+        below = build(
+            entry(
+                "noclip",
+                raw_score=2,
+                emission="snapshot",
+                policy_state="RAW_FRACTION_ONLY",
+            )
+        )
+
+        at_threshold = build(
             entry(
                 "noclip",
                 raw_score=3,
@@ -177,16 +186,24 @@ class RiskCalibrationIntegrationTests(unittest.TestCase):
             )
         )
 
-        signal = result.signals[0]
-
-        self.assertEqual(signal.calibration_version, "replay-v1")
-        self.assertEqual(signal.calibration_mode, "pending")
-        self.assertIsNone(signal.threshold_met)
-
         self.assertEqual(
-            result.unresolved_policy_modules,
-            ("noclip",),
+            at_threshold.signals[0].calibration_version,
+            "replay-v1",
         )
+        self.assertEqual(
+            at_threshold.signals[0].calibration_mode,
+            "threshold",
+        )
+        self.assertEqual(
+            at_threshold.signals[0].calibration_threshold,
+            3.0,
+        )
+
+        self.assertFalse(below.signals[0].threshold_met)
+        self.assertTrue(at_threshold.signals[0].threshold_met)
+
+        self.assertEqual(below.unresolved_policy_modules, ())
+        self.assertEqual(at_threshold.unresolved_policy_modules, ())
 
     def test_out_of_audited_range_cannot_be_resolved_by_threshold(self):
         result = build(
