@@ -25,6 +25,13 @@ from server.scoring.main import (
 
 
 # -------------------------------------------------
+# Writer/Receiver 공통 요청 크기 설정
+# -------------------------------------------------
+
+writer_config = WriterConfig.from_env()
+
+
+# -------------------------------------------------
 # 서버 시작 및 종료
 # -------------------------------------------------
 
@@ -42,9 +49,7 @@ async def lifespan(app: FastAPI):
     )
 
     # 1. Shared Writer 초기화
-    writer = configure_writer(
-        WriterConfig.from_env()
-    )
+    writer = configure_writer(writer_config)
 
     # 2. Scoring 초기화
     configure_scoring()
@@ -107,6 +112,7 @@ app.include_router(
         verify_token=bearer_token_verifier(
             os.environ["GZZ_TELEMETRY_TOKEN"]
         ),
+        max_event_bytes=writer_config.max_event_bytes,
     )
 )
 
