@@ -300,6 +300,12 @@ def scan(target_pid=None):
         by_owner.setdefault(own or "알 수 없는 메모리", []).append((mod, name, tgt))
 
     trusted_note = []
+    # 양수를 낸 후커를 **구조화해서** 같이 넘긴다. 60점은 "서명없음" 과
+    # "서명 확인 불가" 둘 다에서 나는데, 앞은 서명 없는 모듈이 실제로 후킹한 것이고
+    # 뒤는 **누가 후킹했는지 확인에 실패한** 것이라 뜻이 다르다. 자유 문장 안의
+    # "(서명: …)" 을 파싱하지 않고 중앙 정책이 바로 가를 수 있게 한다
+    # (10/5 송희님: signature 상태로 중앙 정책을 분리할 근거가 필요).
+    untrusted = []
     for own, items in sorted(by_owner.items(), key=lambda kv: -len(kv[1])):
         path = paths.get(own or "", "")
         # verify() 는 "유효" | "서명없음" | "위조" | "신뢰안됨" | "확인불가" 를
@@ -316,6 +322,16 @@ def scan(target_pid=None):
             trusted_note.append(f"{own} (서명 유효, {kind} {len(items)}건)")
             continue
 
+        untrusted.append({
+            "module": own if own != "알 수 없는 메모리" else None,
+            "path": path,
+            # verify() 그대로: 서명없음 | 위조 | 신뢰안됨 | 확인불가
+            # ("확인불가" = 경로를 못 찾았거나 검증에 실패 = 관측 실패에 가깝다)
+            "signature": sig,
+            "render": render,
+            "hooks": len(items),
+            "functions": [f"{m}!{n}" for m, n, _ in items[:5]],
+        })
         r.add("inline_hook_untrusted", 60,
               f"서명 없는 {own} 이 {kind} 함수 {len(items)}개를 인라인 후킹",
               [Evidence("module", own or "?", f"{path} (서명: {sig})"),
@@ -329,6 +345,8 @@ def scan(target_pid=None):
         # 지우지 않고 남긴다. 정상 오버레이가 몇 개 붙어 있는지는
         # 오탐률을 읽을 때 필요한 정보다.
         r.meta["trusted_hookers"] = trusted_note
+    if untrusted:
+        r.meta["untrusted_hookers"] = untrusted
 
     if not r.reasons:
         r.detail = (f"인라인 후킹 {len(hooks)}건이 있으나 전부 서명된 모듈 — "

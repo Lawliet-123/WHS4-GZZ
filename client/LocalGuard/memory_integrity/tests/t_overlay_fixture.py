@@ -149,6 +149,13 @@ def main(argv=None):
                 check(info["target_export"] in blob,
                       f"{case}: evidence 에 익스포트 이름 {info['target_export']}")
                 check(want_sig in blob, f"{case}: evidence 에 서명 판정 '{want_sig}'")
+                # 중앙 정책이 자유 문장을 파싱하지 않고 가를 수 있어야 한다(송희님 10/5)
+                uh = (ev["evidence"].get("meta", {}) or {}).get("untrusted_hookers") or []
+                check(len(uh) == 1 and uh[0].get("signature") == want_sig
+                      and uh[0].get("render") == (want_dll == "dxgi.dll")
+                      and uh[0].get("hooks") == 1,
+                      f"{case}: meta.untrusted_hookers 로 서명 상태를 구조화해서 넘김 "
+                      f"({uh[0] if uh else '없음'})")
                 if want == 100:
                     check("overlay_hook" in ev["reasons"] or "렌더링" in blob,
                           f"{case}: 렌더링 경로 사유가 따로 붙음")
