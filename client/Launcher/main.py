@@ -273,13 +273,22 @@ def main(argv=None):
     # 모듈 전체의 생존 상태를 중앙 서버에 한 발신자로 보낸다(launcher_heartbeat.py).
     # 서버 칸은 고정 문구가 아니라 하트비트 응답 결과로 채운다(10/4 재민님 요청).
     hb = launcher_heartbeat.LauncherHeartbeat(pm, session, player, t0)
-    hb.start()
+    # 값은 hb 가 쥐었다. 런처 환경에서 지워 게임(game_launcher.launch 는 환경을 그대로
+    # 물려준다)·모듈 어느 자식에게도 하트비트 토큰이 가지 않게 한다(10/4 검토).
+    for k in ("MECCHA_HEARTBEAT_TOKEN", "MECCHA_TELEMETRY_HEARTBEAT_URL"):
+        os.environ.pop(k, None)
+    if hb.client and hb.endpoint:
+        ui.line(f"  하트비트: {hb.endpoint} (client_id {hb.client_id})")
+        ui.line(f"    대시보드 조회: /api/dashboard/heartbeat/{session}/{hb.client_id}")
     ctx = {"session": session, "game_pid": None, "server": hb.server_text()}
     code = 0
     try:
         ui.line("")
         ui.line("  [1/4] 게임과 무관한 모듈 시작")
         pm.start_group(needs_game=False)
+        # 첫 하트비트는 메인 스레드에서 서버 응답을 기다린다(최대 3초). 보호 장치가 먼저 뜬 뒤,
+        # 그리고 try 안에서 보내야 그 사이 Ctrl+C 에도 finally 의 정리가 짝을 이룬다.
+        hb.start()
 
         pid = game_launcher.find_game_pid()
         if pid is None and not a.no_launch_game:
@@ -337,14 +346,21 @@ def main(argv=None):
                                if s.module.needs_game == g] or [0.0]) for g in (True, False))
             if pm.final_targets():
                 longest += FINAL_WAIT_S        # 그 앞에 마지막 검사를 한 번 더 돌린다
+            longest += hb.close_timeout_s()    # 끝에 서버로 마지막 하트비트를 보낸다
             ui.line(f"  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (길면 {longest:.0f}초쯤).")
         except Exception:
             ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요.")
         hb.stopping()
-        ended = pm.stop_all()
-        # 정리가 끝난 상태로 마지막 하트비트(stopped)를 보낸다. 실패해도 종료는 계속한다.
-        try:
+
+        def send_last_heartbeat():
+            # 정리가 끝난 상태로 마지막 하트비트(stopped)를 보낸다. stop_all 의 Ctrl+C 무시
+            # 구간 안에서 돈다. 서버가 늦으면 몇 초 걸리므로 알린다.
+            if hb.close_timeout_s():
+                ui.line(f"  서버에 마지막 상태를 보내는 중 (길면 {hb.close_timeout_s():.0f}초)")
             hb.close()
+
+        ended = pm.stop_all(after=send_last_heartbeat)
+        try:
             ctx["server"] = hb.server_text()
         except Exception as e:
             ctx["server"] = f"하트비트 종료 오류 ({type(e).__name__})"

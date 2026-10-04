@@ -426,7 +426,8 @@ class ProcessManager:
 
     # ── 종료 ───────────────────────────────────────────────────────────
     def stop_all(self, grace_s: float = 10.0,
-                 final_wait_s: float = FINAL_WAIT_S) -> Dict[str, List[str]]:
+                 final_wait_s: float = FINAL_WAIT_S,
+                 after=None) -> Dict[str, List[str]]:
         """전부 끝낸다. 요청하고, 기다리고, 그래도 안 끝난 것만 강제로 끈다.
 
         예전에는 terminate() 로 끝냈다. 윈도에서 그건 TerminateProcess 라 모듈의
@@ -484,6 +485,14 @@ class ProcessManager:
             out = self._stop_all(grace_s)
             if final:
                 out["final"] = final
+            # 모듈을 다 끈 뒤 같은 보호 구간 안에서 할 일(하트비트 마지막 stopped 전송).
+            # 밖에서 하면 서버가 늦을 때 그 몇 초 사이 두 번째 Ctrl+C 에 정리 결과·종료코드가
+            # 사라진다(10/4 검토에서 재현). 실패해도 정리 결과는 돌려준다.
+            if after is not None:
+                try:
+                    after()
+                except Exception as e:
+                    out.setdefault("final", []).append(f"정리 뒤 작업 오류: {type(e).__name__}")
             return out
         finally:
             for s, h in prev.items():

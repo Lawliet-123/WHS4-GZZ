@@ -199,7 +199,13 @@ signal.signal(signal.SIGBREAK, signal.default_int_handler)
 `WARN`/`RESTART`→degraded, `FAILED`→failed, `STOPPED`→stopped, `MISSING`→unknown·`SKIPPED`→stopped(둘 다 필수 아님).
 필수 모듈이 하나라도 degraded·failed 면 전체 상태는 healthy 가 아니다. `launcher` 는 메인 루프가 10초 넘게
 안 돌면 degraded 다(게임 대기·정리 단계는 예외, `details.phase`). 정리가 끝나면 마지막 한 건을 `stopped` 로 보낸다.
-자유 문장(`detail`)은 로컬 경로·사용자 이름이 섞일 수 있어 보내지 않는다.
+자유 문장(`detail`)은 로컬 경로·사용자 이름이 섞일 수 있어 보내지 않는다. 주기 검사의 종료코드
+(0 정상 / 1 의심 / 2 검사 실패)는 탐지 결과라 보내지 않는다 — 하트비트는 생존·신선도만이다.
+
+`client_id` 는 `launcher-<세션 시작 ms>` 다(실행마다 다름). 런처가 시작할 때 화면에 대시보드 조회
+경로를 찍는다: `GET /api/dashboard/heartbeat/<세션>/launcher-<ms>`. 런처는 하트비트 값을 읽은 뒤
+자기 환경에서 `MECCHA_HEARTBEAT_TOKEN`·`MECCHA_TELEMETRY_HEARTBEAT_URL` 을 지워 게임·모듈에 안 넘긴다.
+마지막 stopped 전송은 모듈 정리와 같은 Ctrl+C 무시 구간에서 한다(서버가 늦으면 최대 6초).
 
 화면 "서버" 칸: `연결됨` / `확인 중` / `전송 실패 N회 (오류 종류)` / `꺼짐 (서버 주소 없음, 로컬 기록만)`.
 하트비트가 실패해도 런처와 탐지는 그대로 돈다.

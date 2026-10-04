@@ -106,7 +106,11 @@ def component_of(st):
     # 자유 문장(st.detail)은 넣지 않는다. 로컬 경로·사용자 이름이 섞일 수 있다.
     details = {"launcher_status": st.status, "mode": m.mode,
                "runs": st.runs, "restarts": st.restarts}
-    if st.last_code is not None:
+    # 주기 검사(run_session 계약)의 종료코드는 탐지 결과다: 0 정상 / 1 의심 / 2 검사 실패.
+    # 하트비트에 실으면 "이 플레이어에게서 의심이 나왔다" 가 scoring 을 거치지 않고 나간다
+    # (계약 문서: 하트비트는 생존·신선도만, 10/4 검토에서 재현). 검사 실패는 이미 WARN ->
+    # degraded 로 보인다. 상주 모듈의 종료코드만 생존 정보로 남긴다.
+    if st.last_code is not None and m.mode != ONESHOT:
         details["last_code"] = st.last_code
     if st.started_by:
         details["started_by"] = st.started_by
@@ -127,8 +131,12 @@ class LauncherHeartbeat:
         self.last_tick = time.monotonic()
         self.endpoint = endpoint_from_env(env)
         self.token = env.get("MECCHA_HEARTBEAT_TOKEN") or None
-        self.log_path = os.path.join(registry.LOG_DIR, "heartbeat",
-                                     f"{session}_{int(round(t0 * 1000))}.jsonl")
+        t0_ms = int(round(t0 * 1000))
+        # 대시보드 조회(GET /api/dashboard/heartbeat/{session_id}/{client_id})는 client_id 를
+        # 알아야 한다. 무작위면 아무도 못 찾는다(10/4 검토). 런처 실행마다 달라야 하므로
+        # (순번이 1 부터 다시 시작하면 새 client_id — HEARTBEAT.md) 세션 시작 시각을 붙인다.
+        self.client_id = f"launcher-{t0_ms}"
+        self.log_path = os.path.join(registry.LOG_DIR, "heartbeat", f"{session}_{t0_ms}.jsonl")
         try:
             cls = client_class or _load_client_class()
             # timestamp_ms 를 다른 모듈처럼 런처 세션 시작(t0) 기준으로 맞춘다.
@@ -137,7 +145,7 @@ class LauncherHeartbeat:
             self.client = cls(session_id=session, player_id=player, log_path=self.log_path,
                               endpoint=self.endpoint, token=self.token,
                               interval_seconds=interval_s, timeout_seconds=timeout_s,
-                              origin_ms=origin)
+                              client_id=self.client_id, origin_ms=origin)
             # 보내기 직전마다 실제 상태를 다시 읽는다. probe 하나가 모듈 전체를 채운다.
             self.client.register_probe("launcher", self._probe)
         except Exception as e:
@@ -206,6 +214,10 @@ class LauncherHeartbeat:
             self.client.stop(final_status="stopped")
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"[:120]
+
+    def close_timeout_s(self) -> float:
+        """close() 가 서버를 기다릴 수 있는 최대 시간(진행 중 전송 + 마지막 전송)."""
+        return 2 * TIMEOUT_S if (self.client and self.endpoint) else 0.0
 
     def server_text(self) -> str:
         """화면 "서버" 칸에 띄울 말."""
