@@ -22,6 +22,8 @@ from server.scoring.main import (
     get_player_snapshot,
     get_player_final_verdict,
 )
+from server.scoring import main as scoring_queries
+from server.dashboard_backend import DashboardService, create_dashboard_router
 
 
 # -------------------------------------------------
@@ -57,6 +59,16 @@ async def lifespan(app: FastAPI):
     # 3. 미처리 이벤트 복구
     recovery_cursor = recover_from_writer(writer)
 
+    app.state.dashboard = DashboardService(
+        writer=writer,
+        scoring=scoring_queries,
+        heartbeat_store=heartbeat_store,
+        verdict_provider=get_player_final_verdict,
+        index_path=os.environ.get("GZZ_DASHBOARD_INDEX", "server/logs/dashboard/dashboard.sqlite3"),
+        cursor_secret=os.environ.get("GZZ_DASHBOARD_CURSOR_SECRET", dashboard_token),
+        stale_after_ms=int(os.environ.get("GZZ_DASHBOARD_STALE_AFTER_MS", "30000")),
+    )
+
     print("[Server] Shared Writer configured")
     print("[Server] Scoring configured")
     print(
@@ -69,6 +81,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Additional read APIs; C's existing heartbeat/verdict endpoints remain intact.
+app.include_router(create_dashboard_router(
+    lambda: app.state.dashboard,
+    verify_token=lambda authorization: app.state.verify_dashboard(authorization),
+))
 
 
 # -------------------------------------------------

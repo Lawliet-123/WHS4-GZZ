@@ -125,3 +125,48 @@ class HeartbeatStore:
             "sequence": last["sequence"], "received_at_utc": last["received_at_utc"],
             "payload": json.loads(last["payload"]),
         }
+
+    def list_latest(self, session_id: str, player_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Read latest accepted state per sender, scoped to a session/player.
+
+        Dashboard addition: does not alter acceptance, ACK, or liveness rules.
+        Filter player identity after selecting each client's latest message so
+        a client's old identity cannot masquerade as a currently active source.
+        """
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self._connect() as db:
+            rows = db.execute("""
+                SELECT h.sequence, h.received_at_utc, h.payload
+                FROM heartbeats AS h
+                JOIN (
+                    SELECT client_id, MAX(sequence) AS seq FROM heartbeats
+                    WHERE session_id=? GROUP BY client_id
+                ) AS latest ON h.client_id=latest.client_id AND h.sequence=latest.seq
+                WHERE h.session_id=? AND json_extract(h.payload, '$.player_id')=?
+                ORDER BY h.client_id LIMIT ?
+            """, (session_id, session_id, player_id, limit)).fetchall()
+        return [{"sequence": row["sequence"], "received_at_utc": row["received_at_utc"],
+                 "payload": json.loads(row["payload"])} for row in rows]
+
+    def session_inventory(self, *, after_session: str = "", limit: int = 101) -> list[dict[str, Any]]:
+        """Discover sessions with only heartbeat traffic and no detection event."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self._connect() as db:
+            sessions = db.execute(
+                "SELECT DISTINCT session_id FROM heartbeats WHERE session_id>? ORDER BY session_id LIMIT ?",
+                (after_session, limit),
+            ).fetchall()
+            result = []
+            for session in sessions:
+                players = db.execute("""
+                    SELECT DISTINCT json_extract(h.payload, '$.player_id') AS player_id
+                    FROM heartbeats AS h
+                    JOIN (SELECT client_id, MAX(sequence) AS seq FROM heartbeats
+                          WHERE session_id=? GROUP BY client_id) AS latest
+                    ON h.client_id=latest.client_id AND h.sequence=latest.seq
+                    WHERE h.session_id=? ORDER BY player_id
+                """, (session["session_id"], session["session_id"])).fetchall()
+                result.append({"id": session["session_id"], "player_ids": [row["player_id"] for row in players]})
+        return result
