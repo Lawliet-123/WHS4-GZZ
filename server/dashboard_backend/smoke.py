@@ -70,9 +70,12 @@ def main():
 
             heartbeat = {
                 "schema_version": "meccha-heartbeat-3", "message_type": "heartbeat",
-                "session_id": "smoke_session", "player_id": "smoke_pc", "client_id": "synthetic_scanner", "sequence": 1,
+                "session_id": "smoke_session", "player_id": "smoke_pc", "client_id": "launcher-1790985600000", "sequence": 1,
                 "timestamp_ms": 7000, "sent_at_utc": "2026-10-03T00:00:00+00:00", "status": "healthy",
-                "components": {"synthetic_component": {"status": "running", "required": True, "pid": None, "updated_at_ms": 6900, "stale_after_ms": 30000, "age_ms": 100, "details": {"synthetic": True}}},
+                "components": {
+                    "launcher": {"status": "running", "required": True, "pid": None, "updated_at_ms": 6900, "stale_after_ms": 30000, "age_ms": 100, "details": {"phase": "running", "synthetic": True}},
+                    "godmode": {"status": "running", "required": True, "pid": None, "updated_at_ms": 6900, "stale_after_ms": 30000, "age_ms": 100, "details": {"launcher_status": "RUNNING", "synthetic": True}},
+                },
                 "transport": {"configured": True, "consecutive_failures": 0, "last_success_sequence": None, "last_error_type": None},
             }
             ack = request("/api/heartbeat", "MECCHA_HEARTBEAT_TOKEN", heartbeat)
@@ -86,11 +89,15 @@ def main():
             assert snapshot["score"] is None and snapshot["status"] == "SUSPICIOUS"
             assert ack["accepted"] and status["sources"][0]["state"] == "healthy"
             assert overview["counts"]["operational_events"] == 1
+            launcher_overview = request("/api/dashboard/overview?session_id=smoke_session&player_id=smoke_pc")
+            assert launcher_overview["capabilities"]["launcher_heartbeat"]
+            assert launcher_overview["connection"]["Launcher"]["state"] == "online"
+            assert next(row for row in launcher_overview["module_statuses"] if row["id"] == "godmode")["state"] == "running"
             central = CentralDashboardClient(url, tokens["GZZ_DASHBOARD_TOKEN"])
             assert central.health() == {"status": "ok"}
             verdict = central.verdict("smoke_session", "smoke_pc")
             assert verdict == snapshot["final_verdict"]
-            assert central.heartbeat("smoke_session", "synthetic_scanner")["payload"]["status"] == "healthy"
+            assert central.heartbeat("smoke_session", "launcher-1790985600000")["payload"]["status"] == "healthy"
             for client, session, expected in (
                     (CentralDashboardClient(url, "wrong-synthetic-token"), "smoke_session", 401),
                     (central, "missing", 404)):
@@ -99,7 +106,7 @@ def main():
                     raise AssertionError("expected query failure")
                 except CentralQueryError as exc:
                     assert exc.status_code == expected
-            print(json.dumps({"result": "PASS", "synthetic_data_only": True, "app": "C server.main + 8-B router", "transport": "real loopback HTTP", "stored_events": 7, "godmode_history_events": 4, "pending": client_status.pending, "failed": client_status.failed, "final_assessment": verdict["status"], "heartbeat": "accepted", "existing_C_endpoints": "PASS", "server_side_client": "PASS"}, indent=2))
+            print(json.dumps({"result": "PASS", "synthetic_data_only": True, "app": "C server.main + 8-B router", "transport": "real loopback HTTP", "stored_events": 7, "godmode_history_events": 4, "pending": client_status.pending, "failed": client_status.failed, "final_assessment": verdict["status"], "heartbeat": "accepted", "launcher_overview": "online", "module_status": "running", "existing_C_endpoints": "PASS", "server_side_client": "PASS"}, indent=2))
         finally:
             process.terminate()
             try:

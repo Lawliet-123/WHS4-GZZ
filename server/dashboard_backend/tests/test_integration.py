@@ -284,6 +284,125 @@ class IntegrationTests(unittest.TestCase):
         self.service.verdict_provider = lambda *args: {"status": "SUSPICIOUS", "session_id": "wrong", "player_id": "p1", "reason_codes": []}
         self.assertEqual(self.get("sessions/s1/players/p1/snapshot").status_code, 503)
 
+    def launcher_heartbeat(self, *, client_id="launcher-1000", sequence=1, session_id="s1", player_id="p1", status="healthy", phase="running", module_status="running", module_age=100, module_required=True):
+        payload = valid_heartbeat(session_id=session_id, player_id=player_id, client_id=client_id, sequence=sequence, status=status)
+        payload["components"] = {
+            "launcher": {"status": "stopped" if status == "stopped" else "running", "required": True, "pid": 1234,
+                         "updated_at_ms": 4900, "stale_after_ms": 30000, "age_ms": 100,
+                         "details": {"phase": phase, "modules": 1, "loop_age_ms": 10}},
+            "godmode": {"status": module_status, "required": module_required, "pid": 1235,
+                        "updated_at_ms": 4900, "stale_after_ms": 30000, "age_ms": module_age,
+                        "details": {"launcher_status": "RUNNING", "mode": "continuous", "runs": 1, "restarts": 0}},
+        }
+        return self.client.post("/api/heartbeat", json=payload, headers={"Authorization": "Bearer heartbeat-test"})
+
+    def test_overview_uses_launcher_receipt_and_populates_module_status(self):
+        self.assertEqual(self.launcher_heartbeat().status_code, 200)
+        overview = self.get("overview").json()
+        self.assertTrue(overview["capabilities"]["launcher_heartbeat"])
+        self.assertEqual(overview["connection"]["Launcher"]["state"], "online")
+        self.assertEqual(overview["connection"]["Launcher"]["scope"], "returned_session_page")
+        self.assertEqual(overview["connection"]["Receiver"]["scope"], "local_detection_storage")
+        self.assertEqual(overview["connection"]["Scoring"]["state"], "online")
+        module = next(row for row in overview["module_statuses"] if row["id"] == "godmode")
+        self.assertEqual(module["state"], "running")
+        self.assertEqual((module["session_id"], module["player_id"]), ("s1", "p1"))
+        self.assertEqual(module["last_seen_at"], self.now.isoformat())
+        self.assertEqual(self.get("sessions/s1/players/p1/status").json()["state"], "healthy")
+
+    def test_scanner_and_prefix_without_launcher_component_do_not_prove_launcher_health(self):
+        self.heartbeat()
+        self.heartbeat(client_id="launcher-1234", sequence=1)
+        overview = self.get("overview").json()
+        self.assertEqual(overview["connection"]["Launcher"]["state"], "unknown")
+        self.assertEqual(overview["module_statuses"], [])
+
+    def test_overview_launcher_expires_and_duplicate_does_not_revive_it(self):
+        self.launcher_heartbeat()
+        self.now += timedelta(seconds=30)
+        self.launcher_heartbeat()
+        overview = self.get("overview").json()
+        self.assertEqual(overview["connection"]["Launcher"]["state"], "stale")
+        self.assertFalse(overview["launcher_statuses"][0]["connected"])
+        self.assertEqual(next(row for row in overview["module_statuses"] if row["id"] == "godmode")["state"], "stale")
+
+    def test_launcher_new_sequence_restores_connection(self):
+        self.launcher_heartbeat()
+        self.now += timedelta(seconds=31)
+        self.assertEqual(self.get("overview").json()["connection"]["Launcher"]["state"], "stale")
+        self.launcher_heartbeat(sequence=2)
+        self.assertEqual(self.get("overview").json()["connection"]["Launcher"]["state"], "online")
+
+    def test_explicit_launcher_stop_is_not_reinterpreted_as_network_outage(self):
+        self.launcher_heartbeat(status="stopped", phase="stopped", module_status="stopped")
+        self.now += timedelta(hours=1)
+        overview = self.get("overview").json()
+        self.assertEqual(overview["connection"]["Launcher"]["state"], "stopped")
+        self.assertFalse(overview["launcher_statuses"][0]["connected"])
+
+    def test_new_execution_wins_over_delayed_old_launcher_packet(self):
+        self.launcher_heartbeat(client_id="launcher-1000", status="stopped", phase="stopped", module_status="stopped")
+        self.launcher_heartbeat(client_id="launcher-2000", status="degraded", module_status="failed")
+        self.now += timedelta(seconds=1)
+        self.launcher_heartbeat(client_id="launcher-1000", sequence=2)
+        overview = self.get("overview").json()
+        source = overview["launcher_statuses"][0]["source"]
+        self.assertEqual(source["client_id"], "launcher-2000")
+        self.assertEqual(overview["connection"]["Launcher"]["state"], "degraded")
+
+    def test_required_component_expiry_degrades_even_fresh_healthy_sender(self):
+        self.launcher_heartbeat(module_age=30001)
+        status = self.get("sessions/s1/players/p1/status").json()
+        self.assertEqual(status["state"], "degraded")
+        self.assertTrue(status["launcher"]["connected"])
+        self.assertEqual(self.get("overview").json()["connection"]["Launcher"]["state"], "degraded")
+
+    def test_optional_missing_module_does_not_fail_healthy_launcher(self):
+        self.launcher_heartbeat(module_status="unknown", module_required=False)
+        self.assertEqual(self.get("overview").json()["connection"]["Launcher"]["state"], "online")
+
+    def test_launcher_stopping_phase_is_visible(self):
+        self.launcher_heartbeat(phase="stopping")
+        self.assertEqual(self.get("overview").json()["connection"]["Launcher"]["state"], "stopping")
+
+    def test_overview_selected_pair_does_not_inherit_other_pc_connection(self):
+        self.launcher_heartbeat()
+        self.launcher_heartbeat(session_id="s2", player_id="p2", client_id="launcher-2000", status="degraded", module_status="failed")
+        overview = self.get("overview", session_id="s2", player_id="p2").json()
+        self.assertEqual(overview["connection"]["Launcher"]["state"], "degraded")
+        self.assertEqual(overview["connection"]["Launcher"]["scope"], "selected_session_player")
+        self.assertTrue(all(row["player_id"] == "p2" for row in overview["module_statuses"]))
+        missing = self.get("overview", session_id="missing", player_id="p1").json()
+        self.assertEqual(missing["connection"]["Launcher"]["state"], "unknown")
+        self.assertEqual(self.get("overview", session_id="s1").status_code, 422)
+
+    def test_overview_page_connection_does_not_include_omitted_session(self):
+        self.launcher_heartbeat(session_id="a")
+        self.launcher_heartbeat(session_id="b", status="degraded", module_status="failed")
+        self.assertEqual(self.get("overview", limit=1).json()["connection"]["Launcher"]["state"], "online")
+        second = self.get("overview", after_session="a", limit=1).json()
+        self.assertEqual(second["connection"]["Launcher"]["state"], "degraded")
+
+    def test_status_does_not_claim_complete_health_with_truncated_source_list(self):
+        self.launcher_heartbeat()
+        for index in range(101):
+            self.heartbeats.accept(valid_heartbeat(session_id="s1", player_id="p1", client_id=f"a{index:03}"))
+        status = self.get("sessions/s1/players/p1/status").json()
+        self.assertTrue(status["has_more_sources"])
+        self.assertEqual(status["state"], "unknown")
+
+    def test_local_scoring_read_failure_is_reported_unavailable(self):
+        def unavailable(*args):
+            raise RuntimeError("synthetic read error")
+        self.scoring.get_player_snapshot = unavailable
+        overview = self.get("overview").json()
+        self.assertEqual(overview["connection"]["Scoring"]["state"], "unavailable")
+
+    def test_no_heartbeat_store_means_capability_false_and_unknown(self):
+        result = self.make_service(heartbeat_store=None).overview()
+        self.assertFalse(result["capabilities"]["launcher_heartbeat"])
+        self.assertEqual(result["connection"]["Launcher"]["state"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
