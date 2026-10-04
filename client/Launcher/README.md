@@ -35,7 +35,12 @@ python client/Launcher/main.py
 않았으므로 기본 설치에서는 요구하지 않는다. 명시적으로 제공할 때만 해시를 검증한다.
 기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를 돌려준다. `READY`는
 파일 준비 상태일 뿐, 게임 실행 후에는 `verify_ue4ss_log()`로 실제 로드를 별도로
-확인해야 한다. 현재 `main.py` 자동 호출은 아직 연결되지 않았다. 로컬 테스트는
+확인해야 한다. `main.py`는 UE4SS를 쓰는 탐지기를 선택했을 때 게임 실행 전
+`prepare_ue4ss()`를 호출하고, 탐지기 시작 후 이번 게임의 로드 로그를 확인한다.
+이미 게임이 실행 중이면 설치 파일을 바꾸지 않고 검사만 한다. 팀 ZIP은
+`GZZ_UE4SS_BUNDLE`에 지정하며, 빠지거나 충돌하면 다른 모듈은 계속 실행하되
+UE4SS 상태를 `MISSING`·`CONFLICT` 등으로 표시한다. 상태 `RUNNING`만으로
+UE4SS 의존 탐지가 유효하다고 판단하지 않는다. 로컬 테스트는
 `python -B -m unittest discover -s client/Launcher/tests -q`로 실행한다.
 새 설치에서는 UE4SS 묶음의 기본 `mods.txt`를 그대로 복사하지 않는다.
 `CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 관측 모드 네 개만 새로
