@@ -137,12 +137,10 @@ def find_correlation_candidates(
             if not shared_tags:
                 continue
 
-            # Hide Anywhere는 현재 detector 자체 시작 시각을 timestamp_ms 원점으로 쓴다.
-            # launcher/session 공통 원점의 다른 detector와 숫자를 직접 비교하면
-            # 실제 동시 사건도 멀리 떨어진 것으로 오판할 수 있다.
-            #
-            # 공통 timebase 계약이 생기기 전까지는 local_session_start가 포함된
-            # cross-module pair를 overlap 후보로 만들지 않는다.
+            # Launcher 공통 t0를 받은 producer는 launcher_session_start 기준을 사용하므로
+            # 다른 공통-session detector와 시간 비교가 가능하다.
+            # 단독 실행 등 --t0가 없는 fallback은 local_session_start 기준이므로,
+            # 서로 다른 원점의 cross-module timestamp를 직접 비교하지 않는다.
             if (
                 left.timestamp_basis == "local_session_start"
                 or right.timestamp_basis == "local_session_start"
