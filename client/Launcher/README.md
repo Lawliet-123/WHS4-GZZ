@@ -42,6 +42,8 @@ python client/Launcher/main.py
 UE4SS 상태를 `MISSING`·`CONFLICT` 등으로 표시한다. 상태 `RUNNING`만으로
 UE4SS 의존 탐지가 유효하다고 판단하지 않는다. 로컬 테스트는
 `python -B -m unittest discover -s client/Launcher/tests -q`로 실행한다.
+`UE4SS READY`는 팀 파일 준비 또는 이번 게임의 팀 관측 모드 로드 확인만 뜻한다.
+기존에 켜진 타 모드의 안전성이나 핵 사용 여부를 판정하지 않는다.
 새 설치에서는 UE4SS 묶음의 기본 `mods.txt`를 그대로 복사하지 않는다.
 `CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 관측 모드 네 개만 새로
 등록한다. 이미 있는 사용자 `mods.txt`의 다른 줄은 보존한다.

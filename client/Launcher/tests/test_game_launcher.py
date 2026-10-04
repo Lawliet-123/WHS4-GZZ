@@ -152,12 +152,14 @@ class GameLauncherTests(unittest.TestCase):
         """필수 파일만 설치하고, 기존 타 모드·줄바꿈·해시 기록을 유지한다."""
         mods_path = self.bin / "ue4ss" / "Mods" / "mods.txt"  # 이미 쓰던 사용자 모드 설정이다.
         mods_path.parent.mkdir(parents=True)  # 가짜 게임에 기존 UE4SS 설정 경로를 만든다.
-        mods_path.write_bytes(b"GodMode : 1\r\nDamageLogger : 0\r\n")  # 기존 다른 모드는 보존해야 한다.
+        mods_path.write_bytes(b"GodMode : 1\r\nCheatManagerEnablerMod : 1\r\nDamageLogger : 0\r\n")  # 기존 다른 모드는 판정·수정하지 않고 보존한다.
         result = self.install()  # 처음 설치한다.
         self.assertEqual(result.status, "READY")  # 파일 준비가 끝났다는 뜻이다.
+        self.assertIn("기존 타 모드 안전성은 평가하지 않음", result.detail)
         self.assertEqual(result.installed, len(gl.UE4SS_BUNDLE_FILES) + len(gl.TEAM_MOD_FILES))  # 실제로 받은 파일만 센다.
         mods = mods_path.read_bytes()  # 설정을 바이트로 읽는다.
         self.assertIn(b"GodMode : 1\r\n", mods)  # 다른 모드를 임의로 제거하지 않는다.
+        self.assertIn(b"CheatManagerEnablerMod : 1\r\n", mods)  # UE4SS 기본 모드 설정도 보존하며 핵 판정으로 해석하지 않는다.
         for name in gl.TEAM_MODS:  # 네 관측 모드 모두 활성화해야 한다.
             self.assertIn(f"{name} : 1\r\n".encode("ascii"), mods)  # 기존 줄바꿈 방식도 유지한다.
         self.assertEqual(mods.count(b"DamageLogger"), 1)  # 중복 줄은 만들지 않는다.
@@ -358,6 +360,8 @@ class GameLauncherTests(unittest.TestCase):
         self.assertEqual(gl.verify_ue4ss_log(str(self.root), "other", now).status, "UNAVAILABLE")  # 세션이 다르다.
         self.assertEqual(gl.verify_ue4ss_log(str(self.root), None, now).status, "READY")  # 로드만 확인할 수도 있다.
         self.assertEqual(gl.verify_ue4ss_log(str(self.root), "sample_001", now).status, "READY")  # 전부 맞는다.
+        self.assertIn("기존 타 모드 안전성은 평가하지 않음",
+                      gl.verify_ue4ss_log(str(self.root), "sample_001", now).detail)
         self.assertEqual(gl.wait_for_ue4ss_log(str(self.root), "sample_001", now,
                                                timeout_s=0).status, "READY")  # 대기 함수도 즉시 성공한다.
         log.write_text(log.read_text(encoding="utf-8").replace("[NoclipLogger] loaded\n", ""),

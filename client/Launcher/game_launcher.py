@@ -627,7 +627,7 @@ def prepare_ue4ss(game_root: str, bundle_zip: Optional[str] = None,
             mods=list(TEAM_MODS))  # 우리 모드에 속한 파일만 탐지기 예외 후보가 된다.
         if recorded.get("unreadable"):  # 어떤 파일의 해시도 누락시키면 안 된다.
             return UE4SSResult("ERROR", "설치 파일 해시를 기록하지 못했습니다", installed)  # 정상 설치로 표시하지 않는다.
-        return UE4SSResult("READY", "파일·모드 준비 완료; 게임 실행 뒤 로드 로그 확인 필요", installed)  # 로드 검증은 별도다.
+        return UE4SSResult("READY", "팀 UE4SS 파일·관측 모드 준비 완료; 게임 실행 뒤 로드 로그 확인 필요 (기존 타 모드 안전성은 평가하지 않음)", installed)  # 로드 검증은 별도다.
     except (OSError, ValueError, UnicodeError, zipfile.BadZipFile, RuntimeError) as exc:  # 파일·인코딩·ZIP 오류다.
         return UE4SSResult("ERROR", f"UE4SS 준비 실패: {exc}")  # 원인을 UI에 보여주고 정상으로 위장하지 않는다.
 
@@ -661,7 +661,7 @@ def verify_ue4ss_log(game_root: str, session_id: Optional[str], started_after: f
     failed = [name for name, good in checks.items() if not good]  # 누락된 근거만 모아 오류 설명을 만든다.
     if failed:  # 일부만 로드됐다면 정상 행동 탐지로 표시하면 안 된다.
         return UE4SSResult("UNAVAILABLE", "행동 탐지 불가: " + ", ".join(failed) + " 기록 없음")  # 빠진 신호를 알린다.
-    detail = "이번 게임 실행에서 UE4SS·팀 모드 4개 로드 확인"
+    detail = "이번 게임 실행에서 UE4SS·팀 관측 모드 4개 로드 확인 (기존 타 모드 안전성은 평가하지 않음)"
     if not session_id:  # 모드 로드는 확인했지만 탐지기의 세션 연결까지 주장하지 않는다.
         detail += " (세션 연결은 별도 확인 필요)"
     return UE4SSResult("READY", detail)

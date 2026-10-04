@@ -69,7 +69,9 @@ class UE4SSMainTests(unittest.TestCase):
             def final_targets(self):
                 return []
 
-            def stop_all(self):
+            def stop_all(self, *, after=None):
+                # 최신 런처는 마지막 하트비트 콜백을 넘긴다. 이 테스트는
+                # UE4SS 준비·로드 순서만 검증하므로 콜백은 실행하지 않는다.
                 return {}
 
         ready = game_launcher.UE4SSResult("READY", "files ready")
