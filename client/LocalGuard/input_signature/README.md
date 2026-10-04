@@ -7,13 +7,15 @@
 | 파일 | 역할 |
 |---|---|
 | `rules/known_cheat_executables.json` | 팀의 WHS4-GZZ 저장소에서 확인한 핵 EXE 빌드 4개의 정확한 파일 크기·SHA-256 |
-| `executable_hashes.py` · `hash_monitor.py` | 게임과 같은 Windows 세션에서 실행 중인 프로세스의 디스크 EXE를 5초 간격으로 해시 대조 |
+| `executable_hashes.py` · `hash_monitor.py` | 게임과 같은 Windows 계정·세션으로 확인된 실행 중 프로세스의 디스크 EXE를 5초 간격으로 해시 대조 |
 | `rules/repository_cheats.yar` · `yara_scanner.py` | 알려진 팀 핵의 게임·외부 후보 프로세스 메모리 시그니처 검사 및 실행 진입점 |
 | `heartbeat.py` · `heartbeat.schema.json` | 5~10초 간격 상태 기록과 선택적 HTTPS 전송 |
 | `windows_process.py` | 읽기 전용 프로세스 식별·게임 DLL 범위 확인 지원 |
 | `replay_events.py` · `event.schema.json` | 7개 필드 Event를 로컬에 기록하고, 설정된 경우 `shared.logger`에 전달 |
 
 `raw_score`는 분석용 원시 신호다. 해시의 0/1과 YARA의 0/3은 다른 척도이므로 합산하거나 밴 임계값으로 사용하지 않는다. 이 모듈은 확정 판정이나 서버 scoring을 하지 않는다. 해시는 **정확히 같은 EXE 빌드**만 찾으며, DLL·Python 스크립트·재빌드된 파일은 이 방식으로 확인할 수 없다. YARA는 읽을 수 있는 메모리의 알려진 패턴만 확인한다. 접근 거부·타임아웃·부분 검사는 정상 0점으로 채우지 않는다.
+
+해시 검사는 Windows가 제공한 소유자 SID로 게임 계정을 확인한다. 같은 로그인 세션에 있어도 다른 계정의 프로세스는 검사 범위 밖이다. SID를 얻지 못한 프로세스는 이름으로 예외 처리하거나 게임 계정이라고 추측하지 않고 `owner_unavailable_count`에 별도 기록한다. 이들 및 다른 계정에서 실행된 핵은 해시 검사의 사각지대이며, `complete: true`는 **소유자가 확인된 게임 계정·세션의 이번 스냅샷**에만 적용된다. 실제 검사 대상에서 접근 거부가 나면 `complete: false`이며 정상 0점 Event를 만들지 않는다.
 
 ## 실행과 검증
 
