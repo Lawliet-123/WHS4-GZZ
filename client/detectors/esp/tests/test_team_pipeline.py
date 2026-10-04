@@ -86,6 +86,88 @@ class TeamPipelineTests(unittest.TestCase):
                 (session / "raw" / "sysmon_process_access.jsonl").exists()
             )
 
+    def test_pipeline_keeps_private_raw_values_out_of_public_seven_field_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteEvidenceStore(":memory:")
+            writer = SessionTelemetryWriter(
+                directory, session_id="esp_private_001", game_executable="game.exe"
+            )
+            try:
+                pipeline = EspDetectionPipeline(
+                    detectors=(EspEventDetector(),),
+                    store=store,
+                    scoring=SuspicionEngine(),
+                    team_adapter=TeamEventAdapter(
+                        session_started_at=100.0, player_id="player_042"
+                    ),
+                    telemetry=writer,
+                )
+                raw = SensorEvent(
+                    session_id="esp_private_001",
+                    sensor_id="sysmon_process_access",
+                    event_type="process_access",
+                    subject_id="game-process:77:100000",
+                    timestamp_ms=107_000,
+                    payload={
+                        "computer": "DESKTOP-SECRET",
+                        "source_user": r"DESKTOP-SECRET\alice",
+                        "target_user": r"DESKTOP-SECRET\alice",
+                        "title": "private window title",
+                        "source_pid": 22,
+                        "target_pid": 77,
+                        "source_image": r"C:\Users\alice\reader.exe",
+                        "target_image": r"C:\Users\alice\game.exe",
+                        "granted_access": 0x10,
+                        "access_labels": ["VM_READ"],
+                    },
+                )
+                result = pipeline.process_batch(
+                    SensorBatch("sysmon_process_access", "online", (raw,))
+                )
+            finally:
+                writer.close()
+                store.close()
+
+            session = Path(directory) / "esp_private_001"
+            raw_record = json.loads(
+                (session / "raw" / "sysmon_process_access.jsonl")
+                .read_text("utf-8")
+                .splitlines()[0]
+            )
+            self.assertEqual(raw_record["payload"]["computer"], "DESKTOP-SECRET")
+            self.assertEqual(
+                raw_record["payload"]["source_image"],
+                r"C:\Users\alice\reader.exe",
+            )
+
+            self.assertEqual(len(result.team_events), 1)
+            public = result.team_events[0].to_dict()
+            self.assertEqual(
+                set(public),
+                {
+                    "session_id",
+                    "player_id",
+                    "module",
+                    "timestamp_ms",
+                    "evidence",
+                    "reasons",
+                    "raw_score",
+                },
+            )
+            serialized = json.dumps(public, ensure_ascii=False)
+            self.assertNotIn("DESKTOP-SECRET", serialized)
+            self.assertNotIn("alice", serialized.casefold())
+            self.assertNotIn("private window title", serialized)
+            self.assertEqual(public["evidence"]["source_image"], "reader.exe")
+            self.assertEqual(public["evidence"]["target_image"], "game.exe")
+            self.assertEqual(
+                len(public["evidence"]["source_image_path_sha256"]), 64
+            )
+            self.assertEqual(
+                len(public["evidence"]["target_image_path_sha256"]), 64
+            )
+            self.assertNotEqual(public["evidence"]["sensor_event_id"], raw.event_id)
+
     def test_healthy_empty_batch_does_not_create_detection_event(self):
         store = SQLiteEvidenceStore(":memory:")
         try:
@@ -337,6 +419,68 @@ class TeamPipelineTests(unittest.TestCase):
                 outside_boundary, (self._linked_evidence(outside_boundary),)
             )
         )
+
+    def test_adapter_removes_host_user_and_window_title_from_public_evidence(self):
+        raw = SensorEvent(
+            session_id="esp_001",
+            sensor_id="sysmon_process_access",
+            event_type="process_access",
+            subject_id="game-process:77:100000",
+            timestamp_ms=101_000,
+            event_id="esp_001:sysmon-event10:DESKTOP-SECRET:123",
+            payload={
+                "computer": "DESKTOP-SECRET",
+                "source_user": r"DESKTOP-SECRET\alice",
+                "target_user": r"DESKTOP-SECRET\alice",
+                "title": "Alice's private chat",
+                "source_pid": 22,
+                "source_image": r"C:\Users\alice\reader.exe",
+                "target_image": r"C:\Users\alice\game.exe",
+                "call_trace": r"C:\Users\alice\symbols\private.pdb+0x10",
+                "rule_name": "private workstation rule",
+                "data": {
+                    "Computer": "DESKTOP-SECRET",
+                    "SourceUser": r"DESKTOP-SECRET\alice",
+                    "TargetUser": r"DESKTOP-SECRET\alice",
+                    "CallTrace": "frame-a",
+                    "SourceProcessGuid": "{PRIVATE-GUID}",
+                },
+            },
+        )
+        adapter = TeamEventAdapter(session_started_at=100.0, player_id="player_042")
+
+        converted = adapter.convert(raw, (self._linked_evidence(raw),))
+
+        self.assertIsNotNone(converted)
+        assert converted is not None
+        self.assertNotIn("computer", converted.evidence)
+        self.assertNotIn("source_user", converted.evidence)
+        self.assertNotIn("target_user", converted.evidence)
+        self.assertNotIn("title", converted.evidence)
+        self.assertEqual(converted.evidence["source_pid"], 22)
+        self.assertEqual(converted.evidence["source_image"], "reader.exe")
+        self.assertEqual(converted.evidence["target_image"], "game.exe")
+        self.assertEqual(len(converted.evidence["source_image_path_sha256"]), 64)
+        self.assertEqual(len(converted.evidence["target_image_path_sha256"]), 64)
+        self.assertNotIn("data", converted.evidence)
+        self.assertNotIn("call_trace", converted.evidence)
+        self.assertNotIn("rule_name", converted.evidence)
+        serialized = json.dumps(converted.to_dict(), ensure_ascii=False)
+        self.assertNotIn("DESKTOP-SECRET", serialized)
+        self.assertNotIn("alice", serialized.casefold())
+        self.assertNotIn("PRIVATE-GUID", serialized)
+        self.assertNotEqual(
+            converted.evidence["sensor_event_id"], raw.event_id
+        )
+
+        repeated = adapter.convert(raw, (self._linked_evidence(raw),))
+        self.assertIsNotNone(repeated)
+        assert repeated is not None
+        self.assertEqual(
+            repeated.evidence["sensor_event_id"],
+            converted.evidence["sensor_event_id"],
+        )
+        self.assertEqual(raw.payload["computer"], "DESKTOP-SECRET")
 
 
 if __name__ == "__main__":
