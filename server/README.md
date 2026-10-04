@@ -1,22 +1,39 @@
-# MECCHA CHAMELEON Central Server
+﻿# MECCHA CHAMELEON Central Server
 
-MECCHA CHAMELEON 안티치트 중앙 서버 통합 실행 문서입니다.
+## C Server Integration
+- FastAPI central server
+- Shared Writer initialization
+- Scoring initialization and recovery
+- Detection Receiver integration
+- Heartbeat Receiver integration
+- Dashboard query APIs
 
-현재 C 통합 단계에서는 heartbeat 수신과 서버 health 확인까지 연결되어 있습니다.
-Detection receiver와 scoring 통합 내용은 각 담당 코드가 준비된 뒤 추가합니다.
+## API Endpoints
+- GET /health
+- POST /api/detection
+- POST /api/heartbeat
+- GET /api/dashboard/heartbeat/{session_id}/{client_id}
+- GET /api/dashboard/verdict/{session_id}/{player_id}
 
-## 현재 연결된 기능
+## Environment Variables
+- MECCHA_HEARTBEAT_DB: Heartbeat database path
+- MECCHA_HEARTBEAT_TOKEN: Heartbeat authentication
+- GZZ_TELEMETRY_TOKEN: Detection authentication
+- GZZ_DASHBOARD_TOKEN: Dashboard authentication
+- GZZ_SCORING_DB: Optional scoring database path
+- GZZ_TELEMETRY_LOG_ROOT: Optional Shared storage path
 
-### Health Check
+## Startup
+1. Initialize Dashboard authentication
+2. Initialize Shared Writer
+3. Configure Scoring
+4. Recover stored events
+5. Start accepting HTTP requests
 
-중앙 서버 프로세스의 실행 상태를 확인합니다.
+## Verification
+- Local Receiver to Shared to Scoring test passed
+- Dashboard Heartbeat and Final Verdict queries passed
+- Dashboard authentication and missing-data tests passed
+- Data remained available after server restart
 
-- Method: `GET`
-- Path: `/health`
-
-정상 응답:
-
-```json
-{
-  "status": "ok"
-}
+Production deployment and live-game E2E testing remain pending.
