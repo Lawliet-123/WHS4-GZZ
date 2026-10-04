@@ -408,9 +408,15 @@ dxgi.dll!CreateDXGIFactory   E9 rel32  →  모듈 밖 스텁 (+53.3MB)
 가로채기도 없어서 그 함수를 부르면 죽는다. 탐지기가 바이트를 읽어 판정하는 경로만
 재는 표본이다.
 
-탐지기는 `GZZ_OVERLAY_VALIDATION_PID` 가 있으면 그 PID 를 (게임과 같은 읽기 전용
-권한 0x0410 으로) 보고, 결과에 `evidence.meta.measurement_scope = "controlled_harness"`
-를 박는다. **실제 게임 관측 자료와 섞으면 안 된다**(10/5 은지님과 합의한 라벨).
+탐지기는 `scan(target_pid=...)` **인자로만** 그 PID 를 (게임과 같은 읽기 전용 권한
+0x0410 으로) 본다. 결과에 `evidence.meta.measurement_scope = "controlled_harness"` 가
+박힌다 — **실제 게임 관측 자료와 섞으면 안 된다**(10/5 은지님과 합의한 라벨).
+호출자가 이 라벨을 고를 수는 없다. PID 를 줬다는 사실에서만 정해진다.
+
+처음엔 환경변수(`GZZ_OVERLAY_VALIDATION_PID`)로 받았는데 **없앴다.** 런처가 환경을
+자식에게 물려주므로 그 변수를 심어 두면 운영 중에도 탐지 대상을 깨끗한 프로세스로
+바꿀 수 있었다 — 탐지 회피 경로다(10/5 은지님 지적). `run_session` 은 `scan()` 을
+인자 없이 부르므로 운영 경로는 항상 게임을 본다.
 
 ```
 하네스 1개 프로세스 / 모듈 6개 · 익스포트 7,196개 검사
@@ -429,19 +435,29 @@ dxgi.dll!CreateDXGIFactory   E9 rel32  →  모듈 밖 스텁 (+53.3MB)
 | 프로세스 재시작 후 | — | — | 0 | NORMAL | — |
 
 **60점은 "서명 없음"과 "서명 확인 불가" 둘 다에서 난다.** `verify()` 가 "유효" 만
-신뢰하기 때문이다(`core/signature.py`). 채점하는 쪽은 둘을 갈라 두는 게 좋다 —
-앞은 서명 없는 모듈이 실제로 후킹한 것이고, 뒤는 **누가 후킹했는지 확인에 실패한**
-것이라 "모른다" 에 가깝다. evidence 에 `(서명: …)` 로 남는다.
+신뢰하기 때문이다(`core/signature.py`). 둘은 뜻이 다르다 — 앞은 서명 없는 모듈이
+실제로 후킹한 것이고, 뒤는 **누가 후킹했는지 확인에 실패한** 것이라 "모른다" 에 가깝다.
+
+중앙 정책이 자유 문장을 파싱하지 않고 가를 수 있도록 `evidence.meta.untrusted_hookers`
+에 구조화해서 넘긴다(10/5 송희님 요청). 이유 코드(`inline_hook_untrusted`,
+`overlay_hook`)는 서버가 이미 쓰고 있어서 그대로 뒀다.
+
+```json
+{"module": "...", "path": "...", "signature": "서명없음" | "확인불가" | "위조" | "신뢰안됨",
+ "render": true, "hooks": 1, "functions": ["dxgi.dll!DXGIReportAdapterConfiguration"]}
+```
 
 렌더링은 `inline_hook_untrusted` 60 에 `overlay_hook` 60 이 더 붙어 상한 100 이 된다.
 evidence 에 대상 DLL·익스포트 이름, 목적지 모듈·경로, 서명 판정이 그대로 남는다.
 
-중앙 경로도 같이 확인했다 — `run_session.py --only overlay_hook` 로 100점 Event 가
-Shared → Receiver → Scoring 까지 가고, 대시보드 판정 조회가
-`unresolved_modules: ["overlay_hook"]` 로 돌려준다(그 모듈 calibration 이 아직 없다는 뜻).
+중앙 경로도 같이 확인했다 — 100점 Event 가 Shared → Receiver → Scoring 까지 가고,
+대시보드 판정 조회가 `unresolved_modules: ["overlay_hook"]` 로 돌려준다(그 모듈
+calibration 이 아직 없다는 뜻). `tests/t_overlay_fixture.py --central-url <주소>` 가
+`run_session` 과 같은 전송 경로(`core/telemetry` + `to_shared_event`)를 그대로 탄다.
 
-시험: `tests/t_overlay_fixture.py` (위 7가지 + 지정이 없으면 게임을 보는지,
-PID 가 숫자가 아니면 조용히 게임으로 넘어가지 않는지)
+시험: `tests/t_overlay_fixture.py` (위 7가지 + 인자를 안 주면 게임을 보는지,
+환경변수로는 대상을 못 바꾸는지). 서명 없는 모듈이 없는 PC 는 unsigned 두 경우를
+건너뛰고 그 사실을 남긴다 — `--unsigned-dll <경로>` 로 하나 주면 잴 수 있다.
 
 ---
 
