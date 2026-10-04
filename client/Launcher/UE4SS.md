@@ -28,7 +28,7 @@
 └─ ue4ss/
    ├─ UE4SS.dll
    ├─ UE4SS-settings.ini
-   ├─ UE4SS_Signatures/StaticConstructObject.lua    (은지: 이 게임 전용)
+   ├─ UE4SS_Signatures/StaticConstructObject.lua    (선택: 별도 검증 파일을 제공할 때만)
    └─ Mods/
       ├─ mods.txt                     ← 아래 네 모드를 : 1 로
       ├─ shared/UEHelpers/UEHelpers.lua            (성민: observer.lua 가 씀)
@@ -111,17 +111,18 @@ changes detected - reusing last build"). **버전은 zip 이름이 아니라 로
   `UE4SS-settings.ini` 는 기본값(`ConsoleEnabled = 0`)이다.
 - 묶음은 지금 **디스코드로 배포**한다. 레포에 커밋할지는 아직 안 정했다(아래).
 
-레포에는 네 모드의 Lua 소스가 있다(위 표). UE4SS 런타임(`UE4SS.dll`, `dwmapi.dll`),
-`UE4SS_Signatures`, `UEHelpers` 는 레포에 없다 — `UEHelpers` 는 UE4SS 배포본의
-`Mods/shared/UEHelpers/` 에 들어 있는 것을 쓴다(랑언 PC 설치본에서 확인. 성민님 zip 안은
-아직 열어 보지 않았다).
+레포에는 네 모드의 Lua 소스가 있다(위 표). UE4SS 런타임(`UE4SS.dll`, `dwmapi.dll`)과
+`UEHelpers`는 레포에 없고, 해시를 확인한 팀 ZIP에서 설치한다. 별도 게임 전용
+`StaticConstructObject.lua`는 공유받지 않았으며, 이번에 검증한 ZIP에도 없었다.
+기본 설치에는 요구하지 않고 별도 파일이 제공될 때만 고정 SHA-256을 확인한다.
 
 ## 설치 절차
 
-설치 준비 코드는 `game_launcher.py`에 있다. 팀 ZIP이면 `PINNED_UE4SS_ZIP_SHA256`,
-압축 해제 폴더면 `PINNED_UE4SS_DIRECTORY_SHA256`을 확정한다. 별도 게임 전용
-시그니처는 `PINNED_SIGNATURE_SHA256`으로 고정하고,
-`GZZ_UE4SS_BUNDLE`·`GZZ_UE4SS_SIGNATURE`로 위치를 지정한다. 함수는
+설치 준비 코드는 `game_launcher.py`에 있다. 팀 ZIP의 SHA-256은
+`PINNED_UE4SS_ZIP_SHA256`에 고정했다. 압축 해제 폴더는
+`PINNED_UE4SS_DIRECTORY_SHA256`이 아직 비어 있으므로 기본 설치에는 사용하지 않는다.
+`GZZ_UE4SS_BUNDLE`로 ZIP 위치를 지정한다. 별도 시그니처가 실제로 제공될 때만
+`GZZ_UE4SS_SIGNATURE`와 `PINNED_SIGNATURE_SHA256`을 사용한다. 함수는
 `READY`(파일 준비), `MISSING`, `CONFLICT`, `GAME_RUNNING`, `ERROR`를 구분한다.
 `READY`도 게임 안에서 로드됐다는 뜻은 아니다. 새 게임 실행 뒤
 `verify_ue4ss_log(game_root, session_id, started_after)`로 다시 확인해야 한다.
@@ -161,7 +162,7 @@ GodModeTelemetry : 1
 ```
 다른 팀 모드도 지우지 않는다.
 단, 새 설치에서 기존 `mods.txt`가 없다면 배포 묶음의 기본 목록은 가져오지 않고
-위 팀 모드 두 개만 만든다. 받은 묶음에는 `CheatManagerEnablerMod : 1`처럼
+위 팀 관측 모드 네 개만 만든다. 받은 묶음에는 `CheatManagerEnablerMod : 1`처럼
 안티치트 런처가 자동 활성화하면 안 되는 기본 항목이 있기 때문이다.
 
 > 랑언 PC 의 `mods.txt` 에는 `GodMode : 1` 같은 **치트 모드가 들어 있다.** 실제로 만나는
@@ -237,22 +238,19 @@ paint_calls.jsonl,  기존 세션 로그,  main.lua.backup-*
 > **정해졌다 (9/29).** `ue4ss_manifest.record()` 가 `client/Launcher/logs/ue4ss_install.json`
 > 을 쓴다. 파일별 SHA-256 과 모드 이름이 들어가고, 형식은 `ue4ss_manifest.py` 독스트링에
 > 있다. 위 "먼저 풀어야 할 것" 의 예시대로 설치 직후 한 번 부르면 된다.
-> **이 호출을 하는 설치 코드가 아직 없다(10/1).**
+> `game_launcher.prepare_ue4ss()`는 설치 후 이 호출을 한다. 다만 Launcher
+> `main.py`가 아직 설치 함수를 자동 호출하지 않으므로 실제 런처 실행과는 연결 전이다.
 
 처음 제안한 `game_version` · `log_check`(5번 실행 후 확인 결과)는 지금 기록에 없다.
 실행 후 확인을 붙일 때 같이 넣을지 정하면 된다.
 
 ## 아직 안 정해진 것
 
-1. 검증된 UE4SS ZIP 실물과 전체 SHA-256
-2. 게임 전용 `StaticConstructObject.lua` 실물과 전체 SHA-256
-3. 실제 ZIP 내부 구조가 설치 코드의 필수 파일 목록과 맞는지 실물로 확인
-4. `main.py`에서 설치·실행 후 검증을 언제 호출할지, 실패 시 어떤 탐지기만 건너뛸지
-5. 쓰기 권한이 없으면 관리자 권한을 강요하지 않고 `ERROR`를 표시한다.
-1. UE4SS 묶음을 레포에 넣을지, 지금처럼 디스코드로 배포할지 (버전은 위에서 정함)
-2. `UE4SS_Signatures/StaticConstructObject.lua` 를 누가 주는지 (은지님 것으로 보임, 레포에 없음)
-3. 설치 충돌이 났을 때 런처 동작 — 멈출지, 그 모듈만 끄고 갈지
-4. 게임 폴더 쓰기 권한이 없을 때 (Steam 폴더는 보통 관리자 권한이 필요할 수 있음)
+1. `main.py`에서 게임 실행 전 설치와 실행 후 로그 검증을 언제 호출할지, 실패 시
+   UE4SS 의존 탐지기와 비의존 탐지기를 어떻게 구분할지
+2. 팀 ZIP을 최종 배포본에 어떻게 포함·전달할지 (현재 디스코드 공유)
+3. 기존 게임 폴더에 다른 버전이 있을 때의 사용자 안내와 재설치 절차
+4. 쓰기 권한이 없으면 관리자 권한을 강요하지 않고 `ERROR`를 표시하는 흐름
 
 정해진 것(10/1 정리): 버전 — 성민님 zip(로그 `f6d5f942`). 모드 소스 위치 — 위 표의 레포
 경로. `UEHelpers` — UE4SS 배포본에 들어 있는 것을 쓴다.

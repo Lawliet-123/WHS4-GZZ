@@ -10,7 +10,7 @@ python client/Launcher/main.py
 | 옵션 | 뜻 |
 |---|---|
 | `--session ID` | 세션 이름 (기본: 시각으로 자동 생성) |
-| `--player ID` | 플레이어 식별자 (기본 `player_001`) |
+| `--player ID` | 플레이어 식별자 (기본: 이 PC의 저장된 ID 또는 컴퓨터 이름 기반 ID) |
 | `--only a,b` | 그 모듈만 실행 |
 | `--no-launch-game` | 게임은 내가 직접 켠다. 뜰 때까지 기다리기만 |
 | `--wait-game SEC` | 게임을 기다리는 시간 (기본 180초) |
@@ -26,17 +26,19 @@ python client/Launcher/main.py
 저장한다. GUI를 열 수 없고 콘솔이 있다면 경로를 직접 입력받는다.
 `GZZ_GAME_DIR`로 설치 루트 또는 게임 exe 경로를 직접 지정할 수도 있다.
 폴더만 존재하는 경로는 쓰지 않고 `PenguinHotel-Win64-Shipping.exe`까지 확인한다.
-게임 exe를 직접 실행했는데 곧바로 종료되면 Steam URL로 한 번 재시도한다.
+게임은 Steam URL로 먼저 실행한다. Steam URL을 열 수 없는 경우에만 게임 EXE를 직접 실행한다.
+실행 요청 성공은 게임 창이 보인다는 뜻이 아니므로 런처는 게임 PID를 별도로 기다린다.
 
-`game_launcher.prepare_ue4ss()`는 팀 ZIP 또는 압축을 푼 폴더와 게임 전용 시그니처의
-고정 SHA-256이 없으면 설치하지 않는다. ZIP은 전체 파일 해시를, 폴더는 실제 설치할
-필수 파일의 경로·길이·내용을 묶은 지문을 사용한다. 기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를
-돌려준다. `READY`는 파일 준비 상태일 뿐, 게임 실행 후에는
-`verify_ue4ss_log()`로 실제 로드를 별도로 확인해야 한다. 현재 팀 실물과 해시가
-확인이 없어 `main.py` 자동 호출은 아직 연결되지 않았다. 로컬 테스트는
+`game_launcher.prepare_ue4ss()`는 팀이 확인한 UE4SS ZIP의 전체 SHA-256을 고정해
+검증한다. 압축 해제 폴더는 별도로 설치 파일 지문을 고정해야 사용할 수 있다.
+별도 `StaticConstructObject.lua`는 팀 ZIP에 없고 이번 빌드에서 필수로 확인되지
+않았으므로 기본 설치에서는 요구하지 않는다. 명시적으로 제공할 때만 해시를 검증한다.
+기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를 돌려준다. `READY`는
+파일 준비 상태일 뿐, 게임 실행 후에는 `verify_ue4ss_log()`로 실제 로드를 별도로
+확인해야 한다. 현재 `main.py` 자동 호출은 아직 연결되지 않았다. 로컬 테스트는
 `python -B -m unittest discover -s client/Launcher/tests -q`로 실행한다.
 새 설치에서는 UE4SS 묶음의 기본 `mods.txt`를 그대로 복사하지 않는다.
-`CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 모드 두 개만 새로
+`CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 관측 모드 네 개만 새로
 등록한다. 이미 있는 사용자 `mods.txt`의 다른 줄은 보존한다.
 
 ---
