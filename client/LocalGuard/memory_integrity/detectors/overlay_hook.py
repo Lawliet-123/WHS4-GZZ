@@ -49,6 +49,7 @@
 """
 
 import json
+import os
 import struct
 import sys
 import time
@@ -192,16 +193,44 @@ def resolve_chain(pm, code, addr, owner, depth=4):
     return tgt
 
 
+# ── 판정 경로 검증용 대상 지정 ──────────────────────────────────────────
+#
+# 이 탐지기의 **양수** 경로(60/100)는 9/20 실측에서 한 번도 안 나왔다. 그날 찾은
+# 인라인 후킹 573건이 전부 서명 유효(스팀 오버레이 등)여서 정상 0점으로 끝났다.
+# 서버 임계값을 정하려면 양수 Event 가 필요한데, 게임 안에서 그 조건을 만들려면
+# 게임 프로세스에 후크를 심어야 한다.
+#
+# 그래서 **게임 대신 통제된 하네스 프로세스를 보게** 한다. 이 변수가 있으면 그 PID 를
+# 읽기 전용으로 열고(권한은 게임과 같은 0x0410), 결과에 `measurement_scope`
+# = "controlled_harness" 를 박는다. 하네스 실측이 실제 게임 관측 자료와 섞이면
+# 안 되기 때문이다(10/5 은지님과 합의한 라벨).
+#
+#   시험\overlay_fixture.py 가 그 하네스다. 자기 프로세스 안에서만 바이트를 바꾼다.
+VALIDATION_PID_ENV = "GZZ_OVERLAY_VALIDATION_PID"
+
+
+def _open_target(r):
+    """(pm, scope). 검증용 PID 가 지정되면 그쪽, 없으면 게임."""
+    raw = (os.environ.get(VALIDATION_PID_ENV) or "").strip()
+    if not raw:
+        return procopen.open_game(GAME_EXE), "game"
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError(f"{VALIDATION_PID_ENV} 가 PID 가 아닙니다: {raw!r}")
+    return procopen.open_pid(int(raw)), "controlled_harness"
+
+
 def scan():
     r = DetectorResult("overlay_hook")
     t0 = time.time()
 
+    scope = "game"
     try:
-        pm = procopen.open_game(GAME_EXE)
+        pm, scope = _open_target(r)
     except pymem.exception.ProcessNotFound:
         return r.unavailable("게임이 실행 중이 아닙니다")
     except Exception as e:
-        return r.fail(f"게임에 붙지 못했습니다: {e}")
+        return r.fail(f"{'하네스' if os.environ.get(VALIDATION_PID_ENV) else '게임'}에 "
+                      f"붙지 못했습니다: {e}")
 
     # 모듈 범위표. 목적지가 어느 모듈인지 역추적하는 데 쓴다.
     ranges = {}
@@ -248,6 +277,9 @@ def scan():
                 continue
             hooks.append((mod, name, tgt, owner(tgt)))
 
+    # 하네스 실측은 **게임 관측이 아니다.** 결과를 보는 쪽이 라벨로 가를 수 있게
+    # 모든 경로(0점·양수·ERROR)에서 같은 자리에 남긴다.
+    r.meta["measurement_scope"] = scope
     r.meta["target_pid"] = pm.process_id
     r.meta["modules_scanned"] = scanned_modules
     r.meta["exports_checked"] = checked
