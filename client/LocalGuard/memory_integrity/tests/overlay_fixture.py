@@ -36,13 +36,13 @@
     python client\\LocalGuard\\memory_integrity\\tests\\overlay_fixture.py --case render-unsigned
         -> READY {"pid": ..., "target_export": ..., ...} 를 찍고 기다린다
 
-    다른 창에서 (탐지기를 이 PID 에 붙인다)
-        cd <레포>\\client\\LocalGuard\\memory_integrity
-        set GZZ_OVERLAY_VALIDATION_PID=<pid>
-        python detectors\\overlay_hook.py harness_001
+    탐지기를 이 PID 에 붙이는 것은 **인자로만** 된다. 환경변수 경로는 없앴다 —
+    런처가 환경을 자식에게 물려줘서 운영 중 탐지 대상을 바꾸는 우회가 됐다
+    (10/5 은지님 지적).
 
-    중앙 전송까지 보려면 같은 환경변수에 run_session 을 쓴다
-        python run_session.py --session harness_001 --player <id> --only overlay_hook
+        python tests\\t_overlay_fixture.py          6가지 경우를 한 번에
+        python tests\\t_overlay_fixture.py --central-url http://127.0.0.1:8002
+                                                     중앙 전송까지 (서버가 떠 있을 때)
 
     픽스처 창에 `remove` + Enter  -> 원래 바이트로 되돌린다 (다시 재면 0점)
                 `q` + Enter      -> 되돌리고 끝낸다
@@ -65,7 +65,7 @@ MI = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, MI)
 from core import procopen                      # noqa: E402
 from core.signature import verify              # noqa: E402
-from detectors.overlay_hook import export_table, PROLOGUE, VALIDATION_PID_ENV  # noqa: E402
+from detectors.overlay_hook import export_table, PROLOGUE  # noqa: E402
 
 # 탐지기가 보는 대상 목록에서 고른다(detectors/overlay_hook.py TARGET_MODULES).
 #   일반   — 이 프로세스가 네트워크를 안 쓰므로 ws2_32 익스포트는 호출되지 않는다
@@ -237,8 +237,8 @@ def main(argv=None):
         info.update({"expected_raw_score": 0})
 
     print("READY " + json.dumps(info, ensure_ascii=False), flush=True)
-    print(f"  탐지기: set {VALIDATION_PID_ENV}={os.getpid()} 뒤 "
-          f"python detectors\\overlay_hook.py <세션>", flush=True)
+    print(f"  탐지기: overlay_hook.scan(target_pid={os.getpid()})  "
+          f"(tests/t_overlay_fixture.py 가 이렇게 부른다)", flush=True)
     print("  remove + Enter = 패턴 제거(0점 복귀),  q + Enter = 끝내기", flush=True)
 
     try:
