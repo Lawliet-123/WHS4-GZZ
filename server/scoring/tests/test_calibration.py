@@ -22,6 +22,7 @@ class CalibrationTests(unittest.TestCase):
             "injection": ("threshold", 40),
             "value_tamper": ("threshold", 100),
             "noclip": ("threshold", 3),
+            "localguard_executable_hash": ("threshold", 1),
         }
 
         for module, (mode, threshold) in expected.items():
@@ -45,6 +46,12 @@ class CalibrationTests(unittest.TestCase):
         self.assertFalse(calibration.meets_threshold(2))
         self.assertTrue(calibration.meets_threshold(3))
         self.assertTrue(calibration.meets_threshold(5))
+
+    def test_executable_hash_threshold_boundary_is_inclusive(self):
+        calibration = require_calibration("localguard_executable_hash")
+
+        self.assertFalse(calibration.meets_threshold(0))
+        self.assertTrue(calibration.meets_threshold(1))
 
     def test_godmode_event_threshold_is_not_snapshot_rule(self):
         calibration = require_calibration("godmode")

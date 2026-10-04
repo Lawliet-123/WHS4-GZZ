@@ -205,6 +205,40 @@ class RiskCalibrationIntegrationTests(unittest.TestCase):
         self.assertEqual(below.unresolved_policy_modules, ())
         self.assertEqual(at_threshold.unresolved_policy_modules, ())
 
+    def test_executable_hash_snapshot_threshold_is_applied(self):
+        normal = build(
+            entry(
+                "localguard_executable_hash",
+                raw_score=0,
+                emission="snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+            )
+        )
+
+        matched = build(
+            entry(
+                "localguard_executable_hash",
+                raw_score=1,
+                emission="snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+            )
+        )
+
+        self.assertEqual(
+            matched.signals[0].calibration_mode,
+            "threshold",
+        )
+        self.assertEqual(
+            matched.signals[0].calibration_threshold,
+            1.0,
+        )
+
+        self.assertFalse(normal.signals[0].threshold_met)
+        self.assertTrue(matched.signals[0].threshold_met)
+
+        self.assertEqual(normal.unresolved_policy_modules, ())
+        self.assertEqual(matched.unresolved_policy_modules, ())
+
     def test_out_of_audited_range_cannot_be_resolved_by_threshold(self):
         result = build(
             entry(
