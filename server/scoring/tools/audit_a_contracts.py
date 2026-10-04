@@ -103,8 +103,8 @@ def probe_external_access():
 
 
 def probe_hide():
-    detector = load("audit_hide_detector", "client/detectors/mecha_detector_shared/mecha_detector_v9.py")
-    bridge_mod = load("audit_hide_bridge", "client/detectors/mecha_detector_shared/server_bridge.py")
+    detector = load("audit_hide_detector", "client/detectors/hide_anywhere/mecha_detector_v9.py")
+    bridge_mod = load("audit_hide_bridge", "client/detectors/hide_anywhere/server_bridge.py")
     rule = detector.Rule(required=3)
     events = [detector.make_common_event("audit_synthetic", "audit_player", "hide_anywhere", 1000, values,
               injected_module=False, viewport_hook=False, rule=rule, identity="audit_pawn")
