@@ -42,6 +42,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import game_launcher                                          # noqa: E402
+import launcher_heartbeat                                     # noqa: E402
 import registry                                               # noqa: E402
 import ui                                                     # noqa: E402
 from modules import MODULES, REPO                              # noqa: E402
@@ -269,7 +270,11 @@ def main(argv=None):
         return 2
     preflight(pm, only)
 
-    ctx = {"session": session, "game_pid": None, "server": "미연결"}
+    # 모듈 전체의 생존 상태를 중앙 서버에 한 발신자로 보낸다(launcher_heartbeat.py).
+    # 서버 칸은 고정 문구가 아니라 하트비트 응답 결과로 채운다(10/4 재민님 요청).
+    hb = launcher_heartbeat.LauncherHeartbeat(pm, session, player, t0)
+    hb.start()
+    ctx = {"session": session, "game_pid": None, "server": hb.server_text()}
     code = 0
     try:
         ui.line("")
@@ -286,7 +291,9 @@ def main(argv=None):
 
         if pid is None:
             ui.line(f"  [3/4] 게임을 기다리는 중 (최대 {a.wait_game:.0f}초)")
+            hb.set_phase("waiting_game")
             pid = game_launcher.wait_for_game(a.wait_game)
+            hb.set_phase("running")
         if pid is None:
             ui.line("  게임이 뜨지 않아 종료합니다. 게임을 켜고 다시 실행해 주세요.")
             return 2
@@ -306,12 +313,14 @@ def main(argv=None):
         last_draw = 0.0
         while True:
             pm.poll()
+            hb.tick()
             if game_launcher.find_game_pid() is None:
                 ui.line("")
                 ui.line("  게임이 종료되었습니다. 모듈을 정리합니다.")
                 break
             now = time.time()
             if now - last_draw >= a.status_every:
+                ctx["server"] = hb.server_text()
                 ui.render(pm.snapshot(), ctx)
                 last_draw = now
             time.sleep(0.5)
@@ -331,7 +340,14 @@ def main(argv=None):
             ui.line(f"  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요 (길면 {longest:.0f}초쯤).")
         except Exception:
             ui.line("  모듈을 정리합니다. 다시 Ctrl+C 를 누르지 마세요.")
+        hb.stopping()
         ended = pm.stop_all()
+        # 정리가 끝난 상태로 마지막 하트비트(stopped)를 보낸다. 실패해도 종료는 계속한다.
+        try:
+            hb.close()
+            ctx["server"] = hb.server_text()
+        except Exception as e:
+            ctx["server"] = f"하트비트 종료 오류 ({type(e).__name__})"
         ui.render(pm.snapshot(), ctx)
         ui.line("")
         report_stop(ended)
