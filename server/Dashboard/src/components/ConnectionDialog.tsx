@@ -6,11 +6,12 @@ interface ConnectionDialogProps {
   open: boolean;
   loading: boolean;
   initial: LiveConnectionInput;
+  error?: string;
   onClose: () => void;
   onConnect: (input: LiveConnectionInput) => void;
 }
 
-export function ConnectionDialog({ open, loading, initial, onClose, onConnect }: ConnectionDialogProps) {
+export function ConnectionDialog({ open, loading, initial, error, onClose, onConnect }: ConnectionDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [input, setInput] = useState(initial);
 
@@ -72,6 +73,13 @@ export function ConnectionDialog({ open, loading, initial, onClose, onConnect }:
             required
           />
         </label>
+
+        {error && (
+          <div className="error-banner field-wide" role="alert">
+            <Icon name="alert" />
+            <span>{error}</span>
+          </div>
+        )}
 
         <div className="dialog-actions">
           <button className="button button-quiet" type="button" onClick={onClose} disabled={loading}>취소</button>

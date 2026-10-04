@@ -22,7 +22,7 @@ export const protectionModuleCatalog = [
     id: "self_defense",
     label: "Self Defense",
     group: "protection",
-    description: "워치독과 자체 무결성으로 탐지기 생존 상태를 감시",
+    description: "워치독으로 안티치트 프로세스의 생존 상태를 감시",
     componentIds: ["self_defense"],
     eventAliases: [{ module: "selfdefense" }],
   },
@@ -54,9 +54,9 @@ export const protectionModuleCatalog = [
   },
   {
     id: "input_signature",
-    label: "입력·시그니처",
+    label: "파일·시그니처",
     group: "local_guard",
-    description: "Raw Input, YARA 시그니처와 실행 파일 해시를 검사",
+    description: "YARA 시그니처와 실행 파일 해시를 검사",
     componentIds: ["input_signature"],
     eventAliases: [
       { module: "localguard_yara" },

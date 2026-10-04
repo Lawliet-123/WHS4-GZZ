@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import App, { aggregateLauncherState } from "./App";
 import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 
 beforeEach(() => vi.useFakeTimers());
@@ -11,6 +11,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllTimers();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("dashboard interactions", () => {
@@ -27,12 +28,92 @@ describe("dashboard interactions", () => {
     expect(screen.queryByText(/현재는 시연 데이터입니다/)).toBeNull();
   });
 
+  it("keeps the sidebar selection synchronized with the visible section", () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    window.history.replaceState(null, "", window.location.pathname);
+    render(<App />);
+    const positions: Record<string, number> = {
+      overview: -900,
+      modules: -500,
+      sessions: 40,
+      subjects: 500,
+      events: 900,
+      systems: 1300,
+    };
+    const rect = (top: number) => ({
+      x: 0, y: top, top, right: 100, bottom: top + 100, left: 0,
+      width: 100, height: 100, toJSON: () => ({}),
+    } as DOMRect);
+    for (const [id, top] of Object.entries(positions)) {
+      const section = document.getElementById(id);
+      expect(section).toBeTruthy();
+      vi.spyOn(section!, "getBoundingClientRect").mockImplementation(() => rect(positions[id] ?? top));
+    }
+
+    act(() => vi.runOnlyPendingTimers());
+    expect(screen.getByRole("link", { name: "세션" }).getAttribute("aria-current")).toBe("location");
+
+    positions.subjects = -300;
+    positions.events = 30;
+    act(() => {
+      fireEvent.scroll(window);
+      vi.runOnlyPendingTimers();
+    });
+    expect(screen.getByRole("link", { name: "이벤트" }).getAttribute("aria-current")).toBe("location");
+    expect(screen.getByRole("link", { name: "세션" }).getAttribute("aria-current")).toBeNull();
+
+    positions.events = -300;
+    positions.systems = 30;
+    act(() => {
+      resizeCallbacks[0]?.([], {} as ResizeObserver);
+      vi.runOnlyPendingTimers();
+    });
+    expect(screen.getByRole("link", { name: "시스템" }).getAttribute("aria-current")).toBe("location");
+  });
+
   it("filters the subject list and event table by module", () => {
     render(<App />);
     fireEvent.change(screen.getByLabelText("모듈"), { target: { value: "external_access" } });
     expect(screen.getAllByText(/External process opened PROCESS_VM_WRITE handle/).length).toBeGreaterThan(0);
     expect(screen.queryByText("Collision Disabled Too Long")).toBeNull();
     expect(screen.getAllByText("player_042").length).toBeGreaterThan(0);
+  });
+
+  it("keeps heartbeat-only module state visible when its Event filter has no matches", () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("모듈"), { target: { value: "kernel_watcher" } });
+
+    const moduleCard = screen.getByRole("button", { name: "Kernel Watcher 필터 적용" });
+    expect(moduleCard.textContent).toContain("일부 저하");
+    expect(moduleCard.textContent).not.toContain("미보고");
+  });
+
+  it("does not collapse transitional Launcher states into healthy", () => {
+    expect(aggregateLauncherState(["starting"])).toBe("starting");
+    expect(aggregateLauncherState(["healthy", "starting"])).toBe("starting");
+    expect(aggregateLauncherState(["healthy", "stopped"])).toBe("stopped");
+  });
+
+  it("applies the selected scope to summary cards and sessions", () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("모듈"), { target: { value: "external_access" } });
+
+    const summary = document.querySelector(".summary-grid");
+    expect(summary).toBeTruthy();
+    const summaryValue = (label: string) => within(summary as HTMLElement).getByText(label).closest(".summary-card")?.querySelector("strong")?.textContent;
+    expect(summaryValue("조회 세션")).toBe("1");
+    expect(summaryValue("조회 플레이어")).toBe("1");
+    expect(summaryValue("기록 Event")).toBe("1");
+    expect(summaryValue("운영 Event")).toBe("0");
+    expect(screen.getByRole("button", { name: "demo_esp_001" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "demo_noclip_001" })).toBeNull();
   });
 
   it("limits the player selector to the selected session and clears an incompatible player", () => {
@@ -123,6 +204,57 @@ describe("dashboard interactions", () => {
       expect(screen.getByRole("heading", { name: "player_042" })).toBeTruthy();
       const moduleCards = [...document.querySelectorAll(".module-state-card")];
       expect(moduleCards.some((card) => card.textContent?.includes("입력 행동"))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      HTMLDialogElement.prototype.showModal = originalShowModal;
+      HTMLDialogElement.prototype.close = originalClose;
+    }
+  });
+
+  it("keeps the last successful subject details and marks live data stale when refresh fails", async () => {
+    vi.useRealTimers();
+    const originalShowModal = HTMLDialogElement.prototype.showModal;
+    const originalClose = HTMLDialogElement.prototype.close;
+    HTMLDialogElement.prototype.showModal = function showModal() { this.setAttribute("open", ""); };
+    HTMLDialogElement.prototype.close = function close() { this.removeAttribute("open"); };
+    let failRefresh = false;
+    const response = (body: unknown): Response => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => body,
+    } as Response);
+    const firstAssessment = demoOverview.assessments[0]!;
+    const firstKey = `${firstAssessment.session_id}::${firstAssessment.player_id}`;
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = String(request);
+      if (failRefresh && (url.includes("/api/dashboard/overview") || url.includes("/api/dashboard/events?"))) {
+        return Promise.reject(new Error("temporary refresh failure"));
+      }
+      if (url.includes("/api/dashboard/overview")) return Promise.resolve(response(demoOverview));
+      if (url.includes("/api/dashboard/events?")) return Promise.resolve(response(demoEvents));
+      if (url.includes("/snapshot")) return Promise.resolve(response(demoSnapshots[firstKey]));
+      if (url.includes("/status")) return Promise.resolve(response(demoStatuses[firstKey]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "연결" }));
+      const dialog = screen.getByRole("dialog");
+      fireEvent.change(within(dialog).getByLabelText("Dashboard 토큰"), { target: { value: "test-token" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "연결" }));
+
+      await waitFor(() => expect(screen.getByText("LIVE")).toBeTruthy());
+      await waitFor(() => expect(document.querySelectorAll(".module-state-card").length).toBeGreaterThan(0));
+      const detailBeforeFailure = [...document.querySelectorAll(".module-state-card")].map((card) => card.textContent).join(" ");
+
+      failRefresh = true;
+      fireEvent.click(screen.getByRole("button", { name: "새로고침" }));
+      await waitFor(() => expect(screen.getByText("LIVE · 지연")).toBeTruthy());
+      const detailAfterFailure = [...document.querySelectorAll(".module-state-card")].map((card) => card.textContent).join(" ");
+      expect(detailAfterFailure).toBe(detailBeforeFailure);
     } finally {
       vi.unstubAllGlobals();
       HTMLDialogElement.prototype.showModal = originalShowModal;

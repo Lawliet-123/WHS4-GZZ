@@ -7,9 +7,11 @@ import { StatusBadge } from "./StatusBadge";
 export interface EvidenceDrawerProps {
   event: DashboardEvent | null;
   loading?: boolean;
+  error?: string;
   /** `undefined` means the overview capability has not been supplied. */
   evidenceImagesAvailable?: boolean;
   onClose: () => void;
+  onRetry?: () => void;
 }
 
 type CopyState = "idle" | "copied" | "error";
@@ -47,11 +49,111 @@ const renderValue = (value: unknown): string => {
   return String(value);
 };
 
+const normalizeEvidenceKey = (key: string) => key
+  .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+  .replace(/[^a-zA-Z0-9]+/g, "_")
+  .replace(/^_+|_+$/g, "")
+  .toLowerCase();
+
+const isSensitiveEvidenceKey = (key: string): boolean => {
+  const normalized = normalizeEvidenceKey(key);
+  const isFingerprint = /(?:^|_)(?:id|hash|digest|fingerprint|sha1|sha224|sha256|sha384|sha512|md5)(?:_|$)/.test(normalized);
+  if (isFingerprint) return false;
+
+  if ([
+    "username",
+    "user_name",
+    "computer_name",
+    "hostname",
+    "window_title",
+    "full_path",
+    "path",
+    "source_image",
+    "target_image",
+    "process_image",
+    "image",
+    "executable",
+  ].includes(normalized)) {
+    return true;
+  }
+  return normalized.startsWith("path_") || normalized.endsWith("_path") || normalized.includes("_path_");
+};
+
+function collectSensitiveEvidenceStrings(value: unknown, values = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSensitiveEvidenceStrings(item, values));
+    return values;
+  }
+  if (value === null || typeof value !== "object") return values;
+
+  for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+    if (isSensitiveEvidenceKey(key)) {
+      if (typeof nestedValue === "string" && nestedValue.trim().length >= 3) values.add(nestedValue.trim());
+      continue;
+    }
+    collectSensitiveEvidenceStrings(nestedValue, values);
+  }
+  return values;
+}
+
+/** Redacts direct identifiers and absolute user paths from free-form server text. */
+export function redactSensitiveText(value: string, sensitiveValues: Iterable<string> = []): string {
+  let redacted = value
+    .replace(/(["'])(?:(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home)\/)[^"'<>|\r\n]*)\1/g, (_match, quote: string) => `${quote}[redacted-path]${quote}`)
+    .replace(/(?:\b[A-Za-z]:[\\/]|\\\\)[^\s"'<>|,;)\]}]*/g, "[redacted-path]")
+    .replace(/(^|[\s("'=])\/(?:Users|home)\/[^\s"'<>|,;)\]}]*/g, "$1[redacted-path]");
+  for (const sensitiveValue of sensitiveValues) {
+    redacted = redacted.replaceAll(sensitiveValue, "[redacted]");
+  }
+  redacted = redacted
+    .replace(/\b(user(?:_?name)?|computer_?name|host_?name|window_?title)\s*([=:])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1$2[redacted]")
+    .replace(/\bDESKTOP-[A-Z0-9-]+\b/gi, "[redacted]");
+  return redacted;
+}
+
+interface SanitizedEvidence {
+  evidence: Record<string, unknown>;
+  hiddenCount: number;
+}
+
+/** Removes direct identifying fields before evidence is rendered or copied. */
+export function sanitizeEvidence(evidence: Record<string, unknown>): SanitizedEvidence {
+  let hiddenCount = 0;
+  const sensitiveValues = collectSensitiveEvidenceStrings(evidence);
+
+  const visit = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(visit);
+    if (typeof value === "string") {
+      const redacted = redactSensitiveText(value, sensitiveValues);
+      if (redacted !== value) hiddenCount += 1;
+      return redacted;
+    }
+    if (value === null || typeof value !== "object") return value;
+
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+      if (isSensitiveEvidenceKey(key)) {
+        hiddenCount += 1;
+        continue;
+      }
+      sanitized[key] = visit(nestedValue);
+    }
+    return sanitized;
+  };
+
+  return {
+    evidence: visit(evidence) as Record<string, unknown>,
+    hiddenCount,
+  };
+}
+
 export function EvidenceDrawer({
   event,
   loading = false,
+  error,
   evidenceImagesAvailable,
   onClose,
+  onRetry,
 }: EvidenceDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
@@ -118,17 +220,34 @@ export function EvidenceDrawer({
     if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current);
   }, []);
 
-  const payload = useMemo(() => event ? {
+  const sanitizedEvidence = useMemo(
+    () => event ? sanitizeEvidence(event.evidence) : null,
+    [event],
+  );
+  const sensitiveEvidenceValues = useMemo(
+    () => event ? collectSensitiveEvidenceStrings(event.evidence) : new Set<string>(),
+    [event],
+  );
+  const sanitizedReasons = useMemo(
+    () => event ? event.reasons.map((reason) => redactSensitiveText(reason, sensitiveEvidenceValues)) : [],
+    [event, sensitiveEvidenceValues],
+  );
+  const sanitizedLogExcerpt = useMemo(
+    () => event?.log_excerpt ? redactSensitiveText(event.log_excerpt, sensitiveEvidenceValues) : null,
+    [event, sensitiveEvidenceValues],
+  );
+  const sanitizedError = error ? redactSensitiveText(error, sensitiveEvidenceValues) : null;
+  const payload = useMemo(() => event && sanitizedEvidence ? {
     session_id: event.session_id,
     player_id: event.player_id,
     module: event.module,
     timestamp_ms: event.timestamp_ms,
-    evidence: event.evidence,
-    reasons: event.reasons,
+    evidence: sanitizedEvidence.evidence,
+    reasons: sanitizedReasons,
     raw_score: event.raw_score,
-  } : null, [event]);
+  } : null, [event, sanitizedEvidence, sanitizedReasons]);
 
-  if (!event || !payload) return null;
+  if (!event || !payload || !sanitizedEvidence) return null;
   const operational = event.event_kind === "operational";
   const evidenceImageUrl = safeEvidenceImageUrl(event.evidence_image);
   const showEvidenceImage = evidenceImagesAvailable !== undefined || event.evidence_image !== null;
@@ -154,6 +273,17 @@ export function EvidenceDrawer({
         </div>
 
         <div className="drawer-body">
+          {sanitizedError && (
+            <div className="error-banner" role="alert">
+              <Icon name="alert" />
+              <span>{sanitizedError}</span>
+              {onRetry && (
+                <button type="button" onClick={onRetry} aria-label="상세 정보 다시 불러오기">
+                  <Icon name="refresh" />
+                </button>
+              )}
+            </div>
+          )}
           {loading && <div className="drawer-loading"><span className="spinner" /> 상세 정보를 불러오는 중</div>}
           <div className="drawer-summary">
             <div className="drawer-badges">
@@ -178,18 +308,21 @@ export function EvidenceDrawer({
 
           <section className="detail-section" aria-labelledby="reason-title">
             <h4 id="reason-title">이벤트 이유</h4>
-            {event.reasons.length > 0
-              ? <ul className={`reason-list ${operational ? "operational" : "observed"}`}>{event.reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>
+            {sanitizedReasons.length > 0
+              ? <ul className={`reason-list ${operational ? "operational" : "observed"}`}>{sanitizedReasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>
               : <div className="empty-inline">기록된 이유 없음</div>}
           </section>
 
           <section className="detail-section" aria-labelledby="evidence-fields-title">
             <h4 id="evidence-fields-title">Evidence</h4>
-            {Object.keys(event.evidence).length > 0 ? (
+            {Object.keys(sanitizedEvidence.evidence).length > 0 ? (
               <div className="evidence-fields">
-                {Object.entries(event.evidence).map(([key, value]) => <div key={key}><span>{key}</span><strong>{renderValue(value)}</strong></div>)}
+                {Object.entries(sanitizedEvidence.evidence).map(([key, value]) => <div key={key}><span>{key}</span><strong>{renderValue(value)}</strong></div>)}
               </div>
             ) : <div className="empty-inline">Evidence 필드 없음</div>}
+            {sanitizedEvidence.hiddenCount > 0 && (
+              <div className="empty-inline" role="status">민감 필드 {sanitizedEvidence.hiddenCount}개 숨김</div>
+            )}
           </section>
 
           {showEvidenceImage && (
@@ -214,7 +347,7 @@ export function EvidenceDrawer({
             </section>
           )}
 
-          {event.log_excerpt && <section className="detail-section" aria-labelledby="log-title"><h4 id="log-title">로그</h4><pre className="log-excerpt">{event.log_excerpt}</pre></section>}
+          {sanitizedLogExcerpt && <section className="detail-section" aria-labelledby="log-title"><h4 id="log-title">로그</h4><pre className="log-excerpt">{sanitizedLogExcerpt}</pre></section>}
 
           <details className="raw-data"><summary>공통 이벤트 JSON</summary><pre>{JSON.stringify(payload, null, 2)}</pre></details>
         </div>

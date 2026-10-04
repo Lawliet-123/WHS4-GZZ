@@ -1,5 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadSubjectDetail, loadSubjectDetailParts } from "./api";
+import {
+  DashboardApiError,
+  fetchEventDetail,
+  fetchEvents,
+  fetchOverview,
+  fetchSnapshot,
+  fetchSubjectStatus,
+  loadSubjectDetail,
+  loadSubjectDetailParts,
+} from "./api";
+import {
+  demoEventItems,
+  demoEvents,
+  demoOverview,
+  demoSnapshots,
+  demoStatuses,
+} from "./mockData";
 import type { LiveConnectionInput, SnapshotResponse, SubjectStatusResponse } from "./types";
 
 const connection: LiveConnectionInput = {
@@ -89,5 +105,94 @@ describe("subject detail API", () => {
       "session_001",
       "player_001",
     )).resolves.toEqual({ snapshot, status });
+  });
+});
+
+describe("Dashboard response contracts", () => {
+  it("accepts the current backend-v2 shaped demo responses", async () => {
+    const demoSnapshot = Object.values(demoSnapshots)[0]!;
+    const demoStatus = Object.values(demoStatuses)[0]!;
+    const demoEvent = demoEventItems[0]!;
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request));
+      if (url.pathname === "/api/dashboard/overview") return Promise.resolve(jsonResponse(demoOverview));
+      if (url.pathname === "/api/dashboard/events") return Promise.resolve(jsonResponse(demoEvents));
+      if (url.pathname.endsWith("/snapshot")) return Promise.resolve(jsonResponse(demoSnapshot));
+      if (url.pathname.endsWith("/status")) return Promise.resolve(jsonResponse(demoStatus));
+      if (url.pathname.startsWith("/api/dashboard/events/")) return Promise.resolve(jsonResponse(demoEvent));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchOverview(connection)).resolves.toEqual(demoOverview);
+    await expect(fetchEvents(connection)).resolves.toEqual(demoEvents);
+    await expect(fetchEventDetail(connection, demoEvent.id)).resolves.toEqual(demoEvent);
+    await expect(fetchSnapshot(connection, demoSnapshot.session_id, demoSnapshot.player_id)).resolves.toEqual(demoSnapshot);
+    await expect(fetchSubjectStatus(connection, demoStatus.session_id, demoStatus.player_id)).resolves.toEqual(demoStatus);
+  });
+
+  it("normalizes the backend status response used when heartbeat storage is unavailable", async () => {
+    const demoStatus = Object.values(demoStatuses)[0]!;
+    const { has_more_sources: _omitted, ...withoutPaginationFlag } = demoStatus;
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(withoutPaginationFlag))));
+
+    await expect(fetchSubjectStatus(connection, demoStatus.session_id, demoStatus.player_id)).resolves.toEqual({
+      ...withoutPaginationFlag,
+      has_more_sources: false,
+    });
+  });
+
+  it.each([
+    {
+      name: "overview nested counts",
+      body: { ...demoOverview, counts: { ...demoOverview.counts, events: "4" } },
+      path: "counts.events",
+      request: () => fetchOverview(connection),
+    },
+    {
+      name: "events nested Event",
+      body: {
+        ...demoEvents,
+        items: [{ ...demoEventItems[0]!, raw_score: "3" }],
+      },
+      path: "items[0].raw_score",
+      request: () => fetchEvents(connection),
+    },
+    {
+      name: "event detail",
+      body: { ...demoEventItems[0]!, sequence: -1 },
+      path: "$.sequence",
+      request: () => fetchEventDetail(connection, demoEventItems[0]!.id),
+    },
+    {
+      name: "snapshot modules",
+      body: { ...Object.values(demoSnapshots)[0]!, modules: {} },
+      path: "modules",
+      request: () => {
+        const value = Object.values(demoSnapshots)[0]!;
+        return fetchSnapshot(connection, value.session_id, value.player_id);
+      },
+    },
+    {
+      name: "status launcher",
+      body: {
+        ...Object.values(demoStatuses)[0]!,
+        launcher: { ...Object.values(demoStatuses)[0]!.launcher, connected: "yes" },
+      },
+      path: "launcher.connected",
+      request: () => {
+        const value = Object.values(demoStatuses)[0]!;
+        return fetchSubjectStatus(connection, value.session_id, value.player_id);
+      },
+    },
+  ])("rejects a malformed $name response without returning partial data", async ({ body, path, request }) => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(body))));
+
+    await expect(request()).rejects.toEqual(expect.objectContaining({
+      name: "DashboardApiError",
+      status: 200,
+      message: expect.stringContaining(path),
+    }));
+    await expect(request()).rejects.toBeInstanceOf(DashboardApiError);
   });
 });

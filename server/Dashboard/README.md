@@ -103,6 +103,8 @@ Authorization: Bearer <GZZ_DASHBOARD_TOKEN>
 
 `overview.events`는 의도적으로 빈 배열이며 Event는 `/events`에서 읽는다. Event cursor는 첫 응답의 `through_sequence`에 고정해 끝까지 읽고, 이후 polling은 마지막 `sequence`를 `after_sequence`로 전달한다. 실서버 오류를 합성 데이터로 자동 대체하지 않는다.
 
+각 endpoint 응답은 화면이 사용하는 필수 필드와 중첩 자료형을 런타임에 검증한다. 계약이 달라진 응답은 부분 렌더링하지 않고 연결·갱신 오류로 표시하며, 응답 본문이나 토큰은 오류 메시지에 포함하지 않는다.
+
 운영 배포에서는 장기 Bearer token을 브라우저 bundle에 넣지 않는다. 중앙 FastAPI와 same-origin으로 배치한 BFF·reverse proxy 또는 별도의 Dashboard 세션 인증이 필요하다.
 
 ## 소스 구조
@@ -118,6 +120,9 @@ server/Dashboard/
 │  ├─ App.tsx               화면 상태와 polling
 │  └─ styles.css            반응형 디자인
 ├─ API_REQUIREMENTS.md      backend 계약과 표시 규칙
+├─ INTEGRATION_STATUS.md    연결 완료 범위와 담당자별 남은 계약
 ├─ DESIGN.md                정보 구조와 UX 기준
 └─ vite.config.ts           4173 포트와 8002 프록시
 ```
+
+실제 통합 전에 [INTEGRATION_STATUS.md](./INTEGRATION_STATUS.md)의 백엔드·Launcher 확인 항목과 종단 점검 순서를 함께 확인한다.

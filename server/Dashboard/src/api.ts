@@ -16,6 +16,22 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const MAX_OVERVIEW_PAGES = 250;
 const MAX_EVENT_PAGES = 250;
 
+type JsonObject = Record<string, unknown>;
+
+const VERDICT_STATUSES = new Set(["SUSPICIOUS", "INCONCLUSIVE", "NO_ACTIVE_EVIDENCE", "UNKNOWN"]);
+const DATA_STATES = new Set(["available", "missing", "not_connected"]);
+const COMPONENT_STATES = new Set([
+  "starting",
+  "running",
+  "healthy",
+  "degraded",
+  "failed",
+  "stopped",
+  "stale",
+  "unknown",
+]);
+const CONNECTION_STATES = new Set([...COMPONENT_STATES, "online", "unavailable", "stopping"]);
+
 export class DashboardApiError extends Error {
   readonly status: number | null;
 
@@ -24,6 +40,320 @@ export class DashboardApiError extends Error {
     this.name = "DashboardApiError";
     this.status = status;
   }
+}
+
+function invalidContract(endpoint: string, path: string, status: number): never {
+  throw new DashboardApiError(
+    `Dashboard 서버의 ${endpoint} 응답 형식이 올바르지 않습니다. (${path})`,
+    status,
+  );
+}
+
+function objectAt(value: unknown, endpoint: string, path: string, status: number): JsonObject {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return invalidContract(endpoint, path, status);
+  }
+  return value as JsonObject;
+}
+
+function arrayAt(value: unknown, endpoint: string, path: string, status: number): unknown[] {
+  if (!Array.isArray(value)) return invalidContract(endpoint, path, status);
+  return value;
+}
+
+function stringAt(
+  value: unknown,
+  endpoint: string,
+  path: string,
+  status: number,
+  allowEmpty = true,
+): string {
+  if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
+    return invalidContract(endpoint, path, status);
+  }
+  return value;
+}
+
+function booleanAt(value: unknown, endpoint: string, path: string, status: number): boolean {
+  if (typeof value !== "boolean") return invalidContract(endpoint, path, status);
+  return value;
+}
+
+function finiteNumberAt(value: unknown, endpoint: string, path: string, status: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return invalidContract(endpoint, path, status);
+  }
+  return value;
+}
+
+function nonNegativeIntegerAt(value: unknown, endpoint: string, path: string, status: number): number {
+  const number = finiteNumberAt(value, endpoint, path, status);
+  if (!Number.isInteger(number) || number < 0) return invalidContract(endpoint, path, status);
+  return number;
+}
+
+function nullableNumberAt(value: unknown, endpoint: string, path: string, status: number): number | null {
+  return value === null ? null : finiteNumberAt(value, endpoint, path, status);
+}
+
+function nullableStringAt(value: unknown, endpoint: string, path: string, status: number): string | null {
+  return value === null ? null : stringAt(value, endpoint, path, status);
+}
+
+function enumAt(value: unknown, allowed: Set<string>, endpoint: string, path: string, status: number): string {
+  const candidate = stringAt(value, endpoint, path, status);
+  if (!allowed.has(candidate)) return invalidContract(endpoint, path, status);
+  return candidate;
+}
+
+function stringArrayAt(value: unknown, endpoint: string, path: string, status: number): string[] {
+  const items = arrayAt(value, endpoint, path, status);
+  items.forEach((item, index) => stringAt(item, endpoint, `${path}[${index}]`, status));
+  return items as string[];
+}
+
+function validateIndex(value: unknown, endpoint: string, path: string, status: number): void {
+  const index = objectAt(value, endpoint, path, status);
+  nonNegativeIntegerAt(index.through_sequence, endpoint, `${path}.through_sequence`, status);
+  booleanAt(index.catching_up, endpoint, `${path}.catching_up`, status);
+}
+
+function validateEvent(value: unknown, endpoint: string, path: string, status: number): void {
+  const event = objectAt(value, endpoint, path, status);
+  stringAt(event.id, endpoint, `${path}.id`, status, false);
+  nonNegativeIntegerAt(event.sequence, endpoint, `${path}.sequence`, status);
+  stringAt(event.session_id, endpoint, `${path}.session_id`, status, false);
+  stringAt(event.player_id, endpoint, `${path}.player_id`, status, false);
+  stringAt(event.module, endpoint, `${path}.module`, status, false);
+  finiteNumberAt(event.timestamp_ms, endpoint, `${path}.timestamp_ms`, status);
+  objectAt(event.evidence, endpoint, `${path}.evidence`, status);
+  stringArrayAt(event.reasons, endpoint, `${path}.reasons`, status);
+  finiteNumberAt(event.raw_score, endpoint, `${path}.raw_score`, status);
+  enumAt(event.event_kind, new Set(["detection", "operational"]), endpoint, `${path}.event_kind`, status);
+  stringAt(event.time_basis, endpoint, `${path}.time_basis`, status);
+  nullableStringAt(event.evidence_image, endpoint, `${path}.evidence_image`, status);
+  nullableStringAt(event.log_excerpt, endpoint, `${path}.log_excerpt`, status);
+}
+
+function validateFinalVerdict(value: unknown, endpoint: string, path: string, status: number): void {
+  const verdict = objectAt(value, endpoint, path, status);
+  stringAt(verdict.version, endpoint, `${path}.version`, status, false);
+  stringAt(verdict.session_id, endpoint, `${path}.session_id`, status, false);
+  stringAt(verdict.player_id, endpoint, `${path}.player_id`, status, false);
+  enumAt(verdict.status, VERDICT_STATUSES, endpoint, `${path}.status`, status);
+  booleanAt(verdict.assessment_complete, endpoint, `${path}.assessment_complete`, status);
+  nonNegativeIntegerAt(verdict.evidence_unit_count, endpoint, `${path}.evidence_unit_count`, status);
+  nonNegativeIntegerAt(verdict.active_module_count, endpoint, `${path}.active_module_count`, status);
+  nonNegativeIntegerAt(verdict.overlap_adjustment_count, endpoint, `${path}.overlap_adjustment_count`, status);
+  for (const key of [
+    "active_modules",
+    "advisory_modules",
+    "unresolved_modules",
+    "deferred_modules",
+    "unavailable_modules",
+    "reason_codes",
+  ]) {
+    stringArrayAt(verdict[key], endpoint, `${path}.${key}`, status);
+  }
+}
+
+function validateAssessment(value: unknown, endpoint: string, path: string, status: number): void {
+  const assessment = objectAt(value, endpoint, path, status);
+  stringAt(assessment.id, endpoint, `${path}.id`, status, false);
+  stringAt(assessment.session_id, endpoint, `${path}.session_id`, status, false);
+  stringAt(assessment.player_id, endpoint, `${path}.player_id`, status, false);
+  enumAt(assessment.status, VERDICT_STATUSES, endpoint, `${path}.status`, status);
+  booleanAt(assessment.assessment_available, endpoint, `${path}.assessment_available`, status);
+  nullableNumberAt(assessment.score, endpoint, `${path}.score`, status);
+  nullableNumberAt(assessment.confidence, endpoint, `${path}.confidence`, status);
+  if (assessment.final_verdict !== null) {
+    validateFinalVerdict(assessment.final_verdict, endpoint, `${path}.final_verdict`, status);
+  }
+  stringArrayAt(assessment.reason_codes, endpoint, `${path}.reason_codes`, status);
+  enumAt(assessment.data_state, DATA_STATES, endpoint, `${path}.data_state`, status);
+  arrayAt(assessment.module_scores, endpoint, `${path}.module_scores`, status);
+  stringArrayAt(assessment.reasons, endpoint, `${path}.reasons`, status);
+}
+
+function validateComponent(value: unknown, endpoint: string, path: string, status: number): void {
+  const component = objectAt(value, endpoint, path, status);
+  stringAt(component.id, endpoint, `${path}.id`, status, false);
+  enumAt(component.state, COMPONENT_STATES, endpoint, `${path}.state`, status);
+  enumAt(component.reported_status, COMPONENT_STATES, endpoint, `${path}.reported_status`, status);
+  booleanAt(component.required, endpoint, `${path}.required`, status);
+  if (component.pid !== null) nonNegativeIntegerAt(component.pid, endpoint, `${path}.pid`, status);
+  nonNegativeIntegerAt(component.updated_at_ms, endpoint, `${path}.updated_at_ms`, status);
+  nonNegativeIntegerAt(component.stale_after_ms, endpoint, `${path}.stale_after_ms`, status);
+  nonNegativeIntegerAt(component.age_ms, endpoint, `${path}.age_ms`, status);
+  nonNegativeIntegerAt(component.effective_age_ms, endpoint, `${path}.effective_age_ms`, status);
+  objectAt(component.details, endpoint, `${path}.details`, status);
+}
+
+function validateStatusSource(value: unknown, endpoint: string, path: string, status: number): void {
+  const source = objectAt(value, endpoint, path, status);
+  stringAt(source.client_id, endpoint, `${path}.client_id`, status, false);
+  enumAt(source.role, new Set(["launcher", "component"]), endpoint, `${path}.role`, status);
+  nonNegativeIntegerAt(source.sequence, endpoint, `${path}.sequence`, status);
+  stringAt(source.received_at_utc, endpoint, `${path}.received_at_utc`, status, false);
+  nonNegativeIntegerAt(source.age_ms, endpoint, `${path}.age_ms`, status);
+  enumAt(source.state, COMPONENT_STATES, endpoint, `${path}.state`, status);
+  enumAt(source.reported_status, COMPONENT_STATES, endpoint, `${path}.reported_status`, status);
+  arrayAt(source.components, endpoint, `${path}.components`, status).forEach((component, index) => {
+    validateComponent(component, endpoint, `${path}.components[${index}]`, status);
+  });
+  const transport = objectAt(source.transport, endpoint, `${path}.transport`, status);
+  booleanAt(transport.configured, endpoint, `${path}.transport.configured`, status);
+  nonNegativeIntegerAt(transport.consecutive_failures, endpoint, `${path}.transport.consecutive_failures`, status);
+  if (transport.last_success_sequence !== null) {
+    nonNegativeIntegerAt(transport.last_success_sequence, endpoint, `${path}.transport.last_success_sequence`, status);
+  }
+  nullableStringAt(transport.last_error_type, endpoint, `${path}.transport.last_error_type`, status);
+}
+
+function validateLauncher(value: unknown, endpoint: string, path: string, status: number): void {
+  const launcher = objectAt(value, endpoint, path, status);
+  enumAt(launcher.state, CONNECTION_STATES, endpoint, `${path}.state`, status);
+  booleanAt(launcher.connected, endpoint, `${path}.connected`, status);
+  if (launcher.source !== null) validateStatusSource(launcher.source, endpoint, `${path}.source`, status);
+  stringAt(launcher.reason, endpoint, `${path}.reason`, status);
+}
+
+function decodeOverview(value: unknown, status: number): OverviewResponse {
+  const endpoint = "overview";
+  const overview = objectAt(value, endpoint, "$", status);
+  stringAt(overview.schema_version, endpoint, "schema_version", status, false);
+  stringAt(overview.generated_at_utc, endpoint, "generated_at_utc", status, false);
+
+  const capabilities = objectAt(overview.capabilities, endpoint, "capabilities", status);
+  for (const key of ["final_assessment", "launcher_heartbeat", "evidence_images", "heartbeat_query"]) {
+    booleanAt(capabilities[key], endpoint, `capabilities.${key}`, status);
+  }
+
+  const connection = objectAt(overview.connection, endpoint, "connection", status);
+  for (const key of ["Receiver", "Scoring", "Launcher"]) {
+    const probe = objectAt(connection[key], endpoint, `connection.${key}`, status);
+    enumAt(probe.state, CONNECTION_STATES, endpoint, `connection.${key}.state`, status);
+    stringAt(probe.scope, endpoint, `connection.${key}.scope`, status);
+  }
+
+  const counts = objectAt(overview.counts, endpoint, "counts", status);
+  stringAt(counts.scope, endpoint, "counts.scope", status, false);
+  for (const key of ["events", "sessions", "players", "operational_events"]) {
+    nonNegativeIntegerAt(counts[key], endpoint, `counts.${key}`, status);
+  }
+  nullableNumberAt(counts.review, endpoint, "counts.review", status);
+  nullableNumberAt(counts.high, endpoint, "counts.high", status);
+
+  arrayAt(overview.sessions, endpoint, "sessions", status).forEach((value, index) => {
+    const session = objectAt(value, endpoint, `sessions[${index}]`, status);
+    stringAt(session.id, endpoint, `sessions[${index}].id`, status, false);
+    stringArrayAt(session.player_ids, endpoint, `sessions[${index}].player_ids`, status);
+    stringArrayAt(session.module_ids, endpoint, `sessions[${index}].module_ids`, status);
+    nullableNumberAt(session.duration_ms, endpoint, `sessions[${index}].duration_ms`, status);
+    nullableNumberAt(session.max_observed_timestamp_ms, endpoint, `sessions[${index}].max_observed_timestamp_ms`, status);
+    enumAt(session.status, VERDICT_STATUSES, endpoint, `sessions[${index}].status`, status);
+    nullableNumberAt(session.score, endpoint, `sessions[${index}].score`, status);
+  });
+  arrayAt(overview.players, endpoint, "players", status).forEach((value, index) => {
+    const player = objectAt(value, endpoint, `players[${index}]`, status);
+    stringAt(player.id, endpoint, `players[${index}].id`, status, false);
+    stringAt(player.display_name, endpoint, `players[${index}].display_name`, status);
+    stringAt(player.identity_type, endpoint, `players[${index}].identity_type`, status);
+    stringArrayAt(player.session_ids, endpoint, `players[${index}].session_ids`, status);
+    enumAt(player.status, VERDICT_STATUSES, endpoint, `players[${index}].status`, status);
+    nullableNumberAt(player.max_score, endpoint, `players[${index}].max_score`, status);
+  });
+  arrayAt(overview.assessments, endpoint, "assessments", status).forEach((assessment, index) => {
+    validateAssessment(assessment, endpoint, `assessments[${index}]`, status);
+  });
+
+  const sessionPage = objectAt(overview.session_page, endpoint, "session_page", status);
+  nullableStringAt(sessionPage.next_after_session, endpoint, "session_page.next_after_session", status);
+  booleanAt(sessionPage.has_more, endpoint, "session_page.has_more", status);
+  arrayAt(overview.events, endpoint, "events", status).forEach((event, index) => {
+    validateEvent(event, endpoint, `events[${index}]`, status);
+  });
+  arrayAt(overview.module_statuses, endpoint, "module_statuses", status).forEach((value, index) => {
+    const moduleStatus = objectAt(value, endpoint, `module_statuses[${index}]`, status);
+    validateComponent(moduleStatus, endpoint, `module_statuses[${index}]`, status);
+    for (const key of ["label", "status_id", "session_id", "player_id", "client_id", "last_seen_at"]) {
+      stringAt(moduleStatus[key], endpoint, `module_statuses[${index}].${key}`, status, false);
+    }
+  });
+  arrayAt(overview.launcher_statuses, endpoint, "launcher_statuses", status).forEach((value, index) => {
+    const launcher = objectAt(value, endpoint, `launcher_statuses[${index}]`, status);
+    stringAt(launcher.session_id, endpoint, `launcher_statuses[${index}].session_id`, status, false);
+    stringAt(launcher.player_id, endpoint, `launcher_statuses[${index}].player_id`, status, false);
+    validateLauncher(launcher, endpoint, `launcher_statuses[${index}]`, status);
+  });
+  stringAt(overview.events_endpoint, endpoint, "events_endpoint", status, false);
+  validateIndex(overview.index, endpoint, "index", status);
+  return overview as unknown as OverviewResponse;
+}
+
+function decodeEvents(value: unknown, status: number): EventListResponse {
+  const endpoint = "events";
+  const response = objectAt(value, endpoint, "$", status);
+  arrayAt(response.items, endpoint, "items", status).forEach((event, index) => {
+    validateEvent(event, endpoint, `items[${index}]`, status);
+  });
+  nullableStringAt(response.next_cursor, endpoint, "next_cursor", status);
+  booleanAt(response.has_more, endpoint, "has_more", status);
+  nonNegativeIntegerAt(response.through_sequence, endpoint, "through_sequence", status);
+  validateIndex(response.index, endpoint, "index", status);
+  return response as unknown as EventListResponse;
+}
+
+function decodeEvent(value: unknown, status: number): DashboardEvent {
+  validateEvent(value, "event detail", "$", status);
+  return value as DashboardEvent;
+}
+
+function decodeSnapshot(value: unknown, status: number): SnapshotResponse {
+  const endpoint = "snapshot";
+  const snapshot = objectAt(value, endpoint, "$", status);
+  stringAt(snapshot.session_id, endpoint, "session_id", status, false);
+  stringAt(snapshot.player_id, endpoint, "player_id", status, false);
+  enumAt(snapshot.status, VERDICT_STATUSES, endpoint, "status", status);
+  nullableNumberAt(snapshot.score, endpoint, "score", status);
+  nullableNumberAt(snapshot.confidence, endpoint, "confidence", status);
+  booleanAt(snapshot.assessment_available, endpoint, "assessment_available", status);
+  if (snapshot.final_verdict !== null) validateFinalVerdict(snapshot.final_verdict, endpoint, "final_verdict", status);
+  stringArrayAt(snapshot.reason_codes, endpoint, "reason_codes", status);
+  enumAt(snapshot.data_state, DATA_STATES, endpoint, "data_state", status);
+  arrayAt(snapshot.modules, endpoint, "modules", status).forEach((value, index) => {
+    const module = objectAt(value, endpoint, `modules[${index}]`, status);
+    stringAt(module.session_id, endpoint, `modules[${index}].session_id`, status, false);
+    stringAt(module.player_id, endpoint, `modules[${index}].player_id`, status, false);
+    stringAt(module.module, endpoint, `modules[${index}].module`, status, false);
+    finiteNumberAt(module.timestamp_ms, endpoint, `modules[${index}].timestamp_ms`, status);
+    nonNegativeIntegerAt(module.sequence, endpoint, `modules[${index}].sequence`, status);
+    stringAt(module.event_id, endpoint, `modules[${index}].event_id`, status, false);
+    finiteNumberAt(module.raw_score, endpoint, `modules[${index}].raw_score`, status);
+    objectAt(module.evidence, endpoint, `modules[${index}].evidence`, status);
+    stringArrayAt(module.reasons, endpoint, `modules[${index}].reasons`, status);
+  });
+  objectAt(snapshot.policy, endpoint, "policy", status);
+  return snapshot as unknown as SnapshotResponse;
+}
+
+function decodeStatus(value: unknown, status: number): SubjectStatusResponse {
+  const endpoint = "status";
+  const response = objectAt(value, endpoint, "$", status);
+  stringAt(response.session_id, endpoint, "session_id", status, false);
+  stringAt(response.player_id, endpoint, "player_id", status, false);
+  enumAt(response.state, CONNECTION_STATES, endpoint, "state", status);
+  arrayAt(response.sources, endpoint, "sources", status).forEach((source, index) => {
+    validateStatusSource(source, endpoint, `sources[${index}]`, status);
+  });
+  validateLauncher(response.launcher, endpoint, "launcher", status);
+  if (response.has_more_sources !== undefined) {
+    booleanAt(response.has_more_sources, endpoint, "has_more_sources", status);
+  } else {
+    response.has_more_sources = false;
+  }
+  stringAt(response.reason, endpoint, "reason", status);
+  return response as unknown as SubjectStatusResponse;
 }
 
 function cleanConnection(input: LiveConnectionInput): Required<Pick<LiveConnectionInput, "baseUrl" | "token">> {
@@ -53,7 +383,12 @@ function abortError(): Error {
   return error;
 }
 
-async function requestJson<T>(input: LiveConnectionInput, path: string, signal?: AbortSignal): Promise<T> {
+async function requestJson<T>(
+  input: LiveConnectionInput,
+  path: string,
+  decode: (value: unknown, status: number) => T,
+  signal?: AbortSignal,
+): Promise<T> {
   const { baseUrl, token } = cleanConnection(input);
   const controller = new AbortController();
   let timedOut = false;
@@ -115,10 +450,7 @@ async function requestJson<T>(input: LiveConnectionInput, path: string, signal?:
       }
       throw new DashboardApiError("Dashboard 서버의 JSON 응답을 해석할 수 없습니다.", response.status);
     }
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      throw new DashboardApiError("Dashboard 서버의 응답 형식이 올바르지 않습니다.", response.status);
-    }
-    return value as T;
+    return decode(value, response.status);
   } finally {
     globalThis.clearTimeout(timeout);
     signal?.removeEventListener("abort", abortFromCaller);
@@ -141,7 +473,7 @@ export async function fetchOverview(
     after_session: options.afterSession,
     limit: options.limit ?? 100,
   });
-  return requestJson<OverviewResponse>(input, `/api/dashboard/overview${query}`, signal);
+  return requestJson(input, `/api/dashboard/overview${query}`, decodeOverview, signal);
 }
 
 export async function fetchEvents(
@@ -162,7 +494,7 @@ export async function fetchEvents(
     after_sequence: options.afterSequence,
     limit: options.limit ?? 200,
   });
-  return requestJson<EventListResponse>(input, `/api/dashboard/events${query}`, signal);
+  return requestJson(input, `/api/dashboard/events${query}`, decodeEvents, signal);
 }
 
 export function fetchEventDetail(
@@ -171,9 +503,10 @@ export function fetchEventDetail(
   signal?: AbortSignal,
 ): Promise<DashboardEvent> {
   if (!eventId.trim()) throw new DashboardApiError("event ID가 비어 있습니다.");
-  return requestJson<DashboardEvent>(
+  return requestJson(
     input,
     `/api/dashboard/events/${encodeURIComponent(eventId)}`,
+    decodeEvent,
     signal,
   );
 }
@@ -187,9 +520,10 @@ export function fetchSnapshot(
   if (!sessionId.trim() || !playerId.trim()) {
     throw new DashboardApiError("snapshot 조회에는 세션과 플레이어 ID가 필요합니다.");
   }
-  return requestJson<SnapshotResponse>(
+  return requestJson(
     input,
     `/api/dashboard/sessions/${encodeURIComponent(sessionId)}/players/${encodeURIComponent(playerId)}/snapshot`,
+    decodeSnapshot,
     signal,
   );
 }
@@ -203,9 +537,10 @@ export function fetchSubjectStatus(
   if (!sessionId.trim() || !playerId.trim()) {
     throw new DashboardApiError("status 조회에는 세션과 플레이어 ID가 필요합니다.");
   }
-  return requestJson<SubjectStatusResponse>(
+  return requestJson(
     input,
     `/api/dashboard/sessions/${encodeURIComponent(sessionId)}/players/${encodeURIComponent(playerId)}/status`,
+    decodeStatus,
     signal,
   );
 }

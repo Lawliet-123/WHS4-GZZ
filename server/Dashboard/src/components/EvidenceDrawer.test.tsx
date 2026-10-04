@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DashboardEvent } from "../types";
-import { EvidenceDrawer, safeEvidenceImageUrl } from "./EvidenceDrawer";
+import { EvidenceDrawer, safeEvidenceImageUrl, sanitizeEvidence } from "./EvidenceDrawer";
 
 const event: DashboardEvent = {
   id: "event-1",
@@ -99,6 +99,114 @@ describe("EvidenceDrawer accessibility", () => {
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("클립보드 복사 실패"));
     expect(screen.getByRole("button", { name: "다시 복사" })).toBeTruthy();
+  });
+
+  it("shows a detail-load error in the drawer and exposes its retry action", () => {
+    const onRetry = vi.fn();
+    render(
+      <EvidenceDrawer
+        event={event}
+        error="이벤트 상세를 불러오지 못했습니다."
+        onRetry={onRetry}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("alert").textContent).toContain("이벤트 상세를 불러오지 못했습니다.");
+    fireEvent.click(screen.getByRole("button", { name: "상세 정보 다시 불러오기" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("recursively hides direct identifiers while retaining fingerprint fields in render and copy", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    const evidence = {
+      username: "alice",
+      computer_name: "DESKTOP-PRIVATE",
+      path_hash: "safe-path-fingerprint",
+      nested: {
+        window_title: "private window",
+        path: "C:\\Users\\alice\\secret.exe",
+        sensor_event_id: "sensor-42",
+      },
+      observations: [{ hostname: "private-host", module_id: "module-7" }],
+    };
+
+    render(<EvidenceDrawer event={{ ...event, evidence }} onClose={() => undefined} />);
+
+    expect(screen.getByText("민감 필드 5개 숨김")).toBeTruthy();
+    expect(screen.queryByText("alice")).toBeNull();
+    expect(screen.queryByText("DESKTOP-PRIVATE")).toBeNull();
+    expect(screen.getByText("safe-path-fingerprint")).toBeTruthy();
+    expect(screen.getAllByText(/sensor-42/).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "JSON 복사" }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledOnce());
+    const copied = JSON.parse(clipboardWrite.mock.calls[0]![0]) as { evidence: Record<string, unknown> };
+    expect(copied.evidence).toEqual({
+      path_hash: "safe-path-fingerprint",
+      nested: { sensor_event_id: "sensor-42" },
+      observations: [{ module_id: "module-7" }],
+    });
+  });
+
+  it("redacts absolute paths and repeated direct identifiers from free-form evidence, reasons and logs", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    render(<EvidenceDrawer event={{
+      ...event,
+      evidence: {
+        username: "alice",
+        detail: "alice loaded C:\\Users\\alice\\private.dll",
+      },
+      reasons: ["scanner found C:\\Users\\alice\\private.dll and hook bytes changed", "computer_name=DESKTOP-PRIVATE suspicious"],
+      log_excerpt: "user_name=bob; source=/home/alice/private.log result=blocked",
+    }} onClose={() => undefined} />);
+
+    expect(screen.queryByText(/C:\\Users\\alice/)).toBeNull();
+    expect(screen.queryByText(/\/home\/alice/)).toBeNull();
+    expect(screen.getAllByText(/redacted/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/result=blocked/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "JSON 복사" }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledOnce());
+    const copied = clipboardWrite.mock.calls[0]![0] as string;
+    expect(copied).not.toContain("C:\\Users\\alice");
+    expect(copied).not.toContain("/home/alice");
+    expect(copied).not.toContain("alice");
+    expect(copied).not.toContain("DESKTOP-PRIVATE");
+    expect(copied).not.toContain("user_name=bob");
+    expect(copied).toContain("and hook bytes changed");
+  });
+});
+
+describe("sanitizeEvidence", () => {
+  it("normalizes camelCase identifiers and preserves digest-like path keys", () => {
+    expect(sanitizeEvidence({
+      userName: "alice",
+      fullPath: "C:\\private.exe",
+      sourceImage: "C:\\Users\\alice\\source.dll",
+      target_image: "C:\\Games\\target.exe",
+      process_image: "C:\\Tools\\scanner.exe",
+      image: "C:\\Screenshots\\private.png",
+      executable: "C:\\Private\\guard.exe",
+      fullPathDigest: "digest-value",
+      pathSha256: "sha-value",
+      executable_hash: "executable-fingerprint",
+    })).toEqual({
+      evidence: {
+        fullPathDigest: "digest-value",
+        pathSha256: "sha-value",
+        executable_hash: "executable-fingerprint",
+      },
+      hiddenCount: 7,
+    });
   });
 });
 
