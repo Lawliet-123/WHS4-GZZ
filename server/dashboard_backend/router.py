@@ -35,8 +35,8 @@ def create_dashboard_router(service: DashboardService, *, verify_token):
             raise HTTPException(503, "Dashboard data is unavailable") from exc
 
     @router.get("/overview")
-    def overview(after_session: str = Query("", max_length=80), limit: int = Query(100, ge=1, le=200)):
-        return call(current_service().overview, after_session=after_session, limit=limit)
+    def overview(after_session: str = Query("", max_length=80), limit: int = Query(100, ge=1, le=200), session_id: str | None = Query(None, max_length=80), player_id: str | None = Query(None, max_length=80)):
+        return call(current_service().overview, after_session=after_session, limit=limit, session_id=session_id, player_id=player_id)
 
     @router.get("/events")
     def events(session_id: str | None = Query(None, max_length=80), player_id: str | None = Query(None, max_length=100), module: str | None = Query(None, max_length=80), submodule: str | None = Query(None, max_length=100), q: str | None = Query(None, max_length=200), cursor: str | None = Query(None, max_length=4096), limit: int = Query(100, ge=1, le=200), after_sequence: int = Query(0, ge=0)):

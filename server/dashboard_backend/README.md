@@ -1,6 +1,30 @@
 # 8-B Dashboard backend v2
 
-기준: 2026-10-04, main `65b5cea` (PR #91 서버 통합 및 #93 반영).
+기준: 2026-10-04, main `d9e4fd8` (PR #95 반영). Launcher Overview 상태 연결 수정.
+
+## Launcher Overview 상태 연결
+
+`launcher_heartbeat=False`, 고정 connection unknown, 빈 module_statuses를 수정했습니다. 기존 HeartbeatStore 읽기 함수를 이용하므로 C의 수신·저장·인증·server/main.py는 추가 수정하지 않습니다.
+
+- capability.launcher_heartbeat는 heartbeat 저장소가 연결되어 해당 상태를 조회할 수 있는지 나타냅니다. 실제 연결 여부는 connection 및 launcher_statuses로 확인합니다.
+- Launcher는 현재 송신 코드의 계약대로 `client_id=launcher-<시작ms>`와 components.launcher를 함께 가진 발신자로 식별합니다. 스캐너-only 하트비트는 Launcher 상태의 근거로 쓰지 않습니다.
+- 같은 session/player의 여러 실행은 client_id의 시작 시각이 가장 최신인 것을 선택합니다. 예전 프로세스의 지연 전송으로 최신 실행을 덮어쓰지 않습니다.
+- 최근 healthy는 connection.Launcher.state=online, 필수 구성 요소 문제는degraded, 수신 만료는stale, 종료 보고는stopped, 시작/정리 중은starting/stopping, 데이터 부족은unknown입니다.
+- freshness는 received_at_utc 기준이며 component age_ms와 수신 이후 경과시간도 반영합니다. 중복 ACK는freshness를 갱신하지 않습니다.
+- module_statuses를 현재 선택된 Launcher의 components로 채웁니다. session_id/player_id/client_id/status_id/last_seen_at을 함께 제공하므로 여러 PC의 같은 module id를 혼동하지 않습니다. launcher 본체도 포함합니다.
+- `/status`의 state와 launcher 필드에도 같은 판정 규칙을 적용합니다. source가 잘려 전체 목록을 읽지 못한 경우unknown으로 표시합니다.
+
+특정 PC 연결 상태는 다음처럼 조회합니다.
+
+```text
+GET /api/dashboard/overview?session_id=<세션>&player_id=<PC식별자>
+```
+
+두 인자는 함께 전달합니다. 이 필터는 연결·모듈 상태 표시 범위만 선택하며 세션/플레이어 목록과 counts의 기존 페이지 범위를 바꾸지 않습니다. 인자가 없으면 connection.Launcher는 반환된 세션 페이지의 각 session/player 상태를 요약하고 scope=returned_session_page로 명시합니다. 단일 PC가 아니라 여러 상태가 섞이면degraded로 표시하며 state_counts를 제공합니다. 전체 DB의 모든 과거 세션을 하나의 접속으로 합치지 않습니다.
+
+Receiver online의scope=local_detection_storage는 이번 요청에서 Shared feed 읽기가 성공했다는 뜻입니다. Scoring online의scope=local_scoring_read는 공개 snapshot 함수로 읽기 성공을 확인했다는 뜻입니다. 둘 모두 모든 원격 탐지기의 전송 성공이나 최종 판정의 정상 여부를 의미하지 않습니다. Scoring 읽기 실패는unavailable, feed 읽기 실패는 기존503으로 처리합니다.
+
+만료 설정은 기존 GZZ_DASHBOARD_STALE_AFTER_MS를 사용하며 기본값30000ms입니다. 네트워크가 끊긴 경우와 Launcher가 비정상 종료한 경우를 구분할 근거가 없으면stale로만 표시합니다.
 
 ## 이번 버전
 
@@ -89,7 +113,7 @@ events의 첫 응답은 items/next_cursor/has_more/through_sequence/index입니�
 
 overview는 limit/after_session으로 세션 페이지를 반환합니다. 탐지 없이 heartbeat만 있는 세션도 목록에서 발견할 수 있습니다. counts는 scope=indexed_events이며 이벤트가 있는 세션·PC 기준 수입니다. heartbeat만 있는 세션까지 포함한 전체 접속자 수로 사용하지 않습니다. players·assessments는 반환 세션 페이지에 한정됩니다.
 
-overview의 events/module_statuses는 빈 배열이며 별도 목록·status API를 사용합니다. 8-A의 임시 단일 overview 모델을 이에 맞춰 수정해야 합니다. 세션·PC 전체 aggregate status는 임의로 만들지 않고 판정은 assessments의 session/player 단위로 읽습니다.
+overview의 events는 빈 배열이며 별도 목록 API를 사용합니다. module_statuses는 위 Launcher Overview 규칙으로 채웁니다. 세션·PC 전체 보안 판정은 임의로 만들지 않고 assessments의 session/player 단위로 읽습니다.
 
 ## Heartbeat 연결 표시
 
@@ -97,7 +121,7 @@ C의 heartbeat 조회는 session_id+client_id, verdict 조회는 session_id+play
 
 8-B의 status는 session/player에 대응하는 발신자들을 조회합니다. 같은 player에 여러 client_id가 있어도 한 source로 합치지 않습니다. payload.status가 healthy여도 서버 received_at_utc가 만료되면 stale입니다. 중복 ACK는 생존 시각을 갱신하지 않습니다. component의 age_ms와 서버 수신 후 시간도 반영합니다.
 
-stopped 보고 없이 stale이면 네트워크 장애와 프로세스 비정상 종료를 단정하지 않습니다. input_signature heartbeat를 Launcher 전체 heartbeat로 간주하지 않습니다. source 범위 합의 전 전체 state는unknown입니다. connection의 Receiver/Scoring/Launcher도 측정 근거 없이online으로 채우지 않습니다.
+stopped 보고 없이 stale이면 네트워크 장애와 프로세스 비정상 종료를 단정하지 않습니다. input_signature heartbeat를 Launcher 전체 heartbeat로 간주하지 않습니다. 현재 Launcher 계약에 맞는 발신자가 있으면 위 규칙으로 상태를 제공합니다. Receiver/Scoring의 readiness scope와 Launcher 수신 freshness scope는 서로 구분합니다.
 
 ## 로컬 실행
 
