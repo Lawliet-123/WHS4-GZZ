@@ -7,12 +7,14 @@ import type {
   TimelineBucket,
   VerdictStatus,
 } from "./types";
+import { eventBelongsToModule, labelForModuleIdentifier } from "./moduleCatalog";
 
 export const defaultFilters: DashboardFilters = {
   sessionId: "ALL",
   playerId: "ALL",
   module: "ALL",
   submodule: "ALL",
+  eventKind: "ALL",
   verdict: "ALL",
   query: "",
 };
@@ -118,11 +120,12 @@ export function filterEvents(
   return events
     .filter((item) => filters.sessionId === "ALL" || item.session_id === filters.sessionId)
     .filter((item) => filters.playerId === "ALL" || item.player_id === filters.playerId)
-    .filter((item) => filters.module === "ALL" || item.module === filters.module)
+    .filter((item) => eventBelongsToModule(item, filters.module))
     .filter((item) => {
       if (filters.submodule === "ALL") return true;
       return item.evidence.submodule === filters.submodule;
     })
+    .filter((item) => filters.eventKind === "ALL" || item.event_kind === filters.eventKind)
     .filter((item) => {
       if (filters.verdict === "ALL") return true;
       return verdictBySubject.get(subjectKey(item.session_id, item.player_id)) === filters.verdict;
@@ -141,8 +144,9 @@ export function filterAssessments(
   filters: DashboardFilters,
 ): Assessment[] {
   const scopedEvents = events
-    .filter((item) => filters.module === "ALL" || item.module === filters.module)
-    .filter((item) => filters.submodule === "ALL" || item.evidence.submodule === filters.submodule);
+    .filter((item) => eventBelongsToModule(item, filters.module))
+    .filter((item) => filters.submodule === "ALL" || item.evidence.submodule === filters.submodule)
+    .filter((item) => filters.eventKind === "ALL" || item.event_kind === filters.eventKind);
   const relevantSubjects = new Set(
     scopedEvents.map((item) => subjectKey(item.session_id, item.player_id)),
   );
@@ -159,7 +163,8 @@ export function filterAssessments(
     if (filters.sessionId !== "ALL" && assessment.session_id !== filters.sessionId) return false;
     if (filters.playerId !== "ALL" && assessment.player_id !== filters.playerId) return false;
     if (filters.verdict !== "ALL" && assessment.status !== filters.verdict) return false;
-    if ((filters.module !== "ALL" || filters.submodule !== "ALL") && !relevantSubjects.has(subjectKey(assessment.session_id, assessment.player_id))) return false;
+    if ((filters.module !== "ALL" || filters.submodule !== "ALL" || filters.eventKind !== "ALL")
+      && !relevantSubjects.has(subjectKey(assessment.session_id, assessment.player_id))) return false;
     if (!query) return true;
     const haystack = [
       assessment.id,
@@ -246,7 +251,11 @@ export function humanizeModule(module: string): string {
   const labels: Record<string, string> = {
     esp: "ESP 접근 감시",
     external_access: "외부 접근",
+    external_process: "외부 프로세스",
     module_integrity: "DLL 무결성",
+    module_health: "프로세스 생존",
+    file_integrity: "자체 파일 무결성",
+    overlay_correlation: "오버레이 상관관계",
     noclip: "이동·충돌",
     aimbot: "입력 행동",
     autopaint: "자동 페인트",
@@ -256,9 +265,8 @@ export function humanizeModule(module: string): string {
     launcher: "Launcher",
     receiver: "Receiver",
     scoring: "Scoring",
-    kernel_watcher: "Kernel Watcher",
   };
-  return labels[module] ?? module.replaceAll("_", " ");
+  return labels[module] ?? labelForModuleIdentifier(module) ?? `미등록 · ${module.replaceAll("_", " ")}`;
 }
 
 export function humanizeReason(reason: string): string {

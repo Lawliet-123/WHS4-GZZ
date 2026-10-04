@@ -401,11 +401,32 @@ export async function loadSubjectDetail(
   playerId: string,
   signal?: AbortSignal,
 ): Promise<SubjectDetail> {
-  const [snapshot, status] = await Promise.all([
-    fetchSnapshot(input, sessionId, playerId, signal),
-    fetchSubjectStatus(input, sessionId, playerId, signal),
-  ]);
+  const requests = loadSubjectDetailParts(input, sessionId, playerId, signal);
+  const [snapshot, status] = await Promise.all([requests.snapshot, requests.status]);
   return { snapshot, status };
+}
+
+/**
+ * Start the scoring snapshot and runtime-status reads independently.
+ *
+ * A missing Scoring snapshot must not prevent a caller from rendering a valid
+ * Launcher heartbeat (and vice versa). New UI call sites should handle these
+ * promises separately. `loadSubjectDetail` remains as the all-or-nothing
+ * compatibility wrapper for existing consumers.
+ */
+export function loadSubjectDetailParts(
+  input: LiveConnectionInput,
+  sessionId: string,
+  playerId: string,
+  signal?: AbortSignal,
+): {
+  snapshot: Promise<SnapshotResponse>;
+  status: Promise<SubjectStatusResponse>;
+} {
+  return {
+    snapshot: fetchSnapshot(input, sessionId, playerId, signal),
+    status: fetchSubjectStatus(input, sessionId, playerId, signal),
+  };
 }
 
 export function loadEventDetail(

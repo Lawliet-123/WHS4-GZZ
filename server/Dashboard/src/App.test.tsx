@@ -16,8 +16,10 @@ afterEach(() => {
 describe("dashboard interactions", () => {
   it("shows operational data without the removed marketing and disclaimer copy", () => {
     render(<App />);
-    expect(screen.getByText("탐지 현황")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "탐지 대상" })).toBeTruthy();
+    expect(screen.getByText("통합 관제")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "플레이어 판정" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "보호 모듈" })).toBeTruthy();
+    expect(document.querySelectorAll(".module-overview-card")).toHaveLength(13);
     expect(screen.getAllByText("의심 근거 있음").length).toBeGreaterThan(0);
     expect(screen.queryByText("안티치트 관제 대시보드")).toBeNull();
     expect(screen.queryByText(/현재 보호 상태와 탐지 근거/)).toBeNull();
@@ -28,9 +30,23 @@ describe("dashboard interactions", () => {
   it("filters the subject list and event table by module", () => {
     render(<App />);
     fireEvent.change(screen.getByLabelText("모듈"), { target: { value: "external_access" } });
-    expect(screen.getAllByText(/external process requested game-memory modification/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/External process opened PROCESS_VM_WRITE handle/).length).toBeGreaterThan(0);
     expect(screen.queryByText("Collision Disabled Too Long")).toBeNull();
     expect(screen.getAllByText("player_042").length).toBeGreaterThan(0);
+  });
+
+  it("limits the player selector to the selected session and clears an incompatible player", () => {
+    render(<App />);
+    const sessionSelect = screen.getByLabelText("세션") as HTMLSelectElement;
+    const playerSelect = screen.getByLabelText("플레이어") as HTMLSelectElement;
+
+    fireEvent.change(sessionSelect, { target: { value: "demo_esp_001" } });
+    expect([...playerSelect.options].map((option) => option.value)).toEqual(["ALL", "player_042"]);
+
+    fireEvent.change(playerSelect, { target: { value: "player_042" } });
+    fireEvent.change(sessionSelect, { target: { value: "demo_noclip_001" } });
+    expect(playerSelect.value).toBe("ALL");
+    expect([...playerSelect.options].map((option) => option.value)).toEqual(["ALL", "player_013"]);
   });
 
   it("clears the selected subject when filters return no results", () => {
@@ -43,13 +59,13 @@ describe("dashboard interactions", () => {
 
   it("opens the actual shared-event fields in the detail drawer", () => {
     render(<App />);
-    const reason = screen.getAllByText("Overlay activity correlated")[0];
+    const reason = screen.getAllByText("external overlay window overlaps the game viewport")[0];
     const row = reason?.closest("tr");
     expect(row).toBeTruthy();
     fireEvent.click(row!);
-    expect(screen.getByRole("dialog", { name: "탐지 상세" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "이벤트 상세" })).toBeTruthy();
     expect(screen.getByText("공통 이벤트 JSON")).toBeTruthy();
-    expect(screen.getByText("submodule")).toBeTruthy();
+    expect(screen.getByText("event_type")).toBeTruthy();
     expect(screen.queryByText("비식별 Evidence")).toBeNull();
   });
 

@@ -1,6 +1,6 @@
-# MECCHA Dashboard
+# MECCHA 종합 안티치트 Dashboard
 
-Receiver, Scoring, Launcher와 탐지 모듈의 상태를 한 화면에서 조회하는 8-A React 프론트엔드다. ESP 단일 화면이 아니라 중앙 서버가 가진 세션·플레이어·최종 판정·공통 Event를 표시한다.
+Receiver가 받은 공통 Event, Scoring의 최종 판정, Launcher가 보고한 실행 상태를 한 화면에서 조회하는 8-A React 프론트엔드다. 특정 탐지기 하나를 위한 화면이 아니라 세션·플레이어·보호 모듈·탐지 채널·운영 상태를 함께 보는 종합 관제 화면이다.
 
 ## 실행
 
@@ -12,9 +12,9 @@ npm install
 npm run dev
 ```
 
-브라우저에서 `http://127.0.0.1:4173`을 연다. 개발 서버와 `npm run preview`의 `/dashboard-api` 프록시는 모두 기본적으로 `http://127.0.0.1:8002`의 FastAPI 서버로 전달된다.
+브라우저에서 `http://127.0.0.1:4173`을 연다. 개발 서버와 `npm run preview`의 `/dashboard-api` 프록시는 기본적으로 `http://127.0.0.1:8002`의 FastAPI 서버로 전달된다.
 
-검증 명령:
+검증 명령은 다음과 같다.
 
 ```powershell
 npm test -- --run
@@ -22,23 +22,72 @@ npm run build
 npm run preview
 ```
 
-## 화면 기능
+## 전체 데이터 흐름
 
-- Receiver·Scoring·Launcher 연결 상태
-- 세션·플레이어·이벤트·의심 판정 수
-- 세션·플레이어·모듈·최종 판정 필터와 통합 검색
-- 플레이어별 `SUSPICIOUS`, `INCONCLUSIVE`, `NO_ACTIVE_EVIDENCE`, `UNKNOWN` 표시
-- 근거 단위, 활성 모듈, 중복 보정, 평가 완료 여부
-- 최신 모듈 상태와 모듈별 `raw_score`
-- 세션 경과 기준 이벤트 흐름과 이벤트 표
-- 공통 Event 7필드, evidence, reasons, event ID 상세 조회 및 JSON 복사
-- Launcher와 필수 구성 요소의 서버 계산 상태
-- 5초 증분 polling, 수동 새로고침, 오류·빈 상태 처리
-- 데스크톱·태블릿·모바일 반응형 UI
+```text
+탐지기·LocalGuard·SelfDefense
+        ↓ 공통 7필드 Event
+Receiver → Shared 저장소 → Scoring → Dashboard backend
+                                        ↑
+Launcher heartbeat ─────────────────────┘
+                                        ↓
+                                  React Dashboard
+```
+
+- Receiver는 Event를 검증·저장하고 Scoring에 전달한다.
+- Scoring은 모듈별 원점수 의미, Replay calibration, 측정 가능 여부와 이력 조건을 반영해 최종 판정을 만든다.
+- Launcher heartbeat는 프로세스가 실제로 실행 중인지, 필수 구성 요소가 실패·중지·지연 상태인지 보고한다.
+- Dashboard는 실행 상태와 탐지 근거를 서로 다른 정보로 표시한다. 프로세스가 실행 중이라고 탐지가 발생한 것은 아니며, 양수 `raw_score`가 곧 최종 의심 판정인 것도 아니다.
+
+## Launcher 컴포넌트와 Event 채널
+
+Launcher는 본체 상태 외에 아래 13개 보호·탐지 컴포넌트를 보고한다. 컴포넌트 ID는 프로세스 실행 단위이고 Event의 `module`은 중앙 판정 채널이므로 이름과 개수가 항상 일치하지 않는다.
+
+| Launcher 컴포넌트 | 중앙 Event 채널 |
+| --- | --- |
+| `self_defense` | `selfdefense` 운영 이벤트 |
+| `kernel_watcher` | 현재 heartbeat 실행 상태 중심 |
+| `external_access` | `external_access`, `submodule=external_process` |
+| `module_integrity` | `external_access`, `submodule=module_integrity` |
+| `input_signature` | `localguard_yara`, `localguard_executable_hash` |
+| `memory_integrity` | `filesystem`, `injection`, `value_tamper`, `overlay_hook`, `godmode_runtime`, `noclip_runtime`, `aimbot_runtime` |
+| `whistle_spoofing` | `whistle`, `whistle_rpc` |
+| `aimbot` | `aimbot` |
+| `esp` | `esp` |
+| `godmode` | `godmode` |
+| `noclip` | `noclip` |
+| `autopaint` | `autopaint` |
+| `hide_anywhere` | `hide_anywhere` |
+
+`launcher` 컴포넌트는 위 13개와 별도로 Launcher 본체의 생존·정리 단계를 나타낸다. 화면은 이 실행 컴포넌트 목록과 Event 채널 목록을 합쳐 하나의 점수로 만들지 않는다.
+
+## 화면 구성
+
+- 전체 현황: Receiver·Scoring·Launcher 연결 상태, 인덱스 동기화, Event 범위
+- 세션·플레이어: 최종 판정별 대상 목록과 선택한 대상의 상세 상태
+- 모듈 관제: 13개 Launcher 컴포넌트의 실행·필수 여부·신선도와 전송 상태
+- 판정 근거: `SUSPICIOUS`, `INCONCLUSIVE`, `NO_ACTIVE_EVIDENCE`, `UNKNOWN`, 근거 단위와 미해결·보류·사용 불가 모듈
+- 정책 상태: 최신 원본 관측과 policy의 emission·측정 상태·주의사항
+- 타임라인: 서버 저장 `sequence`를 기준으로 탐지 Event와 운영 Event를 함께 표시
+- Event 로그: 세션·플레이어·모듈·submodule·Event 종류·판정 필터와 원본 evidence 상세
+
+`overview.counts.sessions`와 `players`는 `scope=indexed_events` 범위다. Event 없이 heartbeat만 수신한 대상은 목록과 실행 상태에는 나타날 수 있지만 이 숫자에는 포함되지 않는다.
+
+## 판정 표시 원칙
+
+- 최종 판정은 Scoring 응답을 그대로 사용한다.
+- `UNKNOWN`과 `INCONCLUSIVE`를 정상으로 바꾸지 않는다.
+- `NO_ACTIVE_EVIDENCE`는 현재 평가 범위에 활성 근거가 없다는 뜻이며 전체 PC의 정상 보증이 아니다.
+- 모듈마다 `raw_score` 생성식과 threshold가 다르므로 서로 합산하거나 같은 색 기준으로 비교하지 않는다.
+- `score`와 `confidence`가 `null`이면 임의의 숫자 위험도나 확률을 만들지 않는다.
+- `event_kind=operational`은 실행·보호 상태 기록이며 탐지 Event와 구분한다.
+- `time_basis=unknown`이면 정밀한 공통 시간축으로 단정하지 않고 서버 `sequence`를 기본 순서로 사용한다.
+
+현재 calibration에서 ESP와 `external_access`는 pending이다. 데모의 ESP 양수 관측은 확정 ACTIVE 근거가 아니라 `INCONCLUSIVE`로 표현한다. Noclip은 Replay-v1 threshold 3에 맞춰 최신 유효 `raw_score=3` 예시를 `SUSPICIOUS`로 표현한다.
 
 ## 데이터 연결
 
-기본 화면은 API 응답과 같은 형태의 합성 데이터다. 상단에는 작은 `DEMO` 배지만 표시한다. `연결` 버튼에서 서버 주소와 Dashboard Bearer token을 입력하면 실제 API 모드로 전환된다. 토큰은 React 상태에서만 사용하며 localStorage에 저장하지 않는다.
+초기 화면은 backend v2 응답 형태의 합성 데이터이며 상단 `DEMO` 배지로 구분한다. `연결`에서 서버 주소와 Dashboard Bearer token을 입력하면 LIVE 모드로 전환된다. 토큰은 React 메모리에만 두고 `localStorage`에 저장하지 않는다.
 
 사용 API:
 
@@ -47,37 +96,28 @@ GET /api/dashboard/overview
 GET /api/dashboard/events
 GET /api/dashboard/events/{event_id}
 GET /api/dashboard/sessions/{session_id}/players/{player_id}/snapshot
+GET /api/dashboard/sessions/{session_id}/players/{player_id}/history
 GET /api/dashboard/sessions/{session_id}/players/{player_id}/status
 Authorization: Bearer <GZZ_DASHBOARD_TOKEN>
 ```
 
-`overview.events`는 서버 설계상 빈 배열이므로 Event는 `/events`에서 별도로 읽는다. 초기 조회는 cursor 페이지를 이어서 가져오고, 자동 갱신은 마지막 `sequence` 이후 Event만 추가한다. 실서버 요청이 실패해도 합성 데이터로 자동 전환하지 않는다.
+`overview.events`는 의도적으로 빈 배열이며 Event는 `/events`에서 읽는다. Event cursor는 첫 응답의 `through_sequence`에 고정해 끝까지 읽고, 이후 polling은 마지막 `sequence`를 `after_sequence`로 전달한다. 실서버 오류를 합성 데이터로 자동 대체하지 않는다.
 
-## 표시 원칙
+운영 배포에서는 장기 Bearer token을 브라우저 bundle에 넣지 않는다. 중앙 FastAPI와 same-origin으로 배치한 BFF·reverse proxy 또는 별도의 Dashboard 세션 인증이 필요하다.
 
-- 최종 판정은 Scoring의 값을 그대로 사용한다.
-- `UNKNOWN`을 `NO_ACTIVE_EVIDENCE`로 바꾸지 않는다.
-- `score`와 `confidence`가 `null`이면 `—`로 표시한다.
-- 서로 다른 모듈의 `raw_score`를 합산하거나 0~100 점수를 만들지 않는다.
-- Event의 `timestamp_ms`는 세션 경과시간으로 표시하며 절대 시각을 추정하지 않는다.
-- Launcher 상태는 브라우저가 계산하지 않고 `/status`와 `overview`의 서버 계산값을 사용한다.
-- Receiver `online`은 로컬 detection 저장소 조회 성공, Scoring `online`은 로컬 scoring 조회 성공이라는 범위만 나타낸다.
-
-## 구조
+## 소스 구조
 
 ```text
 server/Dashboard/
 ├─ src/
-│  ├─ components/           연결 dialog, Event drawer, 공통 아이콘·배지
-│  ├─ api.ts                Dashboard v2 API와 Bearer 인증
+│  ├─ components/           연결 dialog, Event drawer, 공통 UI
+│  ├─ api.ts                Dashboard v2 API와 pagination
 │  ├─ domain.ts             필터·상태·표시 함수
-│  ├─ mockData.ts           실제 응답 구조의 합성 데이터
+│  ├─ mockData.ts           계약 기반 종합 관제 합성 데이터
 │  ├─ types.ts              Dashboard v2 타입
 │  ├─ App.tsx               화면 상태와 polling
 │  └─ styles.css            반응형 디자인
-├─ API_REQUIREMENTS.md      실제 API 계약 메모
-├─ DESIGN.md                화면 설계 근거
+├─ API_REQUIREMENTS.md      backend 계약과 표시 규칙
+├─ DESIGN.md                정보 구조와 UX 기준
 └─ vite.config.ts           4173 포트와 8002 프록시
 ```
-
-운영 배포에서는 장기 Bearer token을 브라우저 bundle에 포함하지 않고 same-origin BFF 또는 reverse proxy에서 인증을 처리해야 한다. 현재 backend capability상 evidence image는 제공되지 않는다.

@@ -149,7 +149,7 @@ export function EvidenceDrawer({
     <div className="drawer-layer" role="presentation" onMouseDown={(mouseEvent) => mouseEvent.target === mouseEvent.currentTarget && onClose()}>
       <aside ref={drawerRef} className="evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="evidence-title" tabIndex={-1}>
         <div className="drawer-head">
-          <div><span className="section-kicker">이벤트 #{event.sequence}</span><h2 id="evidence-title">탐지 상세</h2></div>
+          <div><span className="section-kicker">이벤트 #{event.sequence}</span><h2 id="evidence-title">이벤트 상세</h2></div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="상세 패널 닫기"><Icon name="close" /></button>
         </div>
 
@@ -157,7 +157,7 @@ export function EvidenceDrawer({
           {loading && <div className="drawer-loading"><span className="spinner" /> 상세 정보를 불러오는 중</div>}
           <div className="drawer-summary">
             <div className="drawer-badges">
-              <StatusBadge tone={operational ? "info" : event.raw_score > 0 ? "danger" : "neutral"}>{operational ? "운영 상태" : "탐지 이벤트"}</StatusBadge>
+              <StatusBadge tone={operational ? "info" : "neutral"}>{operational ? "운영 이벤트" : "관측 이벤트"}</StatusBadge>
               <span className="module-pill">{humanizeModule(event.module)}</span>
             </div>
             <h3>{event.player_id}</h3>
@@ -177,9 +177,9 @@ export function EvidenceDrawer({
           </section>
 
           <section className="detail-section" aria-labelledby="reason-title">
-            <h4 id="reason-title">탐지 이유</h4>
+            <h4 id="reason-title">이벤트 이유</h4>
             {event.reasons.length > 0
-              ? <ul className="reason-list">{event.reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>
+              ? <ul className={`reason-list ${operational ? "operational" : "observed"}`}>{event.reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>
               : <div className="empty-inline">기록된 이유 없음</div>}
           </section>
 
@@ -194,7 +194,7 @@ export function EvidenceDrawer({
 
           {showEvidenceImage && (
             <section className="detail-section" aria-labelledby="evidence-image-title">
-              <h4 id="evidence-image-title">증거 이미지</h4>
+              <h4 id="evidence-image-title">첨부 이미지</h4>
               {evidenceImagesAvailable === false ? (
                 <div className="empty-inline">서버 미지원</div>
               ) : event.evidence_image === null ? (
@@ -204,7 +204,7 @@ export function EvidenceDrawer({
               ) : (
                 <figure className="evidence-image">
                   {!imageFailed
-                    ? <img src={evidenceImageUrl} alt={`${event.player_id} 탐지 증거`} loading="lazy" referrerPolicy="no-referrer" onError={() => setImageFailed(true)} />
+                    ? <img src={evidenceImageUrl} alt={`${event.player_id} 이벤트 첨부`} loading="lazy" referrerPolicy="no-referrer" onError={() => setImageFailed(true)} />
                     : <div className="empty-inline">이미지 로드 실패</div>}
                   <figcaption>
                     <a href={evidenceImageUrl} target="_blank" rel="noopener noreferrer">원본 열기</a>

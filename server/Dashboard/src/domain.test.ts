@@ -49,13 +49,13 @@ describe("Dashboard backend-v2 domain", () => {
     const filters = {
       ...defaultFilters,
       module: "esp",
-      verdict: "SUSPICIOUS" as const,
-      query: "vm_read",
+      verdict: "INCONCLUSIVE" as const,
+      query: "window_overlap",
     };
     const result = filterEvents(demoEvents.items, demoOverview, filters);
     expect(result).toHaveLength(1);
     expect(result[0]?.module).toBe("esp");
-    expect(result[0]?.raw_score).toBe(3);
+    expect(result[0]?.raw_score).toBe(1);
     expect(demoOverview.assessments.find((item) => item.session_id === "demo_esp_001")?.score).toBeNull();
   });
 
@@ -70,9 +70,46 @@ describe("Dashboard backend-v2 domain", () => {
     const result = filterAssessments(demoOverview.assessments, demoEvents.items, {
       ...defaultFilters,
       module: "noclip",
-      verdict: "INCONCLUSIVE",
+      verdict: "SUSPICIOUS",
     });
     expect(result.map((item) => item.id)).toEqual(["demo_noclip_001:player_013"]);
+  });
+
+  it("filters logical services through their real Event aliases and submodules", () => {
+    const moduleIntegrity = filterEvents(demoEvents.items, demoOverview, {
+      ...defaultFilters,
+      module: "module_integrity",
+    });
+    expect(moduleIntegrity).toHaveLength(1);
+    expect(moduleIntegrity[0]).toMatchObject({
+      module: "external_access",
+      evidence: { submodule: "module_integrity" },
+    });
+
+    const externalAccess = filterEvents(demoEvents.items, demoOverview, {
+      ...defaultFilters,
+      module: "external_access",
+    });
+    expect(externalAccess).toHaveLength(1);
+    expect(externalAccess[0]).toMatchObject({
+      module: "external_access",
+      evidence: { submodule: "external_process" },
+    });
+  });
+
+  it("separates detection and operational Events without inventing a verdict", () => {
+    const operational = filterEvents(demoEvents.items, demoOverview, {
+      ...defaultFilters,
+      eventKind: "operational",
+    });
+    expect(operational.length).toBeGreaterThan(0);
+    expect(operational.every((item) => item.event_kind === "operational")).toBe(true);
+
+    const subjects = filterAssessments(demoOverview.assessments, demoEvents.items, {
+      ...defaultFilters,
+      eventKind: "operational",
+    });
+    expect(subjects.map((item) => item.id)).toEqual(["demo_esp_001:player_042"]);
   });
 
   it("keeps only subjects whose assessment or event actually matches the search query", () => {

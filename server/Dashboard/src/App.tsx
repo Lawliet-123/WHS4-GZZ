@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { DashboardApiError, loadDashboardBundle, loadEventDetail, loadSubjectDetail } from "./api";
+import { DashboardApiError, fetchSnapshot, fetchSubjectStatus, loadDashboardBundle, loadEventDetail } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { EvidenceDrawer } from "./components/EvidenceDrawer";
 import { Icon, type IconName } from "./components/Icon";
@@ -10,6 +10,7 @@ import {
   filterAssessments,
   filterEvents,
   formatAge,
+  formatDateTime,
   formatElapsed,
   humanizeModule,
   humanizeReason,
@@ -17,12 +18,16 @@ import {
   verdictMeta,
 } from "./domain";
 import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
+import { buildModuleRollups, moduleFilterOptions, protectionModuleGroupLabels } from "./moduleCatalog";
 import type {
   Assessment,
   DashboardEvent,
   DashboardBundle,
   DashboardFilters,
   LiveConnectionInput,
+  ModuleFilterOption,
+  ModuleRollup,
+  ProtectionModuleGroup,
   OverviewResponse,
   SnapshotResponse,
   SubjectStatusResponse,
@@ -57,11 +62,55 @@ function EmptyState({ title, action }: { title: string; action?: ReactNode }) {
   return <div className="empty-state"><Icon name="database" size={22} /><strong>{title}</strong>{action}</div>;
 }
 
+interface PolicySignalView {
+  state: string;
+  emission: string;
+  issues: string[];
+}
+
+function policySignals(snapshot: SnapshotResponse | null): Map<string, PolicySignalView> {
+  const result = new Map<string, PolicySignalView>();
+  const policy = snapshot?.policy;
+  if (!policy || !Array.isArray(policy.modules)) return result;
+  for (const entry of policy.modules) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const state = record.state && typeof record.state === "object" ? record.state as Record<string, unknown> : {};
+    const evaluation = record.evaluation && typeof record.evaluation === "object" ? record.evaluation as Record<string, unknown> : {};
+    const signal = evaluation.signal && typeof evaluation.signal === "object" ? evaluation.signal as Record<string, unknown> : {};
+    const view: PolicySignalView = {
+      state: typeof signal.state === "string" ? signal.state : "UNKNOWN",
+      emission: typeof signal.emission === "string" ? signal.emission : "unknown",
+      issues: Array.isArray(signal.issues) ? signal.issues.filter((value): value is string => typeof value === "string") : [],
+    };
+    if (typeof state.event_id === "string") result.set(state.event_id, view);
+    if (typeof state.module === "string") result.set(state.module, view);
+  }
+  return result;
+}
+
+function policyMeta(state: string): { label: string; tone: string } {
+  const values: Record<string, { label: string; tone: string }> = {
+    ACTIVE: { label: "활성 근거", tone: "danger" },
+    INACTIVE: { label: "비활성", tone: "success" },
+    ADVISORY: { label: "참고 근거", tone: "warning" },
+    DEFERRED: { label: "평가 보류", tone: "warning" },
+    UNRESOLVED: { label: "미해결", tone: "warning" },
+    UNAVAILABLE: { label: "평가 불가", tone: "neutral" },
+    RAW_FRACTION_ONLY: { label: "원본 비율", tone: "info" },
+    POLICY_NOT_CALIBRATED: { label: "정책 미보정", tone: "warning" },
+    UNKNOWN_MODULE: { label: "정책 없음", tone: "neutral" },
+  };
+  return values[state] ?? { label: state.replaceAll("_", " "), tone: "neutral" };
+}
+
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [activeId, setActiveId] = useState(() => window.location.hash.slice(1) || "overview");
   const links: { id: string; label: string; icon: IconName }[] = [
-    { id: "overview", label: "현황", icon: "dashboard" },
-    { id: "subjects", label: "탐지 대상", icon: "user" },
+    { id: "overview", label: "종합 현황", icon: "dashboard" },
+    { id: "modules", label: "보호 모듈", icon: "shield" },
+    { id: "sessions", label: "세션", icon: "timeline" },
+    { id: "subjects", label: "플레이어 판정", icon: "user" },
     { id: "events", label: "이벤트", icon: "timeline" },
     { id: "systems", label: "시스템", icon: "server" },
   ];
@@ -91,32 +140,53 @@ function ConnectionStrip({ overview }: { overview: OverviewResponse }) {
     all_returned_sessions: "전체 세션 상태",
   };
   return (
-    <section className="connection-strip" id="systems" aria-label="시스템 연결 상태">
+    <section className="connection-strip" aria-label="시스템 연결 상태">
       {Object.entries(overview.connection).map(([name, value]) => {
         const meta = connectionMeta(value.state);
         const scope = scopes[value.scope] ?? value.scope.replaceAll("_", " ");
         return <div className="connection-item" key={name} title={`${name} · ${scope}`}><span className={`connection-light tone-${meta.tone}`} /><div><span>{name}</span><strong>{meta.label}</strong><small>{scope}</small></div></div>;
       })}
-      <div className="connection-scope"><Icon name="activity" size={15} /><span>인덱스 #{overview.index.through_sequence}</span>{overview.index.catching_up && <StatusBadge tone="warning">동기화 중</StatusBadge>}</div>
+      <div className="connection-scope">
+        <Icon name="activity" size={15} />
+        <span>인덱스 #{overview.index.through_sequence}</span>
+        {overview.connection.Launcher.observed_pairs !== undefined && <span>{overview.connection.Launcher.connected_pairs ?? 0}/{overview.connection.Launcher.observed_pairs} 연결</span>}
+        {overview.index.catching_up && <StatusBadge tone="warning">동기화 중</StatusBadge>}
+      </div>
     </section>
   );
 }
 
-function FilterBar({ filters, overview, modules, onChange, onReset }: {
+function FilterBar({ filters, overview, modules, submodules, onChange, onReset }: {
   filters: DashboardFilters;
   overview: OverviewResponse;
-  modules: string[];
+  modules: ModuleFilterOption[];
+  submodules: string[];
   onChange: (filters: DashboardFilters) => void;
   onReset: () => void;
 }) {
   const update = <K extends keyof DashboardFilters>(key: K, value: DashboardFilters[K]) => onChange({ ...filters, [key]: value });
+  const visiblePlayers = filters.sessionId === "ALL"
+    ? overview.players
+    : overview.players.filter((player) => player.session_ids.includes(filters.sessionId));
+  const updateSession = (sessionId: string) => {
+    const selectedPlayerIsAvailable = sessionId === "ALL"
+      || filters.playerId === "ALL"
+      || overview.players.some((player) => player.id === filters.playerId && player.session_ids.includes(sessionId));
+    onChange({
+      ...filters,
+      sessionId,
+      playerId: selectedPlayerIsAvailable ? filters.playerId : "ALL",
+    });
+  };
   const changed = JSON.stringify(filters) !== JSON.stringify(defaultFilters);
   return (
     <div className="filter-bar">
-      <label className="search-field"><Icon name="search" size={16} /><input aria-label="검색" value={filters.query} onChange={(event) => update("query", event.target.value)} placeholder="ID 또는 탐지 이유 검색" /></label>
-      <label className="select-field"><span>세션</span><select value={filters.sessionId} onChange={(event) => update("sessionId", event.target.value)}><option value="ALL">전체</option>{overview.sessions.map((session) => <option value={session.id} key={session.id}>{session.id}</option>)}</select></label>
-      <label className="select-field"><span>플레이어</span><select value={filters.playerId} onChange={(event) => update("playerId", event.target.value)}><option value="ALL">전체</option>{overview.players.map((player) => <option value={player.id} key={player.id}>{player.display_name}</option>)}</select></label>
-      <label className="select-field"><span>모듈</span><select value={filters.module} onChange={(event) => update("module", event.target.value)}><option value="ALL">전체</option>{modules.map((module) => <option value={module} key={module}>{humanizeModule(module)}</option>)}</select></label>
+      <label className="search-field"><Icon name="search" size={16} /><input aria-label="검색" value={filters.query} onChange={(event) => update("query", event.target.value)} placeholder="ID 또는 이벤트 근거 검색" /></label>
+      <label className="select-field"><span>세션</span><select aria-label="세션" value={filters.sessionId} onChange={(event) => updateSession(event.target.value)}><option value="ALL">전체</option>{overview.sessions.map((session) => <option value={session.id} key={session.id}>{session.id}</option>)}</select></label>
+      <label className="select-field"><span>플레이어</span><select aria-label="플레이어" value={filters.playerId} onChange={(event) => update("playerId", event.target.value)}><option value="ALL">전체</option>{visiblePlayers.map((player) => <option value={player.id} key={player.id}>{player.display_name}</option>)}</select></label>
+      <label className="select-field"><span>보호 모듈</span><select aria-label="모듈" value={filters.module} onChange={(event) => update("module", event.target.value)}><option value="ALL">전체</option>{(["protection", "local_guard", "gameplay", "unmapped"] as ProtectionModuleGroup[]).map((group) => { const options = modules.filter((module) => module.group === group); return options.length ? <optgroup label={protectionModuleGroupLabels[group]} key={group}>{options.map((module) => <option value={module.value} key={module.value}>{module.label}</option>)}</optgroup> : null; })}</select></label>
+      <label className="select-field"><span>세부 채널</span><select aria-label="세부 채널" value={filters.submodule} onChange={(event) => update("submodule", event.target.value)}><option value="ALL">전체</option>{submodules.map((submodule) => <option value={submodule} key={submodule}>{humanizeModule(submodule)}</option>)}</select></label>
+      <label className="select-field"><span>이벤트 유형</span><select aria-label="이벤트 유형" value={filters.eventKind} onChange={(event) => update("eventKind", event.target.value as DashboardFilters["eventKind"])}><option value="ALL">전체</option><option value="detection">관측</option><option value="operational">운영</option></select></label>
       <label className="select-field"><span>판정</span><select value={filters.verdict} onChange={(event) => update("verdict", event.target.value as DashboardFilters["verdict"])}><option value="ALL">전체</option>{(Object.keys(verdictMeta) as VerdictStatus[]).map((status) => <option value={status} key={status}>{verdictMeta[status].label}</option>)}</select></label>
       {changed && <button className="filter-reset" type="button" onClick={onReset}><Icon name="close" size={14} />초기화</button>}
     </div>
@@ -128,7 +198,7 @@ function SubjectList({ assessments, selected, onSelect }: { assessments: Assessm
   const sorted = [...assessments].sort((a, b) => ranks[a.status] - ranks[b.status] || a.player_id.localeCompare(b.player_id));
   return (
     <div className="subject-list-wrap">
-      <SectionHeader title="탐지 대상" count={sorted.length} />
+      <SectionHeader title="플레이어 판정" count={sorted.length} />
       {sorted.length ? <div className="subject-list">{sorted.map((item) => {
         const key = `${item.session_id}:${item.player_id}`;
         const meta = verdictMeta[item.status];
@@ -185,20 +255,31 @@ function VerdictView({ assessment, snapshot }: { assessment: Assessment | null; 
 
 function ModuleStateList({ snapshot }: { snapshot: SnapshotResponse | null }) {
   const modules = snapshot?.modules ?? [];
+  const signals = policySignals(snapshot);
   return (
     <div className="module-state-list">
-      <SectionHeader title="모듈 상태" count={modules.length} />
-      {modules.length ? modules.map((item) => <article className="module-state-card" key={item.event_id}><div><span className="module-glyph"><Icon name="activity" size={16} /></span><div><strong>{humanizeModule(item.module)}</strong><small>{formatElapsed(item.timestamp_ms)} · #{item.sequence}</small></div></div><span className={`raw-chip ${item.raw_score > 0 ? "active" : ""}`}>raw {item.raw_score}</span>{item.reasons.length > 0 && <p>{item.reasons[0]}</p>}</article>) : <EmptyState title="모듈 상태 없음" />}
+      <SectionHeader title="최신 탐지 신호" count={modules.length} />
+      {modules.length ? modules.map((item) => {
+        const signal = signals.get(item.event_id) ?? signals.get(item.module);
+        const meta = signal ? policyMeta(signal.state) : null;
+        return <article className="module-state-card" key={item.event_id}><div><span className="module-glyph"><Icon name="activity" size={16} /></span><div><strong>{humanizeModule(item.module)}</strong><small>{formatElapsed(item.timestamp_ms)} · #{item.sequence}</small></div></div><span className="raw-chip">raw {item.raw_score}</span>{meta && <div className="module-policy-row"><StatusBadge tone={meta.tone}>{meta.label}</StatusBadge><span>{signal?.emission}</span></div>}{item.reasons.length > 0 && <p>{item.reasons[0]}</p>}{signal?.issues[0] && <p className="policy-issue">{signal.issues[0]}</p>}</article>;
+      }) : <EmptyState title="탐지 신호 없음" />}
     </div>
   );
 }
 
 function Timeline({ events, onSelect }: { events: DashboardEvent[]; onSelect: (event: DashboardEvent) => void }) {
-  const latest = [...events].sort((a, b) => b.sequence - a.sequence).slice(0, 7);
+  const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
+  const latest = [...ordered].reverse().slice(0, 7);
+  const firstSequence = ordered[0]?.sequence ?? 0;
+  const lastSequence = ordered.at(-1)?.sequence ?? firstSequence;
+  const sequenceSpan = Math.max(1, lastSequence - firstSequence);
   return (
     <Panel className="timeline-panel">
-      <SectionHeader title="최근 흐름" count={events.length} />
-      {latest.length ? <ol className="timeline-list">{latest.map((event) => <li key={event.id}><button type="button" onClick={() => onSelect(event)}><time>{formatElapsed(event.timestamp_ms)}</time><span className={`timeline-dot ${event.raw_score > 0 ? "active" : ""}`} /><span><strong>{humanizeModule(event.module)}</strong><small>{event.reasons[0] ?? (event.event_kind === "operational" ? "운영 상태" : "이벤트")}</small></span><span className="raw-chip">{event.raw_score}</span><Icon name="chevron" size={15} /></button></li>)}</ol> : <EmptyState title="표시할 이벤트 없음" />}
+      <SectionHeader title="세션 타임라인" count={events.length} />
+      {ordered.length > 0 && <div className="sequence-timeline" aria-label="서버 수신 순서 타임라인"><div className="sequence-rail">{ordered.map((event) => <button type="button" className={`sequence-point kind-${event.event_kind}`} style={{ left: `${((event.sequence - firstSequence) / sequenceSpan) * 100}%` }} key={event.id} onClick={() => onSelect(event)} title={`${humanizeModule(event.module)} · #${event.sequence}`} aria-label={`${humanizeModule(event.module)} ${event.event_kind === "operational" ? "운영" : "관측"} 이벤트 #${event.sequence}`} />)}</div><div className="sequence-labels"><span>#{firstSequence}</span><strong>서버 수신 순서</strong><span>#{lastSequence}</span></div></div>}
+      <div className="timeline-subhead">최근 Event</div>
+      {latest.length ? <ol className="timeline-list">{latest.map((event) => <li key={event.id}><button type="button" onClick={() => onSelect(event)}><time title={event.time_basis === "unknown" ? "시간 기준 미확인" : event.time_basis}>{formatElapsed(event.timestamp_ms)}</time><span className={`timeline-dot kind-${event.event_kind}`} /><span><strong>{humanizeModule(event.module)}</strong><small>{event.reasons[0] ?? (event.event_kind === "operational" ? "운영 상태" : "관측 신호")}</small></span><span className={`event-kind kind-${event.event_kind}`}>{event.event_kind === "operational" ? "운영" : "관측"}</span><Icon name="chevron" size={15} /></button></li>)}</ol> : <EmptyState title="표시할 이벤트 없음" />}
     </Panel>
   );
 }
@@ -213,9 +294,101 @@ function SubjectSystemStatus({ status }: { status: SubjectStatusResponse | null 
       <SectionHeader title="실행 상태" action={<StatusBadge tone={launcher.tone}>{launcher.label}</StatusBadge>} />
       <div className="health-summary"><div><span>Launcher</span><strong>{status.launcher.connected ? "연결" : "미연결"}</strong></div><div><span>상태 소스</span><strong>{status.sources.length}{status.has_more_sources ? "+" : ""}</strong></div></div>
       {statusReason && status.state !== "healthy" && <div className="health-note"><Icon name="info" size={14} /><span>{statusReason}</span></div>}
-      <div className="component-list">{components.slice(0, 6).map((component) => { const meta = connectionMeta(component.state); return <div className="component-row" key={`${component.sourceId}:${component.id}`}><span className={`connection-light tone-${meta.tone}`} /><div><strong>{humanizeModule(component.id)}</strong><small>{status.sources.length > 1 ? `${component.sourceId} · ` : ""}{formatAge(component.effective_age_ms)}</small></div><span>{meta.label}</span></div>; })}</div>
-      {components.length > 6 && <div className="health-more">구성 요소 {components.length - 6}개 더 있음</div>}
+      <div className="component-list">{components.sort((a, b) => (a.state === "failed" || a.state === "degraded" || a.state === "stale" ? -1 : 0) - (b.state === "failed" || b.state === "degraded" || b.state === "stale" ? -1 : 0)).map((component) => { const meta = connectionMeta(component.state); return <div className="component-row" key={`${component.sourceId}:${component.id}`}><span className={`connection-light tone-${meta.tone}`} /><div><strong>{humanizeModule(component.id)}</strong><small>{status.sources.length > 1 ? `${component.sourceId} · ` : ""}{formatAge(component.effective_age_ms)}{component.required ? " · 필수" : ""}</small></div><span>{meta.label}</span></div>; })}</div>
+      {status.sources.map((source) => source.transport.configured && (source.transport.consecutive_failures > 0 || source.transport.last_error_type) ? <div className="transport-note" key={source.client_id}><strong>{source.client_id}</strong><span>전송 실패 {source.transport.consecutive_failures}회{source.transport.last_error_type ? ` · ${source.transport.last_error_type}` : ""}</span></div> : null)}
       {status.has_more_sources && <div className="health-more">일부 상태 소스만 표시됨</div>}
+    </Panel>
+  );
+}
+
+function ModuleOperations({ rollups, selected, onSelect }: { rollups: ModuleRollup[]; selected: string; onSelect: (moduleId: string) => void }) {
+  const groups: ProtectionModuleGroup[] = ["protection", "local_guard", "gameplay", "unmapped"];
+  const runtimeMeta = (state: ModuleRollup["state"]) => state === "not_reported"
+    ? { label: "미보고", tone: "neutral" }
+    : connectionMeta(state);
+  return (
+    <Panel id="modules" className="module-operations-panel">
+      <SectionHeader title="보호 모듈" count={rollups.filter((item) => item.known).length} />
+      <div className="module-group-grid">{groups.map((group) => {
+        const items = rollups.filter((item) => item.group === group);
+        if (!items.length) return null;
+        return <section className={`module-group group-${group}`} key={group}><header><h3>{protectionModuleGroupLabels[group]}</h3><span>{items.length}</span></header><div>{items.map((item) => {
+          const meta = runtimeMeta(item.state);
+          return <button type="button" className={`module-overview-card ${selected === item.id ? "selected" : ""}`} key={item.id} onClick={() => onSelect(item.id)} aria-label={`${item.label} 필터 적용`}>
+            <span className={`module-status-mark tone-${meta.tone}`}><Icon name={item.group === "protection" ? "shield" : item.group === "local_guard" ? "server" : "activity"} size={17} /></span>
+            <span className="module-overview-copy"><strong>{item.label}</strong><small>{item.description}</small></span>
+            <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
+            <span className="module-overview-metrics"><span>상태 대상 {item.components.length}</span><span>Event {item.eventCount}</span><span>Event 대상 {item.subjectCount}</span></span>
+          </button>;
+        })}</div></section>;
+      })}</div>
+    </Panel>
+  );
+}
+
+function SessionOverview({ overview, onSelect }: { overview: OverviewResponse; onSelect: (sessionId: string) => void }) {
+  const launcherBySession = new Map<string, OverviewResponse["launcher_statuses"]>();
+  for (const status of overview.launcher_statuses) {
+    const entries = launcherBySession.get(status.session_id) ?? [];
+    entries.push(status);
+    launcherBySession.set(status.session_id, entries);
+  }
+  const rank: Record<VerdictStatus, number> = { SUSPICIOUS: 0, INCONCLUSIVE: 1, UNKNOWN: 2, NO_ACTIVE_EVIDENCE: 3 };
+  const sessionStatus = (sessionId: string, fallback: VerdictStatus): VerdictStatus => [...overview.assessments]
+    .filter((item) => item.session_id === sessionId)
+    .sort((a, b) => rank[a.status] - rank[b.status])[0]?.status ?? fallback;
+  const sorted = [...overview.sessions].sort((a, b) => {
+    return rank[sessionStatus(a.id, a.status)] - rank[sessionStatus(b.id, b.status)] || a.id.localeCompare(b.id);
+  });
+  return (
+    <Panel id="sessions" className="session-panel">
+      <SectionHeader title="세션 현황" count={sorted.length} />
+      {sorted.length ? <div className="session-table-wrap"><table className="session-table"><thead><tr><th>세션</th><th>플레이어</th><th>이벤트 채널</th><th>Launcher</th><th>최종 판정</th><th>관측 길이</th></tr></thead><tbody>{sorted.map((session) => {
+        const sessionVerdict = sessionStatus(session.id, session.status);
+        const verdict = verdictMeta[sessionVerdict];
+        const launchers = launcherBySession.get(session.id) ?? [];
+        const connected = launchers.filter((item) => item.connected).length;
+        const launcherState = launchers.some((item) => ["failed", "unavailable"].includes(item.state)) ? "failed"
+          : launchers.some((item) => ["degraded", "stale"].includes(item.state)) ? "degraded"
+            : launchers.length > 0 && connected === launchers.length ? "healthy" : "unknown";
+        const launcherMeta = connectionMeta(launcherState);
+        return <tr key={session.id} onClick={() => onSelect(session.id)}><td><button className="session-link" type="button" onClick={() => onSelect(session.id)}>{session.id}</button></td><td>{session.player_ids.length}</td><td>{session.module_ids.length}</td><td><StatusBadge tone={launcherMeta.tone}>{launchers.length ? `${connected}/${launchers.length} 연결` : launcherMeta.label}</StatusBadge></td><td><StatusBadge tone={verdict.tone}>{verdict.short}</StatusBadge></td><td>{session.max_observed_timestamp_ms === null ? "—" : formatElapsed(session.max_observed_timestamp_ms)}</td></tr>;
+      })}</tbody></table></div> : <EmptyState title="세션 데이터 없음" />}
+    </Panel>
+  );
+}
+
+function SystemOverview({ overview }: { overview: OverviewResponse }) {
+  const launcherCounts = overview.connection.Launcher.state_counts ?? {};
+  const capabilityLabels: Array<[keyof OverviewResponse["capabilities"], string]> = [
+    ["final_assessment", "최종 판정"],
+    ["launcher_heartbeat", "Launcher Heartbeat"],
+    ["heartbeat_query", "Heartbeat 조회"],
+    ["evidence_images", "증거 이미지"],
+  ];
+  return (
+    <Panel className="system-overview-panel">
+      <SectionHeader title="통합 상태" count={overview.launcher_statuses.length} />
+      <div className="system-overview-grid">
+        <div className="system-block">
+          <h3>Launcher 연결</h3>
+          <div className="system-facts"><div><span>관측 대상</span><strong>{overview.connection.Launcher.observed_pairs ?? overview.launcher_statuses.length}</strong></div><div><span>연결 대상</span><strong>{overview.connection.Launcher.connected_pairs ?? overview.launcher_statuses.filter((item) => item.connected).length}</strong></div><div><span>Heartbeat</span><strong>{overview.capabilities.launcher_heartbeat ? "지원" : "미지원"}</strong></div></div>
+          {Object.keys(launcherCounts).length > 0 && <div className="state-counts">{Object.entries(launcherCounts).map(([state, count]) => { const meta = connectionMeta(state); return <span className={`tone-${meta.tone}`} key={state}>{meta.label} {count}</span>; })}</div>}
+        </div>
+        <div className="system-block">
+          <h3>Backend 기능</h3>
+          <div className="capability-list">{capabilityLabels.map(([key, label]) => <div key={key}><span>{label}</span><StatusBadge tone={overview.capabilities[key] ? "success" : "neutral"}>{overview.capabilities[key] ? "사용 가능" : "미지원"}</StatusBadge></div>)}</div>
+        </div>
+        <div className="system-block">
+          <h3>Event 인덱스</h3>
+          <div className="system-facts"><div><span>처리 순번</span><strong>#{overview.index.through_sequence}</strong></div><div><span>상태</span><strong>{overview.index.catching_up ? "동기화 중" : "최신"}</strong></div><div><span>운영 Event</span><strong>{overview.counts.operational_events}</strong></div></div>
+        </div>
+      </div>
+      <div className="fleet-status-list"><h3>클라이언트 상태</h3>{overview.launcher_statuses.length ? overview.launcher_statuses.map((item) => {
+        const meta = connectionMeta(item.state);
+        const source = item.source;
+        return <div className="fleet-status-row" key={`${item.session_id}:${item.player_id}`}><span className={`connection-light tone-${meta.tone}`} /><div><strong>{item.player_id}</strong><small>{item.session_id}</small></div><StatusBadge tone={meta.tone}>{meta.label}</StatusBadge><div><strong>{source?.client_id ?? "소스 없음"}</strong><small>{source ? `${formatDateTime(source.received_at_utc)} · seq ${source.sequence}` : item.reason || "Heartbeat 없음"}</small></div><div><strong>{source?.transport.configured ? "중앙 전송" : "로컬 상태"}</strong><small>{source?.transport.configured ? `실패 ${source.transport.consecutive_failures}회 · 마지막 #${source.transport.last_success_sequence ?? "—"}` : "전송 미설정"}</small></div></div>;
+      }) : <EmptyState title="Launcher 상태 없음" />}</div>
     </Panel>
   );
 }
@@ -226,8 +399,8 @@ function EventsTable({ events, page, onPage, onSelect }: { events: DashboardEven
   const visible = events.slice((safePage - 1) * EVENT_PAGE_SIZE, safePage * EVENT_PAGE_SIZE);
   return (
     <Panel id="events" className="events-panel">
-        <SectionHeader title="탐지 이벤트" count={events.length} />
-      {visible.length ? <><div className="table-wrap"><table><thead><tr><th>시간</th><th>대상</th><th>모듈</th><th>탐지 이유</th><th>Raw</th><th /></tr></thead><tbody>{visible.map((event) => <tr key={event.id} onClick={() => onSelect(event)}><td><span className="time-cell">{formatElapsed(event.timestamp_ms)}</span></td><td><strong>{event.player_id}</strong><small>{event.session_id}</small></td><td><span className="module-pill">{humanizeModule(event.module)}</span></td><td><strong>{event.reasons[0] ?? (event.event_kind === "operational" ? "운영 상태" : "—")}</strong><small>#{event.sequence}</small></td><td><span className={`raw-chip ${event.raw_score > 0 ? "active" : ""}`}>{event.raw_score}</span></td><td><button type="button" className="row-open" aria-label={`${event.player_id} ${humanizeModule(event.module)} 이벤트 #${event.sequence} 상세 보기`}><Icon name="chevron" size={15} /></button></td></tr>)}</tbody></table></div><div className="pagination"><span>{(safePage - 1) * EVENT_PAGE_SIZE + 1}–{Math.min(safePage * EVENT_PAGE_SIZE, events.length)} / {events.length}</span><div><button type="button" onClick={() => onPage(safePage - 1)} disabled={safePage === 1}>이전</button><span>{safePage} / {pageCount}</span><button type="button" onClick={() => onPage(safePage + 1)} disabled={safePage === pageCount}>다음</button></div></div></> : <EmptyState title="조건에 맞는 이벤트 없음" />}
+        <SectionHeader title="전체 이벤트" count={events.length} />
+      {visible.length ? <><div className="table-wrap"><table><thead><tr><th>시간</th><th>유형</th><th>대상</th><th>채널</th><th>근거</th><th>Raw</th><th /></tr></thead><tbody>{visible.map((event) => <tr key={event.id} onClick={() => onSelect(event)}><td><span className="time-cell" title={event.time_basis === "unknown" ? "시간 기준 미확인" : event.time_basis}>{formatElapsed(event.timestamp_ms)}</span></td><td><span className={`event-kind kind-${event.event_kind}`}>{event.event_kind === "operational" ? "운영" : "관측"}</span></td><td><strong>{event.player_id}</strong><small>{event.session_id}</small></td><td><span className="module-pill">{humanizeModule(event.module)}</span>{typeof event.evidence.submodule === "string" && <small>{humanizeModule(event.evidence.submodule)}</small>}</td><td><strong>{event.reasons[0] ?? (event.event_kind === "operational" ? "운영 상태" : "—")}</strong><small>#{event.sequence}</small></td><td><span className="raw-chip">{event.raw_score}</span></td><td><button type="button" className="row-open" aria-label={`${event.player_id} ${humanizeModule(event.module)} 이벤트 #${event.sequence} 상세 보기`}><Icon name="chevron" size={15} /></button></td></tr>)}</tbody></table></div><div className="pagination"><span>{(safePage - 1) * EVENT_PAGE_SIZE + 1}–{Math.min(safePage * EVENT_PAGE_SIZE, events.length)} / {events.length}</span><div><button type="button" onClick={() => onPage(safePage - 1)} disabled={safePage === 1}>이전</button><span>{safePage} / {pageCount}</span><button type="button" onClick={() => onPage(safePage + 1)} disabled={safePage === pageCount}>다음</button></div></div></> : <EmptyState title="조건에 맞는 이벤트 없음" />}
     </Panel>
   );
 }
@@ -260,7 +433,9 @@ export default function App() {
   const eventControllerRef = useRef<AbortController | null>(null);
   const eventRequestRef = useRef(0);
 
-  const modules = useMemo(() => [...new Set([...events.map((event) => event.module), ...overview.sessions.flatMap((session) => session.module_ids)])].sort(), [events, overview.sessions]);
+  const modules = useMemo(() => moduleFilterOptions(events), [events]);
+  const submodules = useMemo(() => [...new Set(events.map((event) => typeof event.evidence.submodule === "string" ? event.evidence.submodule : "").filter(Boolean))].sort(), [events]);
+  const moduleRollups = useMemo(() => buildModuleRollups(events, overview.module_statuses), [events, overview.module_statuses]);
   const filteredEvents = useMemo(() => filterEvents(events, overview.assessments, filters), [events, filters, overview.assessments]);
   const filteredAssessments = useMemo(() => filterAssessments(overview.assessments, events, filters), [events, filters, overview.assessments]);
   const selectedAssessment = filteredAssessments.find((item) => item.id === selectedKey) ?? filteredAssessments[0] ?? null;
@@ -284,20 +459,26 @@ export default function App() {
       return () => controller.abort();
     }
 
-    void loadSubjectDetail(connection, assessment.session_id, assessment.player_id, controller.signal)
+    void fetchSnapshot(connection, assessment.session_id, assessment.player_id, controller.signal)
       .then((detail) => {
         if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
-        const snapshotKey = subjectKey(detail.snapshot.session_id, detail.snapshot.player_id);
-        const statusKey = subjectKey(detail.status.session_id, detail.status.player_id);
-        if (snapshotKey !== expectedKey || statusKey !== expectedKey) {
-          throw new DashboardApiError("선택한 대상과 다른 상세 응답이 도착했습니다.");
-        }
-        setSnapshot(detail.snapshot);
-        setSubjectStatus(detail.status);
+        if (subjectKey(detail.session_id, detail.player_id) !== expectedKey) throw new DashboardApiError("선택한 대상과 다른 판정 응답이 도착했습니다.");
+        setSnapshot(detail);
       })
       .catch((caught) => {
         if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
-        setError(caught instanceof DashboardApiError ? caught.message : "대상 상세 정보를 불러오지 못했습니다.");
+        setError(caught instanceof DashboardApiError ? caught.message : "대상 판정 정보를 불러오지 못했습니다.");
+      });
+
+    void fetchSubjectStatus(connection, assessment.session_id, assessment.player_id, controller.signal)
+      .then((detail) => {
+        if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
+        if (subjectKey(detail.session_id, detail.player_id) !== expectedKey) throw new DashboardApiError("선택한 대상과 다른 실행 상태 응답이 도착했습니다.");
+        setSubjectStatus(detail);
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
+        setError(caught instanceof DashboardApiError ? caught.message : "대상 실행 상태를 불러오지 못했습니다.");
       });
 
     return () => controller.abort();
@@ -425,16 +606,18 @@ export default function App() {
   }, []);
 
   const suspiciousCount = overview.assessments.filter((item) => item.status === "SUSPICIOUS").length;
+  const inconclusiveCount = overview.assessments.filter((item) => item.status === "INCONCLUSIVE").length;
+  const unhealthyModuleCount = moduleRollups.filter((item) => item.known && ["degraded", "failed", "stale", "stopped"].includes(item.state)).length;
 
   return (
     <div className="app-shell">
       <Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} />
       <main className="main-shell">
         <header className="topbar">
-          <div className="topbar-title"><button className="menu-button" type="button" onClick={() => setMenuOpen(true)} aria-label="메뉴 열기"><Icon name="menu" /></button><div><strong>탐지 현황</strong></div></div>
+          <div className="topbar-title"><button className="menu-button" type="button" onClick={() => setMenuOpen(true)} aria-label="메뉴 열기"><Icon name="menu" /></button><div><strong>통합 관제</strong></div></div>
           <div className="topbar-actions">
             <StatusBadge tone={mode === "demo" ? "info" : "success"}>{mode === "demo" ? "DEMO" : "LIVE"}</StatusBadge>
-            <span className="last-query">{new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(lastQueryAt)}</span>
+            <time className="last-query" dateTime={lastQueryAt.toISOString()} aria-label={`마지막 갱신 ${lastQueryAt.toLocaleString("ko-KR")}`}>{new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(lastQueryAt)}</time>
             {mode === "live" && <label className="auto-toggle"><input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} /><span aria-hidden="true" /><b>5초 갱신</b></label>}
             <button className="icon-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-label="새로고침"><Icon name="refresh" className={refreshing ? "spin" : ""} /></button>
             {mode === "live" && <button className="button button-quiet desktop-action" type="button" onClick={useDemo}>시연 보기</button>}
@@ -446,14 +629,21 @@ export default function App() {
           {error && <div className="error-banner" role="alert"><Icon name="alert" /><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="오류 닫기"><Icon name="close" size={16} /></button></div>}
           {loadWarning && <div className="error-banner warning-banner" role="status"><Icon name="info" /><span>{loadWarning}</span><button type="button" onClick={() => setLoadWarning(null)} aria-label="안내 닫기"><Icon name="close" size={16} /></button></div>}
           <ConnectionStrip overview={overview} />
-          <FilterBar filters={filters} overview={overview} modules={modules} onChange={setFilters} onReset={() => setFilters(defaultFilters)} />
 
           <section className="summary-grid" aria-label="요약">
-            <SummaryCard icon="timeline" label="세션" value={overview.counts.sessions} tone="blue" />
-            <SummaryCard icon="user" label="플레이어" value={overview.counts.players} tone="violet" />
-            <SummaryCard icon="database" label="이벤트" value={overview.counts.events} tone="navy" />
-            <SummaryCard icon="alert" label="의심 판정" value={suspiciousCount} tone="red" />
+            <SummaryCard icon="timeline" label="조회 세션" value={overview.sessions.length} tone="blue" />
+            <SummaryCard icon="user" label="조회 플레이어" value={overview.players.length} tone="violet" />
+            <SummaryCard icon="database" label="기록 Event" value={overview.counts.events} tone="navy" />
+            <SummaryCard icon="activity" label="운영 Event" value={overview.counts.operational_events} tone="green" />
+            <SummaryCard icon="alert" label="검토 대상" value={suspiciousCount + inconclusiveCount} tone="red" />
+            <SummaryCard icon="clock" label="모듈 이상" value={unhealthyModuleCount} tone="amber" />
           </section>
+
+          <ModuleOperations rollups={moduleRollups} selected={filters.module} onSelect={(moduleId) => { setFilters({ ...filters, module: filters.module === moduleId ? "ALL" : moduleId }); document.getElementById("events")?.scrollIntoView({ behavior: "smooth" }); }} />
+
+          <FilterBar filters={filters} overview={overview} modules={modules} submodules={submodules} onChange={setFilters} onReset={() => setFilters(defaultFilters)} />
+
+          <SessionOverview overview={overview} onSelect={(sessionId) => { setFilters({ ...filters, sessionId, playerId: "ALL" }); document.getElementById("subjects")?.scrollIntoView({ behavior: "smooth" }); }} />
 
           <Panel id="subjects" className="workspace-panel">
             <div className="workspace-grid"><SubjectList assessments={filteredAssessments} selected={selectedAssessment?.id ?? ""} onSelect={setSelectedKey} /><VerdictView assessment={selectedAssessment} snapshot={visibleSnapshot} /><ModuleStateList snapshot={visibleSnapshot} /></div>
@@ -461,6 +651,7 @@ export default function App() {
 
           <div className="insight-grid"><Timeline events={subjectEvents} onSelect={(event) => void openEvent(event)} /><SubjectSystemStatus status={visibleSubjectStatus} /></div>
           <EventsTable events={filteredEvents} page={page} onPage={setPage} onSelect={(event) => void openEvent(event)} />
+          <div id="systems"><SystemOverview overview={overview} /></div>
         </div>
       </main>
 

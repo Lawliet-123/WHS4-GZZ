@@ -28,6 +28,29 @@ afterEach(() => {
 });
 
 describe("EvidenceDrawer accessibility", () => {
+  it("presents a positive raw score as an observation, not a server verdict", () => {
+    render(<EvidenceDrawer event={event} onClose={() => undefined} />);
+
+    expect(screen.getByRole("dialog", { name: "이벤트 상세" })).toBeTruthy();
+    const badge = screen.getByText("관측 이벤트");
+    expect(badge.classList.contains("tone-neutral")).toBe(true);
+    expect(badge.classList.contains("tone-danger")).toBe(false);
+    expect(screen.queryByText("탐지 이벤트")).toBeNull();
+  });
+
+  it("uses event_kind, not raw_score, for operational presentation", () => {
+    render(
+      <EvidenceDrawer
+        event={{ ...event, raw_score: 9, event_kind: "operational" }}
+        onClose={() => undefined}
+      />,
+    );
+
+    const badge = screen.getByText("운영 이벤트");
+    expect(badge.classList.contains("tone-info")).toBe(true);
+    expect(badge.classList.contains("tone-danger")).toBe(false);
+  });
+
   it("moves focus into the dialog, closes with Escape and restores trigger focus", () => {
     function Harness() {
       const [open, setOpen] = useState(false);
@@ -97,7 +120,7 @@ describe("EvidenceDrawer image handling", () => {
       />,
     );
 
-    const image = screen.getByRole("img", { name: "player_042 탐지 증거" });
+    const image = screen.getByRole("img", { name: "player_042 이벤트 첨부" });
     expect(image.getAttribute("src")).toBe(new URL("/evidence/player-042.png", window.location.href).toString());
     const link = screen.getByRole("link", { name: "원본 열기" });
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");

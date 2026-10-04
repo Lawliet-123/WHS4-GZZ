@@ -42,6 +42,8 @@ export type ConnectionState =
 
 export type DashboardEventKind = "detection" | "operational";
 
+export type DashboardEventKindFilter = "ALL" | DashboardEventKind;
+
 export interface FinalVerdict {
   version: string;
   session_id: string;
@@ -187,6 +189,83 @@ export interface ModuleStatus {
   details: Record<string, unknown>;
 }
 
+export type ProtectionModuleId =
+  | "self_defense"
+  | "kernel_watcher"
+  | "external_access"
+  | "module_integrity"
+  | "input_signature"
+  | "memory_integrity"
+  | "whistle_spoofing"
+  | "aimbot"
+  | "esp"
+  | "godmode"
+  | "noclip"
+  | "autopaint"
+  | "hide_anywhere";
+
+export type ProtectionModuleGroup =
+  | "protection"
+  | "local_guard"
+  | "gameplay"
+  | "unmapped";
+
+export interface ProtectionModuleEventAlias {
+  module: string;
+  /**
+   * When supplied, the alias only belongs to this service for the listed
+   * `evidence.submodule` values. Specific aliases win over module-only aliases.
+   */
+  submodules?: readonly string[];
+}
+
+export interface ProtectionModuleCatalogEntry {
+  id: ProtectionModuleId;
+  label: string;
+  group: Exclude<ProtectionModuleGroup, "unmapped">;
+  description: string;
+  /** Launcher heartbeat component IDs owned by this logical service. */
+  componentIds: readonly string[];
+  /** Shared Event module/submodule identities emitted by this service. */
+  eventAliases: readonly ProtectionModuleEventAlias[];
+}
+
+export interface ResolvedProtectionModule {
+  /** Catalog ID, or `unknown:<raw module>` for an unmapped Event. */
+  id: string;
+  label: string;
+  group: ProtectionModuleGroup;
+  description: string;
+  known: boolean;
+  rawModule: string;
+  submodule: string | null;
+}
+
+export type ModuleRollupState = ComponentStatus | "not_reported";
+
+export interface ModuleRollup {
+  id: string;
+  label: string;
+  group: ProtectionModuleGroup;
+  description: string;
+  known: boolean;
+  state: ModuleRollupState;
+  eventCount: number;
+  detectionCount: number;
+  operationalCount: number;
+  subjectCount: number;
+  /** Timestamp from the highest-sequence Event in this rollup. */
+  latestEventAt: number | null;
+  components: ModuleStatus[];
+}
+
+export interface ModuleFilterOption {
+  value: string;
+  label: string;
+  group: ProtectionModuleGroup;
+  known: boolean;
+}
+
 export interface TransportStatus {
   configured: boolean;
   consecutive_failures: number;
@@ -318,6 +397,7 @@ export interface DashboardFilters {
   playerId: string;
   module: string;
   submodule: string;
+  eventKind: DashboardEventKindFilter;
   verdict: "ALL" | VerdictStatus;
   query: string;
 }
