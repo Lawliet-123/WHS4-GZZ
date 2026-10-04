@@ -167,7 +167,16 @@ _ITEMS = (
         ),
     ),
     ModuleCalibration("localguard_yara", "pending", None),
-    ModuleCalibration("overlay_hook", "pending", None),
+    ModuleCalibration(
+        "overlay_hook",
+        "threshold",
+        60,
+        note=(
+            "PR #104: game-scope confirmed untrusted hookers "
+            "(unsigned/forged/untrusted) use threshold 60; "
+            "controlled harness and unverifiable signatures are advisory."
+        ),
+    ),
     ModuleCalibration("godmode_runtime", "pending", None),
     ModuleCalibration("noclip_runtime", "pending", None),
     ModuleCalibration("aimbot_runtime", "pending", None),
@@ -179,12 +188,107 @@ CALIBRATIONS: Mapping[str, ModuleCalibration] = MappingProxyType(
 )
 
 
+_OVERLAY_ACTIVE_SIGNATURES = frozenset({
+    "서명없음",
+    "위조",
+    "신뢰안됨",
+})
+
+
 def get_calibration(module: str) -> ModuleCalibration | None:
     """등록된 module calibration을 반환한다.
 
     None은 '정상'이라는 뜻이 아니라 calibration config 자체에 없는 신규 module이다.
     """
     return CALIBRATIONS.get(module)
+
+
+def resolve_calibration(
+    module: str,
+    *,
+    raw_score: float,
+    evidence: Mapping[str, object],
+) -> ModuleCalibration | None:
+    """Event evidence까지 반영한 실제 calibration을 반환한다.
+
+    overlay_hook은 PR #104 structured evidence를 사용해서
+    실제 비신뢰 hook과 검증 불가, controlled harness를 구분한다.
+    """
+    base = get_calibration(module)
+
+    if module != "overlay_hook" or base is None:
+        return base
+
+    # 정상 측정 0점은 그대로 INACTIVE 판정할 수 있다.
+    if float(raw_score) == 0:
+        return base
+
+    meta = evidence.get("meta")
+    if not isinstance(meta, dict):
+        return ModuleCalibration(
+            "overlay_hook",
+            "pending",
+            None,
+            note=(
+                "Positive legacy overlay event lacks PR #104 "
+                "structured metadata."
+            ),
+        )
+
+    scope = meta.get("measurement_scope")
+
+    # controlled harness는 calibration 검증 자료일 뿐
+    # 실제 운영 위험도에는 넣지 않는다.
+    if scope == "controlled_harness":
+        return ModuleCalibration(
+            "overlay_hook",
+            "advisory",
+            None,
+            note="Controlled harness is calibration evidence only.",
+        )
+
+    if scope != "game":
+        return ModuleCalibration(
+            "overlay_hook",
+            "pending",
+            None,
+            note="Positive overlay event has unknown measurement scope.",
+        )
+
+    hookers = meta.get("untrusted_hookers")
+    if not isinstance(hookers, list) or not hookers:
+        return ModuleCalibration(
+            "overlay_hook",
+            "pending",
+            None,
+            note="Positive game event lacks structured untrusted_hookers.",
+        )
+
+    signatures = {
+        item.get("signature")
+        for item in hookers
+        if isinstance(item, dict)
+    }
+
+    # 실제 비신뢰 서명 근거가 하나라도 있으면 threshold 60 적용.
+    if signatures & _OVERLAY_ACTIVE_SIGNATURES:
+        return base
+
+    # 확인불가는 hook은 관측됐지만 신뢰 검증 자체가 실패한 경우.
+    if signatures and signatures <= {"확인불가"}:
+        return ModuleCalibration(
+            "overlay_hook",
+            "advisory",
+            None,
+            note="Hook observed but signer trust could not be verified.",
+        )
+
+    return ModuleCalibration(
+        "overlay_hook",
+        "pending",
+        None,
+        note="Unknown overlay signature evidence contract.",
+    )
 
 
 def require_calibration(module: str) -> ModuleCalibration:

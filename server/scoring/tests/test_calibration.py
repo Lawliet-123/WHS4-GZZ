@@ -6,6 +6,7 @@ from server.scoring.calibration import (
     CALIBRATION_VERSION,
     get_calibration,
     require_calibration,
+    resolve_calibration,
 )
 
 
@@ -23,6 +24,7 @@ class CalibrationTests(unittest.TestCase):
             "value_tamper": ("threshold", 100),
             "noclip": ("threshold", 3),
             "localguard_executable_hash": ("threshold", 1),
+            "overlay_hook": ("threshold", 60),
         }
 
         for module, (mode, threshold) in expected.items():
@@ -78,6 +80,84 @@ class CalibrationTests(unittest.TestCase):
                 self.assertFalse(calibration.calibrated)
                 self.assertIsNone(calibration.meets_threshold(0))
                 self.assertIsNone(calibration.meets_threshold(100))
+
+    def test_overlay_normal_zero_uses_base_threshold(self):
+        calibration = resolve_calibration(
+            "overlay_hook",
+            raw_score=0,
+            evidence={},
+        )
+
+        self.assertEqual(calibration.mode, "threshold")
+        self.assertEqual(calibration.threshold, 60)
+        self.assertFalse(calibration.meets_threshold(0))
+
+    def test_overlay_controlled_harness_is_advisory(self):
+        calibration = resolve_calibration(
+            "overlay_hook",
+            raw_score=100,
+            evidence={
+                "meta": {
+                    "measurement_scope": "controlled_harness",
+                    "untrusted_hookers": [
+                        {"signature": "서명없음", "render": True},
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+
+    def test_overlay_unverifiable_game_hook_is_advisory(self):
+        calibration = resolve_calibration(
+            "overlay_hook",
+            raw_score=60,
+            evidence={
+                "meta": {
+                    "measurement_scope": "game",
+                    "untrusted_hookers": [
+                        {"signature": "확인불가", "render": False},
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+
+    def test_overlay_confirmed_untrusted_game_hook_uses_threshold(self):
+        for signature in ("서명없음", "위조", "신뢰안됨"):
+            with self.subTest(signature=signature):
+                calibration = resolve_calibration(
+                    "overlay_hook",
+                    raw_score=60,
+                    evidence={
+                        "meta": {
+                            "measurement_scope": "game",
+                            "untrusted_hookers": [
+                                {
+                                    "signature": signature,
+                                    "render": False,
+                                },
+                            ],
+                        },
+                    },
+                )
+
+                self.assertEqual(calibration.mode, "threshold")
+                self.assertEqual(calibration.threshold, 60)
+                self.assertTrue(calibration.meets_threshold(60))
+
+    def test_overlay_legacy_positive_without_meta_stays_pending(self):
+        calibration = resolve_calibration(
+            "overlay_hook",
+            raw_score=60,
+            evidence={},
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertIsNone(calibration.threshold)
 
     def test_unknown_module_is_distinct_from_pending(self):
         self.assertIsNone(get_calibration("future_detector"))
