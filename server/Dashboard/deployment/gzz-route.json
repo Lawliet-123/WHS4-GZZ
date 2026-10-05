@@ -1,0 +1,10 @@
+{
+  "name": "GZZ frontend",
+  "enabled": true,
+  "srcSyntax": "regex",
+  "routeType": "rewrite",
+  "route": {
+    "src": "^/GZZ(?:/(.*))?$",
+    "dest": "https://gzz-dashboard-frontend.vercel.app/GZZ/$1"
+  }
+}

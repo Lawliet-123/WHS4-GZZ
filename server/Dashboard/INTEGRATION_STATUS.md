@@ -2,6 +2,21 @@
 
 이 문서는 8-A 화면이 종합 안티치트 관제 역할을 하기 위해 현재 연결할 수 있는 범위와, 8-B·Receiver·Scoring·Launcher 쪽에서 추가로 확정해야 하는 범위를 구분한다. 화면에 보인다는 이유만으로 아직 없는 서버 기능을 구현된 것처럼 표시하지 않는다.
 
+## 2026-10-06 실제 HTTP·브라우저 확인
+
+최신 main `31dc833`을 기준으로 backend v2와 이후 Launcher 수정을 유지한 상태에서 확인했다. 전달받은 이전 v2 ZIP으로 현재 서버·Scoring을 덮어쓰지 않았다.
+
+- 프론트: 166개 테스트, 일반 build와 공개용 `build:gzz` 통과.
+- 서버 회귀: Dashboard backend 47, Receiver 30, Scoring 385, Shared 48, 총 510개 테스트 통과.
+- `server.dashboard_backend.smoke`: 실제 `server.main`을 임시 저장소·loopback HTTP로 실행해 합성 7건의 저장·Scoring·기존 C API·신규 조회·Launcher 상태 확인.
+- 실제 React LIVE 화면: overview, 별도 이벤트 목록·상세, snapshot, GodMode 이력, heartbeat status 조회 확인. 합성 입력으로 서버가 반환한 SUSPICIOUS / INCONCLUSIVE / NO_ACTIVE_EVIDENCE / UNKNOWN을 확인했다.
+- `assessment_complete`, 근거 2개·활성 모듈 2개, reason codes와 null 점수·신뢰도의 미제공 표시 확인. heartbeat-only 대상은 판정 데이터 없음·UNKNOWN이며 정상으로 변환하지 않았다.
+- 새 Event를 Receiver에 추가한 뒤 새로고침 버튼 없이 5초 polling으로 목록 6→7건과 판정 NO_ACTIVE_EVIDENCE→SUSPICIOUS 반영 확인. 이후 polling에도 중복 증가하지 않았다.
+- 잘못된 테스트 인증은 오류로 표시하고, 이미 연결된 상태의 인증 실패에서는 마지막 LIVE 자료와 지연 표시를 유지했다. 빈 이벤트 목록을 장애 메시지로 표시하지 않았다. 임시 서버가 자연 종료된 뒤에도 마지막 7건을 유지하고 LIVE 지연·갱신 실패·API 오류를 표시했으며 DEMO로 자동 전환하지 않았다.
+- Noclip의 숫자 `blocked_path`가 경로 개인정보 필터에 걸려 사라지는 오류 수정. Noclip의 최상위 0/1·boolean 근거만 보존하며 문자열 경로와 다른 민감 키는 계속 숨긴다.
+
+이 기록은 **합성 입력을 실제 서버·브라우저로 연결한 검증**이다. 실제 게임·치트·운영 서버를 사용한 종단 시험은 아니며 공개 `/GZZ/`의 운영 API 연결을 의미하지 않는다. 캡처와 재현 방법은 [보고 근거](./docs/report-evidence/REPORT_EVIDENCE.md)를 참고한다.
+
 ## 현재 프론트에서 연결된 범위
 
 - Receiver, Scoring, Launcher 연결 상태와 Event 인덱스 상태
@@ -15,9 +30,14 @@
 - 연결·상세 조회 오류를 해당 dialog·drawer 안에서 표시
 - Dashboard v2 응답의 핵심 중첩 구조를 런타임에 검증하고 계약 불일치 시 안전하게 중단
 - Evidence 화면·JSON 복사 전 직접 식별 필드와 자유 문자열의 절대 경로 제거
-- 스크롤 위치와 좌측 메뉴 활성 항목 동기화
+- 독립 페이지 탐색, 주소 직접 접속·새로고침·뒤로/앞으로 이동
+- 플레이어 상세 탭, 키보드 방향키·Home·End 탐색
+- 개요·이벤트의 공통 SOC 표, 수신 순서·원점수·명시적 severity 정렬/필터
+- 조사 패널의 현재 대상 판정·평가 완료 여부·근거·활성 모듈·reason codes와 플레이어 화면 이동
+- 로드된 세션·플레이어 판정 분포와 탐지기별 관측 건수, 그래프에서 필터 목록으로 이동
+- 선택 세션의 서버 수신 순번 구간별 관측 건수, 0점 이하·양수 관측 구분
 
-필터는 상단 요약, 세션, 플레이어, 타임라인, Event 표, Launcher 대상 목록에 같은 범위로 적용한다. 모듈 카드는 다른 모듈로 다시 이동할 수 있도록 `보호 모듈` 차원만 제외한 나머지 범위에서 서로 비교한다. 모듈의 실행 상태는 Event 필터와 별개이므로 현재 조회 대상의 heartbeat component를 사용한다.
+필터는 세션·플레이어·타임라인·Event 표·Launcher 대상 목록에 같은 범위로 적용하며 페이지 이동 시 유지한다. 종합 현황은 필터와 관계없이 전체 조회 범위를 보여주고, 요약에서 목록으로 들어갈 때 필터를 초기화한다. 모듈 표는 다른 모듈로 이동할 수 있도록 `보호 모듈` 차원만 제외한 나머지 범위에서 비교한다. 모듈의 실행 상태는 현재 조회 대상의 heartbeat component를 사용한다.
 
 ## 프론트에서 임의로 만들지 않는 값
 
@@ -27,6 +47,9 @@
 - `raw_score`를 모듈끼리 더한 종합 점수
 - `timestamp_ms`의 시간 기준이 불명확한 경우의 실제 시각
 - stale heartbeat만으로 추정한 종료 원인
+- 원점수로 환산한 Critical/High/Medium/Low severity
+- 서버에 없는 사건 처리 상태·담당자·제재 이력
+- 모든 PC를 대표하는 전역 활성 클라이언트 수
 
 현재 세션 표의 판정은 서버의 세션 판정이 아니라 **그 세션에서 가장 우선 검토가 필요한 플레이어 판정 요약**이다. `max_observed_timestamp_ms`는 세션 길이가 아니라 **최대 관측 시각**으로 표시한다.
 
@@ -55,6 +78,12 @@
 6. 개인정보 제거
    - 프론트도 알려진 직접 식별 Evidence 키와 reason·log의 절대 경로를 숨기지만, 임의 형식 문자열의 모든 개인정보를 판별할 수는 없다.
    - Receiver 또는 Dashboard backend 응답 단계에서 allowlist 기반 제거를 한 번 더 적용해야 한다.
+
+7. SOC 조회 필드
+   - 현재 Shared 7필드와 Dashboard v2에는 공통 severity와 workflow 상태가 없다.
+   - 선택적 evidence.severity는 4개 표준값만 표시하되 필수 계약으로 강제하지 않는다. 미제공을 0 또는 Low로 바꾸지 않는다.
+   - Event 표의 대상 판정은 해당 세션·플레이어의 현재 Scoring 상태이며 Event별 처리 상태가 아니다.
+   - 클라이언트는 최신 Launcher source.client_id로 표시하며 Event 발신자와의 상관관계는 추가 계약이 필요하다.
 
 ## Launcher·모듈 등록 확인 사항
 

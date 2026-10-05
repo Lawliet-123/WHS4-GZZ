@@ -1,6 +1,6 @@
 # 8-B Dashboard backend v2
 
-기준: 2026-10-04, main `d9e4fd8` (PR #95 반영). Launcher Overview 상태 연결 수정.
+API 기준: backend v2와 Launcher Overview 상태 연결 수정. 2026-10-06 통합 검증 기준은 main `31dc833`이며 React 화면은 `server/Dashboard`에 있다.
 
 ## Launcher Overview 상태 연결
 
@@ -30,7 +30,7 @@ Receiver online의scope=local_detection_storage는 이번 요청에서 Shared fe
 
 C의 `server/main.py`에 8-B 조회 라우터를 추가 등록하고, B의 conservative-v1 판정을 연결했습니다. C의 기존 `/health`, `/api/dashboard/heartbeat/{session_id}/{client_id}`, `/api/dashboard/verdict/{session_id}/{player_id}`는 그대로 유지합니다.
 
-이번 변경은 로컬 브랜치의 코드입니다. 팀 GitHub에 push·PR·배포하지 않았습니다. C가 보고한 GodMode 실게임 E2E와 이번 합성 입력 HTTP 검증은 구분합니다.
+backend v2와 이후 Launcher 상태 연결은 현재 main에 반영되어 있습니다. React 화면과의 검증 및 실행 방법은 [Dashboard README](../Dashboard/README.md)를 함께 확인합니다. C가 보고한 GodMode 실게임 E2E와 합성 입력 HTTP·브라우저 검증은 구분합니다.
 
 ## 판정 표시 계약
 
@@ -141,7 +141,7 @@ $env:GZZ_DASHBOARD_INDEX = 'work/dashboard-local/dashboard.sqlite3'
 python -m uvicorn server.main:app --host 127.0.0.1 --port 8002
 ```
 
-127.0.0.1:8002는 실행한 PC에서만 쓸 수 있는 주소이며 운영 서버 주소가 아닙니다. 다른 PC/배포 접근 주소와 HTTPS는 C가 확정해야 합니다. 8-A 화면 코드는 아직 이번 기준 main에 없으므로 위 명령은 API 서버만 실행합니다.
+127.0.0.1:8002는 실행한 PC에서만 쓸 수 있는 주소이며 운영 서버 주소가 아닙니다. 다른 PC/배포 접근 주소와 HTTPS는 C가 확정해야 합니다. 위 명령은 API 서버만 실행합니다. 별도 터미널에서 `server/Dashboard`의 `npm run dev`로 React 화면을 실행하면 `/dashboard-api`가 이 서버로 전달됩니다.
 
 ## 검증
 
@@ -157,8 +157,8 @@ smoke는 C의 실제 server.main 앱을 임시 데이터·임의 로컬 포트�
 
 ## 남은 공동 검증
 
-- C와 로컬 패치 검토·팀 저장소 통합·배포 및 인증 세션 연결.
-- 8-A 화면에서 판정3종·null·이유 코드·missing/장애·목록·상세 표시 검증.
+- 운영 서버 배포 및 브라우저 인증 세션 연결. 공개 `/GZZ/`는 API 연결이 차단된 프론트 DEMO입니다.
+- 합성 입력으로 확인한 범위와 실제 게임 검증 범위는 [화면 통합 기록](../Dashboard/INTEGRATION_STATUS.md)에서 구분합니다.
 - Launcher 전체 heartbeat와 정보원 역할·모듈 매핑 확정.
 - GodMode 외 다른 탐지기의 실제 게임/중앙 서버/화면 종단 검증.
 - 증거 이미지·민감정보 제거된 로그 API는 아직 null.

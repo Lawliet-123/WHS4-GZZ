@@ -68,12 +68,16 @@ function makeAssessment(
 
 const longAimbotPlayerId = "BP_FirstPersonCharacter_Hunter_Default_C_2147479755";
 
-// ESP와 external_access는 현재 Replay calibration이 pending이다. 양수
-// 원본 관측이 있더라도 Scoring이 확정한 ACTIVE 근거로 올리지 않는다.
-const espVerdict = makeVerdict("demo_esp_001", "player_042", "INCONCLUSIVE", {
+// 동일한 합성 관측을 현재 B Scoring의 임시 저장소에 넣어 확인한 결과다.
+// external_process의 scoped threshold 2를 raw 7이 충족한다. ESP 자체는
+// pending이므로 ACTIVE로 올리지 않으며, 평가 미완료와 양수 근거를 함께 보존한다.
+const espVerdict = makeVerdict("demo_esp_001", "player_042", "SUSPICIOUS", {
   assessment_complete: false,
-  unresolved_modules: ["esp", "external_access", "selfdefense"],
-  reason_codes: ["ASSESSMENT_INCOMPLETE"],
+  evidence_unit_count: 1,
+  active_module_count: 1,
+  active_modules: ["external_access"],
+  unresolved_modules: ["esp", "selfdefense"],
+  reason_codes: ["CALIBRATED_ACTIVE_EVIDENCE", "ASSESSMENT_INCOMPLETE"],
 });
 
 const normalVerdict = makeVerdict("demo_normal_001", "player_007", "NO_ACTIVE_EVIDENCE", {
@@ -438,9 +442,15 @@ function policyModule(item: ModuleSnapshot) {
           ? `overlay_window:${String(item.evidence.window_pid)}:${String(item.evidence.hwnd)}`
           : null,
         overlap_tags: [],
-        notes: item.module === "esp" || item.module === "external_access"
-          ? ["Replay calibration이 pending이므로 양수 raw_score를 확정 ACTIVE 판정으로 바꾸지 않는다."]
-          : [],
+        notes: item.module === "esp"
+          ? ["ESP Replay calibration은 pending이다. 양수 raw_score만으로 ACTIVE 판정을 만들지 않는다."]
+          : item.module === "external_access"
+            ? [
+              "external_process는 scoped threshold 2로 현재 관측을 평가한다.",
+              "module_integrity는 event_threshold 2로 DLL 사건 이력을 평가한다. 후속 NORMAL 0은 새 변화가 없다는 뜻이며 과거 기준 충족 사건을 지우지 않는다.",
+              "aggregate의 max(raw_score)는 합성 현재 상태이다. 채널별 calibration과 이력을 사용한 Final Verdict와 구분한다.",
+            ]
+            : [],
       },
     },
   };

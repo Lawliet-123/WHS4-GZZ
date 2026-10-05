@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatElapsed, humanizeModule } from "../domain";
-import type { DashboardEvent } from "../types";
+import type { Assessment, DashboardEvent } from "../types";
 import { Icon } from "./Icon";
 import { StatusBadge } from "./StatusBadge";
 
@@ -10,6 +10,11 @@ export interface EvidenceDrawerProps {
   error?: string;
   /** `undefined` means the overview capability has not been supplied. */
   evidenceImagesAvailable?: boolean;
+  assessment?: Assessment | null;
+  severity?: string | null;
+  detectionLabel?: string;
+  clientId?: string | null;
+  onInvestigateSubject?: () => void;
   onClose: () => void;
   onRetry?: () => void;
 }
@@ -111,18 +116,23 @@ export function redactSensitiveText(value: string, sensitiveValues: Iterable<str
   return redacted;
 }
 
+/** Shares the drawer's evidence-aware redaction with summary and table views. */
+export function redactEventText(event: DashboardEvent, value: string): string {
+  return redactSensitiveText(value, collectSensitiveEvidenceStrings(event.evidence));
+}
+
 interface SanitizedEvidence {
   evidence: Record<string, unknown>;
   hiddenCount: number;
 }
 
 /** Removes direct identifying fields before evidence is rendered or copied. */
-export function sanitizeEvidence(evidence: Record<string, unknown>): SanitizedEvidence {
+export function sanitizeEvidence(evidence: Record<string, unknown>, module?: string): SanitizedEvidence {
   let hiddenCount = 0;
   const sensitiveValues = collectSensitiveEvidenceStrings(evidence);
 
-  const visit = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(visit);
+  const visit = (value: unknown, root = false): unknown => {
+    if (Array.isArray(value)) return value.map((item) => visit(item));
     if (typeof value === "string") {
       const redacted = redactSensitiveText(value, sensitiveValues);
       if (redacted !== value) hiddenCount += 1;
@@ -132,7 +142,13 @@ export function sanitizeEvidence(evidence: Record<string, unknown>): SanitizedEv
 
     const sanitized: Record<string, unknown> = {};
     for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveEvidenceKey(key)) {
+      // Noclip's top-level blocked_path is a line-trace result, not a file path.
+      // Keep only its known scalar contract; string paths and arbitrary *_path
+      // fields must continue through the identifying-field filter.
+      const knownNoclipMetric = root && module === "noclip"
+        && normalizeEvidenceKey(key) === "blocked_path"
+        && (typeof nestedValue === "boolean" || nestedValue === 0 || nestedValue === 1);
+      if (isSensitiveEvidenceKey(key) && !knownNoclipMetric) {
         hiddenCount += 1;
         continue;
       }
@@ -142,7 +158,7 @@ export function sanitizeEvidence(evidence: Record<string, unknown>): SanitizedEv
   };
 
   return {
-    evidence: visit(evidence) as Record<string, unknown>,
+    evidence: visit(evidence, true) as Record<string, unknown>,
     hiddenCount,
   };
 }
@@ -152,6 +168,11 @@ export function EvidenceDrawer({
   loading = false,
   error,
   evidenceImagesAvailable,
+  assessment,
+  severity,
+  detectionLabel,
+  clientId,
+  onInvestigateSubject,
   onClose,
   onRetry,
 }: EvidenceDrawerProps) {
@@ -221,7 +242,7 @@ export function EvidenceDrawer({
   }, []);
 
   const sanitizedEvidence = useMemo(
-    () => event ? sanitizeEvidence(event.evidence) : null,
+    () => event ? sanitizeEvidence(event.evidence, event.module) : null,
     [event],
   );
   const sensitiveEvidenceValues = useMemo(
@@ -290,27 +311,42 @@ export function EvidenceDrawer({
               <StatusBadge tone={operational ? "info" : "neutral"}>{operational ? "운영 이벤트" : "관측 이벤트"}</StatusBadge>
               <span className="module-pill">{humanizeModule(event.module)}</span>
             </div>
-            <h3>{event.player_id}</h3>
-            <p>{event.session_id} · {formatElapsed(event.timestamp_ms)}</p>
+            <h3>{detectionLabel ? redactSensitiveText(detectionLabel, sensitiveEvidenceValues) : humanizeModule(event.module)}</h3>
+            <p>{event.player_id} · {event.session_id}</p>
+            <div className="investigation-meta"><span>Severity <span className={`severity-badge severity-${severity?.toLowerCase() ?? "unknown"}`}>{severity ?? "미제공"}</span></span><span className="mono">raw {event.raw_score}</span><span>{formatElapsed(event.timestamp_ms)}</span></div>
           </div>
-
-          <section className="detail-section" aria-labelledby="event-info-title">
-            <h4 id="event-info-title">이벤트 정보</h4>
-            <dl className="detail-grid">
-              <div><dt>세션</dt><dd>{event.session_id}</dd></div>
-              <div><dt>플레이어</dt><dd>{event.player_id}</dd></div>
-              <div><dt>모듈</dt><dd>{humanizeModule(event.module)}</dd></div>
-              <div><dt>세션 경과</dt><dd>{formatElapsed(event.timestamp_ms)}</dd></div>
-              <div><dt>원시 점수</dt><dd>{event.raw_score}</dd></div>
-              <div><dt>Event ID</dt><dd className="mono">{event.id}</dd></div>
-            </dl>
-          </section>
 
           <section className="detail-section" aria-labelledby="reason-title">
             <h4 id="reason-title">이벤트 이유</h4>
             {sanitizedReasons.length > 0
               ? <ul className={`reason-list ${operational ? "operational" : "observed"}`}>{sanitizedReasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>
               : <div className="empty-inline">기록된 이유 없음</div>}
+          </section>
+
+          {assessment !== undefined && <section className="detail-section investigation-verdict" aria-labelledby="investigation-verdict-title">
+            <h4 id="investigation-verdict-title">대상 판정</h4>
+            <dl className="detail-grid">
+              <div><dt>현재 판정</dt><dd>{assessment?.status ?? "UNKNOWN"}</dd></div>
+              <div><dt>평가</dt><dd>{assessment?.final_verdict ? assessment.final_verdict.assessment_complete ? "완료" : "미완료" : "미확정"}</dd></div>
+              <div><dt>점수 / 신뢰도</dt><dd>{assessment?.score ?? "미제공"} / {assessment?.confidence ?? "미제공"}</dd></div>
+              <div><dt>근거 단위</dt><dd>{assessment?.final_verdict?.evidence_unit_count ?? "미제공"}</dd></div>
+            </dl>
+            <div className="investigation-codes"><span>활성 모듈</span><strong>{assessment?.final_verdict?.active_modules.length ? assessment.final_verdict.active_modules.map(humanizeModule).join(", ") : "—"}</strong></div>
+            <div className="investigation-codes"><span>Reason codes</span><strong>{assessment?.reason_codes.length ? assessment.reason_codes.map((reason) => redactSensitiveText(reason, sensitiveEvidenceValues)).join(", ") : "—"}</strong></div>
+            {onInvestigateSubject && <button className="page-link" type="button" onClick={onInvestigateSubject}>플레이어 판정 확인<Icon name="chevron" size={13} /></button>}
+          </section>}
+
+          <section className="detail-section" aria-labelledby="event-info-title">
+            <h4 id="event-info-title">이벤트 정보</h4>
+            <dl className="detail-grid">
+              <div><dt>세션</dt><dd>{event.session_id}</dd></div>
+              <div><dt>플레이어</dt><dd>{event.player_id}</dd></div>
+              <div><dt>Launcher 클라이언트</dt><dd title="해당 대상의 최신 Heartbeat 소스. 이벤트 발신자와 동일하다는 보장은 없습니다.">{clientId ? redactEventText(event, clientId) : "미제공"}</dd></div>
+              <div><dt>모듈</dt><dd>{humanizeModule(event.module)}</dd></div>
+              <div><dt>세션 경과</dt><dd>{formatElapsed(event.timestamp_ms)}</dd></div>
+              <div><dt>원시 점수</dt><dd>{event.raw_score}</dd></div>
+              <div><dt>Event ID</dt><dd className="mono">{event.id}</dd></div>
+            </dl>
           </section>
 
           <section className="detail-section" aria-labelledby="evidence-fields-title">

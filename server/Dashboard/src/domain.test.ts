@@ -49,7 +49,7 @@ describe("Dashboard backend-v2 domain", () => {
     const filters = {
       ...defaultFilters,
       module: "esp",
-      verdict: "INCONCLUSIVE" as const,
+      verdict: "SUSPICIOUS" as const,
       query: "window_overlap",
     };
     const result = filterEvents(demoEvents.items, demoOverview, filters);
@@ -57,6 +57,42 @@ describe("Dashboard backend-v2 domain", () => {
     expect(result[0]?.module).toBe("esp");
     expect(result[0]?.raw_score).toBe(1);
     expect(demoOverview.assessments.find((item) => item.session_id === "demo_esp_001")?.score).toBeNull();
+  });
+
+  it("keeps calibrated external access evidence active while ESP remains unresolved", () => {
+    const assessment = demoOverview.assessments.find((item) => item.session_id === "demo_esp_001")!;
+    const snapshot = demoSnapshots["demo_esp_001::player_042"]!;
+    expect(assessment.final_verdict).toMatchObject({
+      status: "SUSPICIOUS",
+      assessment_complete: false,
+      evidence_unit_count: 1,
+      active_module_count: 1,
+      active_modules: ["external_access"],
+      unresolved_modules: ["esp", "selfdefense"],
+      reason_codes: ["CALIBRATED_ACTIVE_EVIDENCE", "ASSESSMENT_INCOMPLETE"],
+    });
+    expect(snapshot.final_verdict).toEqual(assessment.final_verdict);
+    expect(snapshot.modules.find((item) => item.module === "external_access")).toMatchObject({
+      raw_score: 7,
+      evidence: {
+        submodule: "aggregate",
+        scoped_submodules: {
+          external_process: { raw_score: 7 },
+          module_integrity: { raw_score: 0, status: "NORMAL" },
+        },
+      },
+    });
+    const policyModules = snapshot.policy.modules as Array<{
+      state: { module: string };
+      evaluation: { annotations: { notes: string[] } };
+    }>;
+    const accessNotes = policyModules.find((item) => item.state.module === "external_access")!.evaluation.annotations.notes.join(" ");
+    expect(accessNotes).toContain("external_process는 scoped threshold 2");
+    expect(accessNotes).toContain("module_integrity는 event_threshold 2");
+    expect(accessNotes).toContain("과거 기준 충족 사건을 지우지 않는다");
+    expect(accessNotes).not.toContain("pending");
+    expect(policyModules.find((item) => item.state.module === "esp")!.evaluation.annotations.notes.join(" "))
+      .toContain("pending");
   });
 
   it("uses stable event IDs when elapsed timestamps are duplicated", () => {

@@ -70,7 +70,7 @@ export function connectionMeta(state: string): { label: string; tone: string } {
     stopped: { label: "중지", tone: "neutral" },
     unknown: { label: "확인 불가", tone: "neutral" },
   };
-  return labels[state] ?? { label: state || "확인 불가", tone: "neutral" };
+  return Object.hasOwn(labels, state) ? labels[state]! : { label: state || "확인 불가", tone: "neutral" };
 }
 
 export const subjectKey = (sessionId: string, playerId: string) => `${sessionId}::${playerId}`;
@@ -266,7 +266,7 @@ export function humanizeModule(module: string): string {
     receiver: "Receiver",
     scoring: "Scoring",
   };
-  return labels[module] ?? labelForModuleIdentifier(module) ?? `미등록 · ${module.replaceAll("_", " ")}`;
+  return (Object.hasOwn(labels, module) ? labels[module] : null) ?? labelForModuleIdentifier(module) ?? `미등록 · ${module.replaceAll("_", " ")}`;
 }
 
 export function humanizeReason(reason: string): string {
@@ -276,7 +276,7 @@ export function humanizeReason(reason: string): string {
     NO_ACTIVE_EVIDENCE: "현재 평가 범위에 활성 근거가 없음",
     ADVISORY_EVIDENCE_PRESENT: "참고용 근거가 함께 존재함",
   };
-  return labels[reason] ?? reason.replaceAll("_", " ");
+  return Object.hasOwn(labels, reason) ? labels[reason]! : reason.replaceAll("_", " ");
 }
 
 export function eventTitle(item: DashboardEvent): string {
