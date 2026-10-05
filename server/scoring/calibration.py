@@ -151,7 +151,17 @@ _ITEMS = (
         ),
     ),
     ModuleCalibration("esp", "pending", None),
-    ModuleCalibration("whistle", "pending", None),
+    ModuleCalibration(
+        "whistle",
+        "threshold",
+        60,
+        note=(
+            "Replay v1: 2 in-scope CHEAT sessions and 4 NORMAL sessions "
+            "keep FP=0 and FN=0. Threshold 60 activates on either strong "
+            "whistle-related ExecFunction or character vtable hook while "
+            "leaving the weaker sound-swap-only signal below threshold."
+        ),
+    ),
     ModuleCalibration(
         "whistle_rpc",
         "pending",

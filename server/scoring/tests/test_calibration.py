@@ -23,6 +23,7 @@ class CalibrationTests(unittest.TestCase):
             "injection": ("threshold", 40),
             "value_tamper": ("threshold", 100),
             "noclip": ("threshold", 3),
+            "whistle": ("threshold", 60),
             "localguard_executable_hash": ("threshold", 1),
             "overlay_hook": ("threshold", 60),
         }
@@ -49,6 +50,13 @@ class CalibrationTests(unittest.TestCase):
         self.assertTrue(calibration.meets_threshold(3))
         self.assertTrue(calibration.meets_threshold(5))
 
+    def test_whistle_threshold_boundary_is_inclusive(self):
+        calibration = require_calibration("whistle")
+
+        self.assertFalse(calibration.meets_threshold(59))
+        self.assertTrue(calibration.meets_threshold(60))
+        self.assertTrue(calibration.meets_threshold(100))
+
     def test_executable_hash_threshold_boundary_is_inclusive(self):
         calibration = require_calibration("localguard_executable_hash")
 
@@ -73,7 +81,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertIsNone(calibration.meets_threshold(100))
 
     def test_pending_modules_are_not_forced_clean_or_positive(self):
-        for module in ("esp", "whistle", "whistle_rpc"):
+        for module in ("esp", "whistle_rpc"):
             with self.subTest(module=module):
                 calibration = require_calibration(module)
                 self.assertEqual(calibration.mode, "pending")
