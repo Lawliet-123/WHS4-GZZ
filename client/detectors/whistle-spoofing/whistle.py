@@ -167,6 +167,7 @@ def scan():
     r.meta["characters"] = len(chars)
 
     seen_vt = set()
+    self_vtables, ue4ss_vtables = [], []
     for x in chars:
         cname = rt.class_name(x.cls)
 
@@ -174,9 +175,19 @@ def scan():
             seen_vt.add(x.vtable)
             fn = rt.rq(x.vtable + PROCESS_EVENT_IDX * 8)
             if fn and not rt.in_game_module(fn):
-                r.add("character_vtable_hooked", 60,
-                      f"{cname} 의 ProcessEvent 가 {rt.owner_of(fn)} 로 교체됨",
-                      [Evidence("address", f"0x{fn:016X}", cname)])
+                owner = rt.owner_of(fn)
+                # **위 W-1 과 같은 기준을 써야 한다.** 거기서는 우리 관측 후크와
+                # 해시가 맞는 UE4SS 를 뺐는데 이 경로엔 그게 없어서, ac_whistle 을
+                # 넣은 정상 세션이 60점 DETECTED 가 됐다(10/5 normal_whistle_rpc_002).
+                # 휘파람 핵도 같은 슬롯을 바꾸므로 안 빼면 핵 유무를 구분할 수 없다.
+                if rt.is_self_module(fn):
+                    self_vtables.append(f"{cname} -> {owner}")
+                elif owner and owner.lower() in trusted_ue4ss:
+                    ue4ss_vtables.append(f"{cname} -> {owner}")
+                else:
+                    r.add("character_vtable_hooked", 60,
+                          f"{cname} 의 ProcessEvent 가 {owner} 로 교체됨",
+                          [Evidence("address", f"0x{fn:016X}", cname)])
 
         audio = rt.rq(x.addr + CHARACTER_AUDIO_OFF)
         if not audio:
@@ -191,6 +202,18 @@ def scan():
             r.add("provocation_sound_swapped", 35,
                   f"{cname} 의 도발 오디오가 '{sname}' 를 들고 있음 (기대: SC_Provoaction)",
                   [Evidence("value", sname, f"{cname} +0x{CHARACTER_AUDIO_OFF:X}")])
+
+    # 캐릭터 vtable 에서 뺀 것도 남긴다. 점수에 안 넣는 것과 안 보이는 것은 다르다.
+    if self_vtables:
+        r.meta["self_vtable_hooks"] = self_vtables
+        r.evidence.append(Evidence(
+            "module", f"안티치트 자체 vtable 후크 {len(self_vtables)}건",
+            "관측용 ac_whistle DLL — 점수에서 제외"))
+    if ue4ss_vtables:
+        r.meta["ue4ss_vtable_hooks"] = ue4ss_vtables
+        r.evidence.append(Evidence(
+            "module", f"UE4SS vtable 후크 {len(ue4ss_vtables)}건",
+            "런처 설치 기록(해시 일치)과 맞는 모듈 — 점수에서 제외"))
 
     r.meta["elapsed_ms"] = int((time.time() - t0) * 1000)
     if not r.reasons:
