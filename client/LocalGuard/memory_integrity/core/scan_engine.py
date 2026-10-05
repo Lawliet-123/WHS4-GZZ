@@ -88,6 +88,24 @@ def _trusted_note(hits):
             + ", ".join(f"{n} {c:,}건" for n, c in sorted(hits.items(), key=lambda kv: -kv[1])))
 
 
+def _self_note(hits):
+    """안티치트 자신의 모듈이라 뺀 건수를 한 줄로. 없으면 None.
+
+    예전에는 자기 후크를 **조용히** 건너뛰었다(check_vtable). 제외한 것은
+    남겨야 한다 — 안 남기면 "우리 후크를 넣은 세션" 과 "아무것도 없는 세션" 이
+    근거상 구별되지 않는다. core/selfid.py 참고.
+    """
+    if not hits:
+        return None
+    return ("안티치트 자체 모듈이라 제외(관측용 후크): "
+            + ", ".join(f"{n} {c:,}건" for n, c in sorted(hits.items(), key=lambda kv: -kv[1])))
+
+
+def _excluded_note(trusted_hits, self_hits):
+    parts = [p for p in (_trusted_note(trusted_hits), _self_note(self_hits)) if p]
+    return "; ".join(parts) or None
+
+
 def owner_of(addr, module_ranges):
     """주소가 어느 모듈에 속하는지 역추적한다. 책임 DLL 이름이 그대로 나온다."""
     for name, (lo, hi) in module_ranges.items():
@@ -291,23 +309,30 @@ def check_vtable(pm, rows, module_ranges, trusted_ranges=None):
     for vtable, _cls, _e in rows:
         seen[vtable] = seen.get(vtable, 0) + 1
 
-    outside, checked, trusted_hits = {}, 0, {}
+    outside, checked, trusted_hits, self_hits = {}, 0, {}, {}
     for vtable, cnt in seen.items():
         try:
             fn = struct.unpack("<Q", pm.read_bytes(vtable + PROCESS_EVENT_IDX * 8, 8))[0]
         except Exception:
             continue
         checked += cnt
-        if not (game_lo <= fn < game_hi) and not _is_self_addr(fn, self_ranges):
-            # 런처가 깔면서 적어 둔 해시와 바이트가 맞는 모듈(우리 UE4SS)이면 뺀다.
-            # 이름이 아니라 해시로 가린다 — core/ue4ss_trust.py 참고.
-            own = ue4ss_trust.owner_in(fn, trusted_ranges or {})
-            if own:
-                trusted_hits[own] = trusted_hits.get(own, 0) + cnt
-                continue
-            outside[fn] = outside.get(fn, 0) + cnt
+        if game_lo <= fn < game_hi:
+            continue
+        if _is_self_addr(fn, self_ranges):
+            # 우리 자신의 관측 후크(ac_whistle DLL)가 ProcessEvent 를 바꾼다.
+            # 점수에서는 빼되 **근거에는 남긴다.** 예전에는 조용히 건너뛰었다.
+            nm = owner_of(fn, module_ranges)
+            self_hits[nm] = self_hits.get(nm, 0) + cnt
+            continue
+        # 런처가 깔면서 적어 둔 해시와 바이트가 맞는 모듈(우리 UE4SS)이면 뺀다.
+        # 이름이 아니라 해시로 가린다 — core/ue4ss_trust.py 참고.
+        own = ue4ss_trust.owner_in(fn, trusted_ranges or {})
+        if own:
+            trusted_hits[own] = trusted_hits.get(own, 0) + cnt
+            continue
+        outside[fn] = outside.get(fn, 0) + cnt
 
-    note = _trusted_note(trusted_hits)
+    note = _excluded_note(trusted_hits, self_hits)
     if not outside:
         return Detection("vtable 무결성", False,
                          f"오브젝트 {checked:,}개 / vtable {len(seen)}종 - ProcessEvent 전부 게임 모듈 내부",
@@ -334,8 +359,15 @@ def check_exec_function(pm, rows, module_ranges, trusted_ranges=None):
     클래스는 UFunction 계열이고, 그 안에서 혼자 바깥을 가리키는 놈이 후킹된 것이다.
 
     한계: 한 클래스의 멤버가 전부 후킹되면 다수결이 뒤집혀 못 잡는다.
+
+    **우리 자신의 후크를 빼야 한다.** 휘파람 관측용 `ac_whistle` DLL 은 도발 RPC 를
+    보려고 바로 이 포인터를 바꾼다. 형제 함수 `check_vtable` 은 처음부터 그걸
+    뺐는데 여기는 빠져 있어서, 후크를 넣은 정상 세션이 전부 70점이 됐다
+    (10/5 normal_whistle_rpc_002 실측 — 6바퀴 전부 DETECTED). 휘파람 핵도 같은
+    포인터를 바꾸므로, 안 빼면 **핵 유무를 구분할 수 없다.** core/selfid.py 참고.
     """
     game_lo, game_hi = module_ranges[GAME_EXE.lower()]
+    self_ranges = _self_bases(pm)
 
     groups = {}   # class_ptr -> [내부 개수, [바깥 주소들]]
     for _vt, cls, exec_fn in rows:
@@ -347,13 +379,18 @@ def check_exec_function(pm, rows, module_ranges, trusted_ranges=None):
         else:
             g[1].append(exec_fn)
 
-    suspects, fn_like, trusted_hits = {}, 0, {}
+    suspects, fn_like, trusted_hits, self_hits = {}, 0, {}, {}
     for _cls, (inside, outs) in groups.items():
         total = inside + len(outs)
         if total < 20 or inside / total < 0.9:
             continue                      # UFunction 계열로 보기엔 근거가 약하다
         fn_like += total
         for a in outs:
+            # 우리 자신의 관측 후크다. 점수만 빼고 근거에는 남긴다.
+            if _is_self_addr(a, self_ranges):
+                nm = owner_of(a, module_ranges)
+                self_hits[nm] = self_hits.get(nm, 0) + 1
+                continue
             # UE4SS 는 Lua 모드를 돌리려고 ExecFunction 을 후킹한다. 팀 표준 설치가
             # 깔린 PC 는 정상 세션도 전부 70점이 됐다(10/5 normal_002 실측).
             # 이름이 아니라 **런처 설치 기록의 해시**로 가린다(core/ue4ss_trust.py).
@@ -363,7 +400,7 @@ def check_exec_function(pm, rows, module_ranges, trusted_ranges=None):
                 continue
             suspects[a] = suspects.get(a, 0) + 1
 
-    note = _trusted_note(trusted_hits)
+    note = _excluded_note(trusted_hits, self_hits)
     if not fn_like:
         return Detection("ExecFunction 무결성", False,
                          "UFunction 계열 클래스를 식별하지 못했습니다 - 오프셋 확인 필요", note)
