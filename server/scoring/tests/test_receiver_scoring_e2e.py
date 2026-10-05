@@ -110,6 +110,27 @@ def godmode_event(
     }
 
 
+def selfdefense_event(
+    *,
+    kind: str = "file_integrity",
+    status: str = "ERROR",
+    timestamp_ms: int = 1000,
+):
+    return {
+        "session_id": "e2e_session",
+        "player_id": "player_1",
+        "module": "selfdefense",
+        "timestamp_ms": timestamp_ms,
+        "evidence": {
+            "kind": kind,
+            "status": status,
+            "scan_complete": False,
+        },
+        "reasons": ["selfdefense operational error"],
+        "raw_score": 0,
+    }
+
+
 class ReceiverScoringE2ETests(unittest.TestCase):
 
     def setUp(self):
@@ -156,6 +177,47 @@ class ReceiverScoringE2ETests(unittest.TestCase):
                 "X-GZZ-Protocol-Version": "1",
             },
         )
+
+    def test_selfdefense_is_stored_but_excluded_from_cheat_scoring(self):
+        """Operational errors remain in Shared without changing the cheat verdict."""
+        event_id = uid()
+        response = self.post(selfdefense_event(), event_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "stored")
+
+        stored = self.writer.iter_stored()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0].event_id, event_id)
+        self.assertEqual(stored[0].result["evidence"]["status"], "ERROR")
+
+        self.assertEqual(
+            [state.module for state in self.store.get_player_snapshot("e2e_session", "player_1")],
+            ["selfdefense"],
+        )
+        verdict = scoring_main.get_player_final_verdict(
+            "e2e_session",
+            "player_1",
+        )
+        self.assertEqual(verdict.status, "NO_ACTIVE_EVIDENCE")
+
+    def test_selfdefense_recovery_advances_without_creating_cheat_state(self):
+        """Restart recovery consumes operational events without scoring them."""
+        event_id = uid()
+        receipt = self.writer.write_detection(
+            selfdefense_event(kind="debugger_presence", status="DETECTED"),
+            event_id=event_id,
+        )
+
+        cursor = scoring_main.recover_from_writer(self.writer)
+
+        self.assertEqual(cursor, receipt.sequence)
+        self.assertEqual(self.store.get_recovery_cursor(), receipt.sequence)
+        self.assertEqual(
+            [state.module for state in self.store.get_player_snapshot("e2e_session", "player_1")],
+            ["selfdefense"],
+        )
+        self.assertEqual(scoring_main.recover_from_writer(self.writer), cursor)
 
     def test_external_access_submodules_do_not_overwrite_through_receiver(self):
         first = self.post(

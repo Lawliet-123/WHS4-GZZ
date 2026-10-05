@@ -6,6 +6,7 @@ Run on Windows from any directory with Python 3.10+:
 
 Replay examples are observations from older captures, not proof of delivery.
 Synthetic probes exercise the current adapters with supplied values/mocks.
+Use --repo-root PATH --changed-only to recheck changed A contracts in another checkout.
 """
 from __future__ import annotations
 
@@ -102,6 +103,44 @@ def probe_external_access():
     return {"vm_read_only_event": None, "maximum_score_event": event}
 
 
+def probe_external_scan_status():
+    from client.LocalGuard.external_access.common.models import TargetProcess
+    from client.LocalGuard.external_access.process_access.handle_sensor import HandleSensorUnavailable
+    from client.LocalGuard.external_access.process_access.runner import ProcessAccessRunner
+    import client.LocalGuard.external_access.process_access.runner as runner_module
+
+    class Sensor:
+        def __init__(self, fail=False): self.fail = fail
+        def scan(self, _game):
+            if self.fail: raise HandleSensorUnavailable("synthetic permission failure")
+            return []
+
+    results = {}
+    for name, game, fail in (
+        ("normal", TargetProcess(500, "audit_game.exe", Path("audit_game.exe"), 1.0), False),
+        ("offline", None, False),
+        ("error", TargetProcess(500, "audit_game.exe", Path("audit_game.exe"), 1.0), True),
+    ):
+        records = []
+        ticks = iter((10.0, 10.0, 10.01))
+        runner = ProcessAccessRunner(game_executable_name="audit_game.exe", session_id="audit_synthetic",
+                                     player_id="audit_player", output_path=Path("unused.jsonl"),
+                                     locator=SimpleNamespace(find=lambda: game), sensor=Sensor(fail),
+                                     writer=lambda _path, event: records.append(event), clock=lambda: next(ticks))
+        report = runner.scan_once()
+        for event in records: encode_event(event)
+        results[name] = {"emitted_detections": report.emitted_detections, "recorded_events": records}
+    queued = []
+    with patch.object(runner_module, "append_detection_jsonl"), \
+         patch.object(runner_module, "send_detection", side_effect=lambda event: (
+             encode_event(event), queued.append(event), SimpleNamespace(status="queued", event_id="synthetic"))[-1]):
+        for result in results.values():
+            for event in result["recorded_events"]:
+                runner_module._write_local_and_send(Path("unused.jsonl"), event)
+    results["zero_score_forwarded_count"] = len(queued)
+    return results
+
+
 def probe_hide():
     detector = load("audit_hide_detector", "client/detectors/hide_anywhere/mecha_detector_v9.py")
     bridge_mod = load("audit_hide_bridge", "client/detectors/hide_anywhere/server_bridge.py")
@@ -183,10 +222,25 @@ def probe_input_signature_gate():
 
 
 def main():
+    global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--examples", action="store_true", help="Print first replay example per module/kind")
+    parser.add_argument("--repo-root", type=Path, help="Inspect another checkout without changing branches")
+    parser.add_argument("--changed-only", action="store_true", help="Probe changed external-access/runtime contracts only")
     args = parser.parse_args()
+    if args.repo_root:
+        ROOT = args.repo_root.resolve()
+        if not (ROOT / "shared/schema.py").is_file():
+            parser.error("--repo-root must contain shared/schema.py")
+        sys.path.insert(0, str(ROOT))
     result_adapter = load("audit_result_adapter", "client/LocalGuard/memory_integrity/core/result.py")
+    if args.changed_only:
+        print(json.dumps({"scope": "changed_contracts", "repo_root": str(ROOT), "probes": {
+            "external_access_synthetic": probe_external_access(),
+            "external_scan_status": probe_external_scan_status(),
+            "runtime_synthetic": probe_runtime_scores(result_adapter),
+        }}, ensure_ascii=True))
+        return
     counts, examples = scan_replays(result_adapter)
     probes = {
         "external_access_synthetic": probe_external_access(),
