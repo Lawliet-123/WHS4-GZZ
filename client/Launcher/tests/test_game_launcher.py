@@ -16,6 +16,7 @@ LAUNCHER = Path(__file__).resolve().parents[1]  # 테스트 파일에서 Launche
 sys.path.insert(0, str(LAUNCHER))  # 직접 실행 파일 형태의 모듈을 import할 수 있게 한다.
 
 import game_launcher as gl  # 실제 게임 설치 코드를 테스트한다.
+import ue4ss_manifest  # 설치 등록부의 실제 기본 저장 위치를 테스트에서 격리한다.
 
 
 class GameLauncherTests(unittest.TestCase):
@@ -38,7 +39,10 @@ class GameLauncherTests(unittest.TestCase):
         self.signature.write_bytes(b"-- test-only signature")  # 실제 게임 시그니처는 쓰지 않는다.
         self.signature_sha = hashlib.sha256(self.signature.read_bytes()).hexdigest()  # 테스트용 고정 해시다.
         self.manifest = self.base / "ue4ss_install.json"  # 등록부도 임시 디렉터리로 보낸다.
-        self.env = mock.patch.dict(os.environ, {"GZZ_UE4SS_MANIFEST": str(self.manifest),
+        self.manifest_path = mock.patch.object(ue4ss_manifest, "DEFAULT_PATH", str(self.manifest))
+        self.manifest_path.start()
+        self.addCleanup(self.manifest_path.stop)
+        self.env = mock.patch.dict(os.environ, {"GZZ_UE4SS_MANIFEST": str(self.base / "ignored.json"),
                                                 "GZZ_UE4SS_SIGNATURE": ""}, clear=False)  # 경로 주입이다.
         self.env.start()  # 설치 함수가 임시 등록부 위치를 보게 한다.
         self.addCleanup(self.env.stop)  # 테스트 뒤 원래 환경변수를 복원한다.
@@ -82,14 +86,27 @@ class GameLauncherTests(unittest.TestCase):
         self.assertEqual(gl.PINNED_UE4SS_ZIP_SHA256,
                          "050948bdf6b4aae2ff8d834aaebadbf7535d4cb8478fbb579966a5ca3142f86a")  # 실물 ZIP 해시다.
 
+    def test_bundled_zip_is_found_without_environment_variable(self):
+        """배포본 assets/의 승인 ZIP은 새 PC에서도 환경변수 없이 사용한다."""
+        sidecar = self.base / "assets" / gl.UE4SS_BUNDLE_NAME
+        sidecar.parent.mkdir()
+        sidecar.write_bytes(self.zip_path.read_bytes())
+        with mock.patch.object(gl, "UE4SS_ASSET_DIR", sidecar.parent), \
+             mock.patch.object(gl, "PINNED_UE4SS_ZIP_SHA256", self.zip_sha), \
+             mock.patch.dict(os.environ, {gl.UE4SS_BUNDLE_ENV: ""}):
+            result = gl.prepare_ue4ss(str(self.root), game_running=False)
+        self.assertEqual(result.status, "READY", result.detail)
+        self.assertTrue(self.manifest.exists())
+
     def test_real_bundle_installs_into_fake_game_when_supplied(self):
         """실제 배포 ZIP을 가짜 게임 폴더에 설치해 경로·해시·파일 구성을 확인한다."""
-        bundle = os.environ.get("GZZ_TEST_UE4SS_ZIP")  # CI에는 없는 선택적 실물 검증 입력이다.
+        bundle_arg = os.environ.get("GZZ_TEST_UE4SS_ZIP")
+        bundle = bundle_arg or gl._bundled_ue4ss_zip()
         if not bundle:  # 팀 ZIP이 없는 다른 개발자 PC에서도 기본 테스트는 실행된다.
             self.skipTest("GZZ_TEST_UE4SS_ZIP이 지정되지 않았습니다")
         self.assertEqual(hashlib.sha256(Path(bundle).read_bytes()).hexdigest(),
                          gl.PINNED_UE4SS_ZIP_SHA256)  # 승인된 ZIP과 바이트까지 같다.
-        result = gl.prepare_ue4ss(str(self.root), bundle, game_running=False)
+        result = gl.prepare_ue4ss(str(self.root), bundle_arg, game_running=False)
         self.assertEqual(result.status, "READY", result.detail)  # 실제 ZIP 구조가 코드의 기대와 맞는다.
         self.assertFalse((self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua").exists())
         self.assertEqual(result.installed, len(gl.UE4SS_BUNDLE_FILES) + len(gl.TEAM_MOD_FILES))
@@ -126,9 +143,9 @@ class GameLauncherTests(unittest.TestCase):
         self.assertIn("READY:", output.getvalue())
 
     def test_explicit_signature_requires_hash_and_is_recorded(self):
-        """나중에 별도 파일이 제공되면 해시 확인 후에만 설치·등록한다."""
+        """별도 파일은 팀 승인 해시와 맞아야 설치·등록한다."""
         missing_hash = self.install(signature_path=str(self.signature))
-        self.assertEqual(missing_hash.status, "MISSING")
+        self.assertEqual(missing_hash.status, "CONFLICT")
         self.assertFalse((self.bin / "dwmapi.dll").exists())
         result = self.install(signature_path=str(self.signature),
                               expected_signature_sha256=self.signature_sha)
@@ -137,6 +154,21 @@ class GameLauncherTests(unittest.TestCase):
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertIn("Chameleon/Binaries/Win64/ue4ss/UE4SS_Signatures/StaticConstructObject.lua",
                       manifest["files"])
+
+    def test_approved_existing_signature_is_recorded_without_source(self):
+        """은지님 설치본처럼 이미 있는 승인 시그니처는 복사 없이 해시 등록한다."""
+        target = self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(self.signature.read_bytes())
+        with mock.patch.object(gl, "PINNED_SIGNATURE_SHA256", self.signature_sha):
+            result = self.install()
+        self.assertEqual(result.status, "READY", result.detail)
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertIn("Chameleon/Binaries/Win64/ue4ss/UE4SS_Signatures/StaticConstructObject.lua",
+                      manifest["files"])
+        self.assertEqual(manifest["files"]["Chameleon/Binaries/Win64/ue4ss/UE4SS_Signatures/StaticConstructObject.lua"],
+                         self.signature_sha)
+        self.assertFalse((self.base / "ignored.json").exists())
 
     def test_unrequested_existing_signature_is_a_conflict(self):
         """기존에 깔린 게임별 패턴을 검증 없이 정상 설치물로 오인하지 않는다."""
@@ -225,44 +257,51 @@ class GameLauncherTests(unittest.TestCase):
         self.assertFalse(self.manifest.exists())  # 설치 성공 기록도 만들지 않았다.
 
     def test_file_picker_runs_without_interactive_console(self):
-        """콘솔 없는 EXE에서도 자동 탐색 실패 시 파일 선택 창을 호출한다."""
+        """패키징된 GUI 실행파일은 콘솔이 없어도 경로 선택을 할 수 있다."""
         with mock.patch.object(gl, "find_game_pid", return_value=None), \
              mock.patch.object(gl, "_steam_libraries", return_value=[]), \
              mock.patch.object(gl, "GAME_DIR", str(self.base / "missing")), \
              mock.patch.object(gl, "choose_game_root", return_value=str(self.root)) as chooser, \
              mock.patch.object(sys, "stdin", None), \
+             mock.patch.object(sys, "frozen", True, create=True), \
              mock.patch.dict(os.environ, {"GZZ_GAME_DIR": ""}):  # 자동 탐색 경로를 모두 제거한다.
             self.assertEqual(gl.find_game_root(), str(self.root))  # 선택 창의 결과를 쓴다.
             chooser.assert_called_once_with()  # TTY 부재가 GUI 호출을 막지 않았다.
 
+    def test_noninteractive_discovery_never_opens_picker(self):
+        """E2E처럼 표준 입력이 없는 Python 실행에서는 선택 창 때문에 멈추지 않는다."""
+        with mock.patch.object(gl, "find_game_pid", return_value=None), \
+             mock.patch.object(gl, "_saved_game_root", return_value=None), \
+             mock.patch.object(gl, "_steam_libraries", return_value=[]), \
+             mock.patch.object(gl, "GAME_DIR", str(self.base / "missing")), \
+             mock.patch.object(gl, "choose_game_root", return_value=str(self.root)) as chooser, \
+             mock.patch.object(sys, "stdin", None), \
+             mock.patch.dict(os.environ, {"GZZ_GAME_DIR": ""}):
+            self.assertIsNone(gl.find_game_root())
+            chooser.assert_not_called()
+            self.assertEqual(gl.find_game_root(allow_prompt=True), str(self.root))
+            chooser.assert_called_once_with()
+
     def test_steam_launch_is_primary_even_if_game_exe_exists(self):
         """Steam 게임은 EXE가 있어도 Steam 프로토콜로 먼저 실행한다."""
         with mock.patch.object(gl, "find_game_pid", return_value=None), \
-             mock.patch.object(gl, "find_game_dir", return_value=str(self.bin)), \
-             mock.patch.object(gl.subprocess, "Popen") as popen, \
              mock.patch.object(gl.os, "startfile") as steam:  # 실제 게임·Steam은 실행하지 않는다.
             self.assertTrue(gl.launch())  # Steam 실행 요청을 전달한다.
             steam.assert_called_once_with(f"steam://rungameid/{gl.STEAM_APPID}")  # 정확한 게임 ID다.
-            popen.assert_not_called()  # EXE 직접 실행을 먼저 하지 않는다.
 
-    def test_direct_game_is_only_a_fallback_when_steam_uri_fails(self):
-        """Steam URI 자체를 열 수 없을 때에만 EXE 직접 실행을 시도한다."""
+    def test_steam_failure_never_starts_game_exe_without_token(self):
+        """Steam이 없으면 인증 토큰 없는 직접 실행을 하지 않고 실패를 표시한다."""
         with mock.patch.object(gl, "find_game_pid", return_value=None), \
-             mock.patch.object(gl, "find_game_dir", return_value=str(self.bin)), \
-             mock.patch.object(gl.subprocess, "Popen") as popen, \
              mock.patch.object(gl.os, "startfile") as steam:  # 실제 게임·Steam은 실행하지 않는다.
             steam.side_effect = OSError("Steam URI handler missing")
-            self.assertTrue(gl.launch())  # 직접 실행 요청만 성공했다는 뜻이다.
-            popen.assert_called_once_with([str(self.bin / gl.GAME_EXE)], cwd=str(self.bin))
+            self.assertFalse(gl.launch())
 
     def test_existing_game_is_not_launched_twice(self):
-        """게임이 이미 켜져 있을 때는 Steam과 EXE 어느 쪽도 다시 실행하지 않는다."""
+        """게임이 이미 켜져 있을 때는 Steam에 다시 실행 요청하지 않는다."""
         with mock.patch.object(gl, "find_game_pid", return_value=12345), \
-             mock.patch.object(gl.subprocess, "Popen") as popen, \
              mock.patch.object(gl.os, "startfile") as steam:
             self.assertFalse(gl.launch())
             steam.assert_not_called()
-            popen.assert_not_called()
 
     def test_conflicting_proxy_dll_is_not_overwritten(self):
         """다른 dwmapi.dll이 있으면 기존 파일과 나머지 폴더를 건드리지 않는다."""

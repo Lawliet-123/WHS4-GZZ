@@ -51,7 +51,8 @@
 > ue4ss_manifest.record(game_root, installed_paths,
 >                       bundle={"name": "UE4SS", "version": "...", "sha256": "..."},
 >                       mods=["DamageLogger", "GZZPaintObserver",
->                             "NoclipLogger", "GodModeTelemetry"])
+>                             "NoclipLogger", "GodModeTelemetry"],
+>                       out_path=ue4ss_manifest.DEFAULT_PATH)
 > ```
 >
 > **설치한 모드는 전부 `mods` 와 `installed_paths` 에 넣어야 한다.** 빠진 모드는
@@ -61,6 +62,8 @@
 > 형식과 이유는 `client/Launcher/ue4ss_manifest.py` 독스트링에 있습니다.
 > **이 파일을 안 남기면 예전처럼 DETECTED 100 이 납니다** — 조용히 통과시키지
 > 않습니다. 반대로 등록부에 없는 프록시 DLL 이나 모드는 그대로 잡힙니다.
+> 런처는 탐지기와 같은 고정 경로에 기록합니다. 옛 `GZZ_UE4SS_MANIFEST` 값으로
+> 기록 위치를 바꾸지 않습니다.
 
 **런처가 위 파일을 깔면 `filesystem` 탐지기(2번, 랑언)가 그 PC 를 DETECTED 100 으로 잡는다.**
 

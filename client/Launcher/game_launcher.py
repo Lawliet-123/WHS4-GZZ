@@ -10,8 +10,7 @@ r"""게임 프로세스 찾기·실행.
 >     find_game_root() -> Optional[str]    ...\MECCHA CHAMELEON
 >     find_game_dir() -> str               ...\Chameleon\Binaries\Win64
 >
-> Steam 으로 띄울지, exe 를 직접 띄울지, UI 에서 경로를 고르게 할지는
-> 동효님이 정하시면 됩니다.
+> 실제 게임 실행은 Steam 인증 토큰을 받아야 하므로 Steam URI만 사용합니다.
 >
 > 9/29 에 뒤의 두 함수를 추가했습니다. 그전에는 `modules.GAME_DIR` 한 줄에 박힌
 > 경로를 그대로 써서 **그 경로가 아닌 PC 에서는 게임 폴더를 알 수 없었습니다.**
@@ -34,8 +33,7 @@ import os                     # 경로, 환경변수, Steam 실행에 필요한 
 from pathlib import Path      # 설치 대상 파일과 ZIP 파일 경로를 조립한다.
 import re                     # Steam 설정과 mods.txt의 필요한 항목을 찾는다.
 import stat                   # ZIP 안의 심볼릭 링크를 구분한다.
-import subprocess             # 게임 exe를 직접 실행한다.
-import sys                    # 대화형 콘솔 여부를 확인한다.
+import sys                    # 대화형 콘솔 여부와 패키징 여부를 확인한다.
 import tempfile               # 설정 파일 수정 시 임시 파일을 거쳐 교체한다.
 import time                   # 게임·UE4SS 로그가 준비될 때까지 기다린다.
 from typing import Optional  # 발견 실패 시 None을 반환하는 계약을 표시한다.
@@ -62,7 +60,9 @@ UE4SS_VERSION = "v3.0.1 Beta #0 - Git SHA #f6d5f942"  # 팀에서 동작을 확�
 PINNED_UE4SS_ZIP_SHA256 = "050948bdf6b4aae2ff8d834aaebadbf7535d4cb8478fbb579966a5ca3142f86a"  # g35d1795d 배포 ZIP 전체 해시다.
 PINNED_UE4SS_DIRECTORY_SHA256 = ""  # 폴더 배포본은 설치 대상 파일의 묶음 지문을 따로 고정한다.
 UE4SS_BUNDLE_ENV = "GZZ_UE4SS_BUNDLE"  # 배포된 ZIP의 위치를 받는 환경변수다.
-PINNED_SIGNATURE_SHA256 = ""  # 별도 시그니처를 명시적으로 쓸 때만 고정 해시를 설정한다.
+UE4SS_BUNDLE_NAME = "UE4SS_v3.0.1-1136-g35d1795d.zip"  # 팀 승인 ZIP의 sidecar 파일명이다.
+UE4SS_ASSET_DIR = Path(__file__).resolve().parent / "assets"  # 소스 배포 시 런처 옆에 두는 위치다.
+PINNED_SIGNATURE_SHA256 = "9ed5765bd48526e89594515ed1f72edcc4bb619097c460a3897254968af0235e"  # 실제 동작 확인된 선택적 게임 시그니처다.
 SIGNATURE_ENV = "GZZ_UE4SS_SIGNATURE"  # 선택적으로 제공한 시그니처 파일 위치를 받는다.
 
 # ZIP 루트가 한 단계 더 감싸져 있거나 UE4SS 본체가 루트/ue4ss 아래에 있는
@@ -309,7 +309,7 @@ def choose_game_root() -> Optional[str]:
         return None  # 호출자가 게임 경로를 못 찾았다고 표시한다.
 
 
-def find_game_root() -> Optional[str]:
+def find_game_root(*, allow_prompt: Optional[bool] = None) -> Optional[str]:
     """게임 설치 폴더(...\\MECCHA CHAMELEON). 못 찾으면 None.
 
     예전에는 modules.GAME_DIR 한 줄에 박힌 경로를 그냥 썼다. 그 경로가 없는
@@ -322,10 +322,14 @@ def find_game_root() -> Optional[str]:
         3. 사용자가 저장한 위치         한 번 선택한 설치 폴더
         4. 스팀 라이브러리             레지스트리 + libraryfolders.vdf
         5. modules.GAME_DIR           옛 기본값이 실제로 맞는 PC만
-        6. 파일 선택 창에서 한 번 선택해 저장 (콘솔 없는 EXE도 포함)
+        6. 대화형 실행일 때만 파일 선택 창에서 한 번 선택해 저장
     """
-    if "root" in _cache:  # 이번 런처 실행에서 이미 탐색했는지 확인한다.
-        return _cache["root"]  # 반복 레지스트리·프로세스 조회를 피한다.
+    if allow_prompt is None:  # 콘솔 자동화는 대화상자를 기다리지 않고 종료해야 한다.
+        allow_prompt = bool(getattr(sys, "frozen", False) or
+                            (sys.stdin is not None and sys.stdin.isatty()))
+    if "root" in _cache and (_cache["root"] is not None or not allow_prompt or
+                             _cache.get("root_prompted")):  # 무인 미발견 뒤 대화형 재시도는 허용한다.
+        return _cache["root"]
     got = None  # 각 경로 후보가 성공할 때만 설치 루트가 채워진다.
     env = (os.environ.get("GZZ_GAME_DIR") or "").strip()  # 명시적 운영자 지정이 최우선이다.
     if env:  # 빈 설정값은 무시한다.
@@ -345,9 +349,10 @@ def find_game_root() -> Optional[str]:
                 break  # 뒤의 라이브러리는 더 볼 필요가 없다.
     if got is None:  # 구버전 고정 경로가 실제로 맞는 PC도 지원한다.
         got = _validated_game_root(GAME_DIR)  # 하드코딩 경로도 검증 없이 사용하지 않는다.
-    if got is None:  # 콘솔 없는 EXE에서도 파일 선택 창은 열 수 있어야 한다.
+    if got is None and allow_prompt:  # 자동화 중에는 tkinter 창에서 무기한 기다리지 않는다.
         got = choose_game_root()  # 사용자가 한 번 선택한 값을 다음 실행용으로 저장한다.
     _cache["root"] = got  # 실패(None)까지 캐시해 중복 파일 선택 창을 막는다.
+    _cache["root_prompted"] = bool(got is None and allow_prompt)
     return got  # 설치 루트 또는 미발견(None)을 반환한다.
 
 
@@ -374,7 +379,7 @@ def find_game_dir() -> str:
 
 
 def launch() -> bool:
-    """Steam이 관리하는 게임은 Steam을 통해 띄우고, URI 실패 때만 EXE를 시도한다.
+    """인증 토큰이 필요한 게임을 Steam URI로만 실행한다.
 
     반환값은 실행 *요청* 성공 여부다. 실제 게임 시작은 wait_for_game()에서 확인한다.
     """
@@ -383,17 +388,16 @@ def launch() -> bool:
     try:  # Steam 게임을 EXE만 직접 켜면 창 없이 프로세스만 남을 수 있다.
         os.startfile(f"steam://rungameid/{STEAM_APPID}")  # Steam이 인증·실행 인자를 처리하게 한다.
         return True  # Steam에 실행을 요청했다. 창까지 떴다는 뜻은 아니다.
-    except OSError:  # URI 핸들러가 없을 때만 기존 직접 실행 경로를 시도한다.
-        pass
-    game_dir = find_game_dir()  # URI 실패 때 사용할 검증된 게임 실행 폴더다.
-    exe = os.path.join(game_dir, GAME_EXE)  # 직접 실행할 파일 경로다.
-    if not os.path.isfile(exe):  # Steam도 직접 실행도 불가능한 상태다.
+    except OSError:  # EXE 직접 실행은 missing authentication token을 내므로 대체하지 않는다.
         return False
-    try:
-        subprocess.Popen([exe], cwd=game_dir)  # 마지막 대안에서도 UE4SS 상대경로 기준을 유지한다.
-        return True  # 프로세스 생성 요청만 성공했다. 실제 창은 별도로 확인해야 한다.
-    except OSError:
-        return False
+
+
+def _bundled_ue4ss_zip() -> str:
+    """환경변수가 없을 때 런처와 함께 배포한 승인 ZIP만 찾는다."""
+    locations = [UE4SS_ASSET_DIR / UE4SS_BUNDLE_NAME]
+    if getattr(sys, "frozen", False):
+        locations.insert(0, Path(sys.executable).resolve().parent / "assets" / UE4SS_BUNDLE_NAME)
+    return next((str(path) for path in locations if path.is_file()), "")
 
 
 def wait_for_game(timeout_s: float = 120.0, poll_s: float = 1.0) -> Optional[int]:
@@ -530,7 +534,7 @@ def prepare_ue4ss(game_root: str, bundle_zip: Optional[str] = None,
     root = _validated_game_root(game_root)  # 설치 위치가 정말 이 게임의 폴더인지 확인한다.
     if root is None:  # 잘못된 경로라면 다른 게임 폴더를 수정하면 안 된다.
         return UE4SSResult("ERROR", "게임 실행 파일이 있는 설치 폴더를 먼저 선택하세요")  # 쓰기 전 실패다.
-    bundle_value = bundle_zip or os.environ.get(UE4SS_BUNDLE_ENV, "")  # 명시 인자·환경변수 순으로 배포본 위치를 고른다.
+    bundle_value = bundle_zip or os.environ.get(UE4SS_BUNDLE_ENV, "") or _bundled_ue4ss_zip()  # 명시 인자·환경변수·sidecar 순이다.
     if not bundle_value:  # Path("")가 현재 디렉터리를 가리키는 일을 막는다.
         return UE4SSResult("MISSING", "팀 UE4SS 배포본 경로가 없습니다")  # 설치 원본 미지정이다.
     bundle_path = Path(bundle_value)  # ZIP 파일과 압축을 푼 폴더를 모두 허용한다.
@@ -546,8 +550,6 @@ def prepare_ue4ss(game_root: str, bundle_zip: Optional[str] = None,
                           else PINNED_SIGNATURE_SHA256)  # 인자가 없으면 코드에 고정된 팀 해시를 쓴다.
     if signature_value and not re.fullmatch(r"[a-fA-F0-9]{64}", signature_expected):  # 명시한 파일은 해시 없이 설치하지 않는다.
         return UE4SSResult("MISSING", "지정한 StaticConstructObject.lua의 고정 SHA-256이 없습니다")  # 무검증 별도 파일은 거부한다.
-    if not signature_value and signature_expected:  # 해시만 있고 파일 위치가 없는 설정 오류다.
-        return UE4SSResult("MISSING", "고정 SHA-256에 해당하는 StaticConstructObject.lua 경로가 없습니다")
     signature = Path(signature_value) if signature_value else None  # 기본 배포에서는 별도 파일을 사용하지 않는다.
     if signature is not None and not signature.is_file():  # 요청한 파일만 존재를 확인한다.
         return UE4SSResult("MISSING", f"지정한 시그니처가 없습니다: {signature}")
@@ -575,9 +577,13 @@ def prepare_ue4ss(game_root: str, bundle_zip: Optional[str] = None,
             payload[target] = (source / relative).read_bytes()  # 레포 파일 내용을 그대로 설치한다.
         bin_path = Path(root) / WIN64_REL  # UE4SS가 게임과 함께 읽힐 Win64 폴더다.
         existing_signature = bin_path / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua"
-        if signature is None and (existing_signature.exists() or existing_signature.is_symlink()
-                                  or _linked_destination(bin_path, existing_signature)):
-            return UE4SSResult("CONFLICT", f"검증되지 않은 기존 시그니처가 있습니다: {existing_signature}")
+        if signature is None and (existing_signature.exists() or existing_signature.is_symlink()):
+            existing_digest = _sha256(existing_signature) if existing_signature.is_file() else None
+            if (_linked_destination(bin_path, existing_signature) or
+                    existing_digest is None or
+                    existing_digest.lower() != signature_expected.lower()):
+                return UE4SSResult("CONFLICT", f"검증되지 않은 기존 시그니처가 있습니다: {existing_signature}")
+            payload["ue4ss/UE4SS_Signatures/StaticConstructObject.lua"] = existing_signature.read_bytes()
         if (bin_path / "dwmapi.dll.off").exists():  # 사용자가 기존 프록시를 꺼 둔 흔적이다.
             return UE4SSResult("CONFLICT", "기존 dwmapi.dll.off가 있습니다. 먼저 설치 상태를 확인하세요")  # 자동 덮어쓰기 금지다.
         paths = {bin_path / Path(relative): data for relative, data in payload.items()}  # 모든 대상 절대경로다.
@@ -624,7 +630,7 @@ def prepare_ue4ss(game_root: str, bundle_zip: Optional[str] = None,
             root, [str(p) for p in paths],  # 게임 루트와 이번에 검증·설치한 정확한 파일 경로 목록이다.
             bundle={"name": "UE4SS", "version": UE4SS_VERSION,
                     "sha256": actual, "kind": bundle_kind},  # ZIP 전체 해시인지 폴더 설치 파일 지문인지 구분한다.
-            mods=list(TEAM_MODS))  # 우리 모드에 속한 파일만 탐지기 예외 후보가 된다.
+            mods=list(TEAM_MODS), out_path=ue4ss_manifest.DEFAULT_PATH)  # 탐지기와 같은 고정 등록부만 쓴다.
         if recorded.get("unreadable"):  # 어떤 파일의 해시도 누락시키면 안 된다.
             return UE4SSResult("ERROR", "설치 파일 해시를 기록하지 못했습니다", installed)  # 정상 설치로 표시하지 않는다.
         return UE4SSResult("READY", "팀 UE4SS 파일·관측 모드 준비 완료; 게임 실행 뒤 로드 로그 확인 필요 (기존 타 모드 안전성은 평가하지 않음)", installed)  # 로드 검증은 별도다.

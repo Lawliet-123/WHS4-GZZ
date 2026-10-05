@@ -23,6 +23,25 @@ class UE4SSMainTests(unittest.TestCase):
         self.assertIsNone(result)
         prepare.assert_not_called()
 
+    def test_guard_only_run_verifies_existing_runtime(self):
+        """파일시스템 탐지기만 골라도 기존 UE4SS의 해시 등록부를 갱신한다."""
+        expected = game_launcher.UE4SSResult("READY", "verified")
+        with mock.patch.object(launcher_main.os.path, "exists", return_value=True), \
+             mock.patch.object(game_launcher, "prepare_ue4ss", return_value=expected) as prepare:
+            result = launcher_main._prepare_ue4ss(
+                [by_name()["memory_integrity"]], "C:/game", None)
+        self.assertIs(result, expected)
+        prepare.assert_called_once_with("C:/game", game_running=None)
+
+    def test_guard_only_run_does_not_install_missing_runtime(self):
+        """UE4SS가 전혀 없는 PC라면 guard-only 실행이 게임 폴더를 바꾸지 않는다."""
+        with mock.patch.object(launcher_main.os.path, "exists", return_value=False), \
+             mock.patch.object(game_launcher, "prepare_ue4ss") as prepare:
+            result = launcher_main._prepare_ue4ss(
+                [by_name()["memory_integrity"]], "C:/game", None)
+        self.assertIsNone(result)
+        prepare.assert_not_called()
+
     def test_running_game_is_checked_without_changes(self):
         expected = game_launcher.UE4SSResult("READY", "already installed")
         with mock.patch.object(game_launcher, "prepare_ue4ss", return_value=expected) as prepare:
@@ -89,8 +108,8 @@ class UE4SSMainTests(unittest.TestCase):
         with mock.patch.object(launcher_main, "resolve_player_id", return_value=("player_1", "test", False)), \
              mock.patch.object(launcher_main, "existing_sessions", return_value=[]), \
              mock.patch.object(launcher_main, "ProcessManager", FakeManager), \
-             mock.patch.object(launcher_main, "preflight"), \
-             mock.patch.object(launcher_main, "publish_game_dir", return_value="C:/game"), \
+             mock.patch.object(launcher_main, "preflight") as preflight, \
+             mock.patch.object(launcher_main, "publish_game_dir", return_value="C:/game") as publish, \
              mock.patch.object(launcher_main, "_game_start_epoch", return_value=1000.0), \
              mock.patch.object(launcher_main.game_launcher, "find_game_pid", side_effect=[None, None, None]), \
              mock.patch.object(launcher_main.game_launcher, "prepare_ue4ss", side_effect=prepare), \
@@ -99,9 +118,12 @@ class UE4SSMainTests(unittest.TestCase):
              mock.patch.object(launcher_main.game_launcher, "wait_for_ue4ss_log", side_effect=wait_load), \
              mock.patch.object(launcher_main.ui, "line"), \
              mock.patch.object(launcher_main.ui, "render", side_effect=lambda rows, ctx: rendered.append(dict(ctx))):
-            code = launcher_main.main(["--session", "ue4ss_test", "--only", "autopaint"])
+            code = launcher_main.main(["--session", "ue4ss_test", "--only", "autopaint",
+                                       "--no-game-path-prompt"])
 
         self.assertEqual(code, 0)
+        self.assertIs(preflight.call_args.kwargs["allow_game_path_prompt"], False)
+        self.assertTrue(all(call.kwargs["allow_prompt"] is False for call in publish.call_args_list))
         self.assertEqual(calls[0][0], "prepare")
         self.assertEqual(calls[1:3], [("start_group", False), ("start_group", True)])
         self.assertEqual(calls[3][0], "wait_load")
