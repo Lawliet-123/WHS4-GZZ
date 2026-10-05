@@ -153,6 +153,47 @@ describe("EvidenceDrawer accessibility", () => {
     });
   });
 
+  it("retains the Noclip blocked-path metric in rendered evidence and copied JSON without exposing paths", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    const { container } = render(<EvidenceDrawer event={{
+      ...event,
+      module: "noclip",
+      evidence: { collision: 0, blocked_path: 1, module_path: "C:\\Users\\alice\\private.dll" },
+    }} onClose={() => undefined} />);
+
+    const field = screen.getByText("blocked_path").closest("div")!;
+    expect(field.querySelector("strong")?.textContent).toBe("1");
+    expect(container.querySelector(".raw-data pre")?.textContent).toContain('"blocked_path": 1');
+    expect(container.textContent).not.toContain("private.dll");
+    fireEvent.click(screen.getByRole("button", { name: "JSON 복사" }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledOnce());
+    const copied = JSON.parse(clipboardWrite.mock.calls[0]![0]) as { evidence: Record<string, unknown> };
+    expect(copied.evidence).toEqual({ collision: 0, blocked_path: 1 });
+  });
+
+  it("still removes a string blocked_path from Noclip render and copy", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    const { container } = render(<EvidenceDrawer event={{
+      ...event,
+      module: "noclip",
+      evidence: { collision: 0, blocked_path: "C:\\Users\\alice\\private.log" },
+    }} onClose={() => undefined} />);
+
+    expect(screen.queryByText("blocked_path")).toBeNull();
+    expect(container.textContent).not.toContain("private.log");
+    fireEvent.click(screen.getByRole("button", { name: "JSON 복사" }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledOnce());
+    expect(JSON.parse(clipboardWrite.mock.calls[0]![0]).evidence).toEqual({ collision: 0 });
+  });
+
   it("redacts absolute paths and repeated direct identifiers from free-form evidence, reasons and logs", async () => {
     const clipboardWrite = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -187,6 +228,29 @@ describe("EvidenceDrawer accessibility", () => {
 });
 
 describe("sanitizeEvidence", () => {
+  it.each([0, 1, false, true])("retains Noclip's known blocked_path scalar %s without mutation", (blockedPath) => {
+    const evidence = { blocked_path: blockedPath, source_path: 1, nested: { blocked_path: true } };
+    expect(sanitizeEvidence(evidence, "noclip")).toEqual({
+      evidence: { blocked_path: blockedPath, nested: {} },
+      hiddenCount: 2,
+    });
+    expect(evidence).toEqual({ blocked_path: blockedPath, source_path: 1, nested: { blocked_path: true } });
+  });
+
+  it.each(["0", "1", "C:\\Users\\alice\\private.dll", 2, -1, NaN, null, { value: 1 }])(
+    "does not exempt malformed or path-like blocked_path value %s",
+    (blockedPath) => {
+      expect(sanitizeEvidence({ blocked_path: blockedPath }, "noclip")).toEqual({ evidence: {}, hiddenCount: 1 });
+    },
+  );
+
+  it("does not exempt blocked_path without Noclip context or permit arbitrary path keys", () => {
+    expect(sanitizeEvidence({ blocked_path: 1 })).toEqual({ evidence: {}, hiddenCount: 1 });
+    expect(sanitizeEvidence({ blocked_path: true }, "esp")).toEqual({ evidence: {}, hiddenCount: 1 });
+    expect(sanitizeEvidence({ telemetry_path: 1, path_count: 0, full_path: false }, "noclip"))
+      .toEqual({ evidence: {}, hiddenCount: 3 });
+  });
+
   it("normalizes camelCase identifiers and preserves digest-like path keys", () => {
     expect(sanitizeEvidence({
       userName: "alice",
