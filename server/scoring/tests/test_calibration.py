@@ -164,6 +164,103 @@ class CalibrationTests(unittest.TestCase):
                 self.assertFalse(calibration.calibrated)
                 self.assertIsNone(calibration.meets_threshold(10))
 
+    def test_yara_legacy_without_ruleset_stays_pending(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "pid": 500,
+                "scope": "selected_local_process_memory",
+            },
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertFalse(calibration.calibrated)
+        self.assertIn("Legacy", calibration.note)
+
+    def test_yara_custom_ruleset_is_advisory(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=10,
+            evidence={
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "custom_cli",
+                    "files": [{"file": "custom.yar", "sha256": "b" * 64}],
+                    "rule_count": 1,
+                    "test_rules_present": False,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+
+    def test_yara_test_ruleset_is_advisory(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "repository_default",
+                    "files": [
+                        {
+                            "file": "repository_cheats.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 12,
+                    "test_rules_present": True,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+
+    def test_yara_repository_default_identity_stays_pending_until_e2e(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "repository_default",
+                    "files": [
+                        {
+                            "file": "repository_cheats.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 12,
+                    "test_rules_present": False,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertFalse(calibration.calibrated)
+        self.assertIn("E2E", calibration.note)
+
+    def test_yara_malformed_repository_identity_stays_pending(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "ruleset": {
+                    "id": "not-a-digest",
+                    "source": "repository_default",
+                    "files": [],
+                    "rule_count": 0,
+                    "test_rules_present": False,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertIn("malformed", calibration.note)
+
     def test_overlay_normal_zero_uses_base_threshold(self):
         calibration = resolve_calibration(
             "overlay_hook",

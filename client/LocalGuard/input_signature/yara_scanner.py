@@ -190,9 +190,62 @@ def load_rules(paths):
         score = rule.meta.get('score', 1)
         if type(score) is not int or not 1 <= score <= 10:
             raise ValueError('rule score must be an integer from 1 to 10')
-    return rules, {'engine': 'yara-python', 'engine_version': yara.__version__,
-                   'files': records, 'rule_count': len(exported),
-                   'test_rules_present': any(r.meta.get('test_only',False) for r in exported)}
+    # 전체 규칙셋의 안정적인 ID는 절대 경로가 아니라
+    # 실제 컴파일 입력의 basename + content SHA-256 목록으로 만든다.
+    # 같은 파일 내용을 다른 PC 경로에서 사용해도 같은 ID가 나온다.
+    canonical_ruleset = json.dumps(
+        records,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(',', ':'),
+    ).encode('utf-8')
+    ruleset_id = 'sha256:' + hashlib.sha256(canonical_ruleset).hexdigest()
+
+    return rules, {
+        'ruleset_id': ruleset_id,
+        'engine': 'yara-python',
+        'engine_version': yara.__version__,
+        'files': records,
+        'rule_count': len(exported),
+        'test_rules_present': any(
+            r.meta.get('test_only', False)
+            for r in exported
+        ),
+    }
+
+
+def _ruleset_evidence(ruleset):
+    """manifest용 ruleset 정보를 중앙 Event에 안전한 형태로 복사한다.
+
+    None은 기존 테스트/과거 호출 호환용이다. 실제 main() 실행 경로에서는
+    항상 ruleset 정보를 전달한다.
+    """
+    if ruleset is None:
+        return None
+
+    files = ruleset.get('files')
+    copied_files = []
+    if isinstance(files, list):
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            name = item.get('file')
+            digest = item.get('sha256')
+            if isinstance(name, str) and isinstance(digest, str):
+                copied_files.append({
+                    'file': name,
+                    'sha256': digest,
+                })
+
+    return {
+        'id': ruleset.get('ruleset_id'),
+        'source': ruleset.get('source', 'unspecified'),
+        'engine': ruleset.get('engine'),
+        'engine_version': ruleset.get('engine_version'),
+        'files': copied_files,
+        'rule_count': ruleset.get('rule_count'),
+        'test_rules_present': ruleset.get('test_rules_present'),
+    }
 
 
 def _hits_from_matches(matches):
@@ -234,7 +287,8 @@ def format_matched_strings(hits):
 
 def _emit_scan_result(process, session, raw_stream, start, hits, *, scope,
                       coverage, module=None, zero_means=None, scan_method=None,
-                      module_inventory_count=None, selection=None):
+                      module_inventory_count=None, selection=None,
+                      ruleset=None):
     """성공한 검사 한 건을 상세 raw 로그와 7필드 공통 Event로 기록한다.
 
     여러 규칙이 같은 도구를 가리켜 점수가 중복 가산되지 않도록 최고 점수만
@@ -270,6 +324,11 @@ def _emit_scan_result(process, session, raw_stream, start, hits, *, scope,
     if module:
         evidence['module_name'] = module['name']
         evidence['module_size'] = module['size']
+
+    ruleset_info = _ruleset_evidence(ruleset)
+    if ruleset_info is not None:
+        evidence['ruleset'] = ruleset_info
+
     event = session.emit('localguard_yara', session.manifest['player_id'], evidence,
                          ['YARA Rule Matched: ' + h['rule'] for h in hits], score,
                          timestamp_ms=end)
@@ -280,7 +339,8 @@ def _emit_scan_result(process, session, raw_stream, start, hits, *, scope,
 
 
 def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
-                                      timeout=45, bridge_only=False):
+                                      timeout=45, bridge_only=False,
+                                      ruleset=None):
     """이름이 알려진 Auto Paint bridge의 *매핑된 메모리*를 검사한다.
 
     기본 모드는 모듈 부재·불일치 시 전체 프로세스 검사로 넘어가도록 None을
@@ -304,7 +364,9 @@ def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
                 scope='known_autopaint_bridge_module_inventory',
                 coverage='No known named Auto Paint bridge in the loader module list; full memory not scanned',
                 zero_means='known_named_bridge_not_loaded_at_observation_time_not_proven_clean',
-                scan_method='module_inventory', module_inventory_count=len(inventory))
+                scan_method='module_inventory',
+                module_inventory_count=len(inventory),
+                ruleset=ruleset)
         if len(modules) > 8: raise RuntimeError('too_many_autopaint_bridge_modules')
         for module in modules:
             data = read_process_module(process.pid, module)
@@ -332,14 +394,17 @@ def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
                     scope='loaded_autopaint_bridge_module_memory',
                     coverage='Mapped loaded bridge image bytes only; not a full-process scan',
                     module=module, scan_method='yara_module_memory',
-                    module_inventory_count=len(inventory))
+                    module_inventory_count=len(inventory),
+                    ruleset=ruleset)
         if bridge_only:
             return _emit_scan_result(
                 process, session, raw_stream, start, [],
                 scope='loaded_autopaint_bridge_module_memory',
                 coverage='Known named bridge modules scanned; full memory not scanned',
                 zero_means='no_autopaint_rule_match_in_named_bridge_modules_not_proven_clean',
-                scan_method='yara_module_memory', module_inventory_count=len(inventory))
+                scan_method='yara_module_memory',
+                module_inventory_count=len(inventory),
+                ruleset=ruleset)
     except Exception as exc:
         json_line(raw_stream, {'type': 'scan_error' if bridge_only else 'module_scan_error',
                                'timestamp_ms': session.elapsed(), 'scan_start_ms': start,
@@ -353,7 +418,8 @@ def scan_loaded_autopaint_bridge_once(rules, process, session, raw_stream, *,
 
 
 def scan_once(rules, process, session, raw_stream, *, timeout=45,
-              scope='selected_local_process_memory', selection=None):
+              scope='selected_local_process_memory', selection=None,
+              ruleset=None):
     """선택한 PID의 읽을 수 있는 메모리를 YARA로 검사한다.
 
     완전하게 끝난 관측은 일치가 없어도 범위가 명시된 0점 Event를 남긴다.
@@ -383,11 +449,13 @@ def scan_once(rules, process, session, raw_stream, *, timeout=45,
         process, session, raw_stream, start, hits,
         scope=scope,
         coverage='YARA readable memory; not an atomic snapshot or proof of full-process coverage',
-        selection=selection)
+        selection=selection,
+        ruleset=ruleset)
 
 
 def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
-                                    timeout, max_targets, cursor, scanned_pids=None):
+                                    timeout, max_targets, cursor,
+                                    scanned_pids=None, ruleset=None):
     """같은 Windows 세션의 Python 후보를 제한된 수만큼 찾아 검사한다.
 
     발견한 전체/이번 주기/다음 주기 PID를 raw 로그에 기록한다. 후보 부재는
@@ -447,9 +515,15 @@ def scan_external_python_candidates(rules, game_process, session, raw_stream, *,
                                        'image_name': Path(candidate.initial['image_path']).name,
                                        'creation_time_100ns': candidate.initial['creation_time_100ns'],
                                        'score_evaluated': False})
-                event = scan_once(rules, candidate, session, raw_stream,
-                                  timeout=timeout,
-                                  scope='same_session_external_python_memory')
+                event = scan_once(
+                    rules,
+                    candidate,
+                    session,
+                    raw_stream,
+                    timeout=timeout,
+                    scope='same_session_external_python_memory',
+                    ruleset=ruleset,
+                )
             if event is None:
                 failures += 1
                 print(f'[외부후보 PID={pid}] 검사 실패: 정상 0점이 아닙니다.')
@@ -602,7 +676,17 @@ def main(argv=None):
                           {'executable_hashes': 'raw/executable_hashes.jsonl'})))
         # 실제 사용한 규칙 파일의 해시와 엔진 버전을 manifest에 남겨 재현성을
         # 확보한다. 규칙을 읽지 못하면 정상 0점이 아닌 실행 실패다.
-        rules, rule_manifest = load_rules(args.rules or [ROOT / 'rules' / 'repository_cheats.yar'])
+        rule_paths = args.rules or [
+            ROOT / 'rules' / 'repository_cheats.yar'
+        ]
+        rules, rule_manifest = load_rules(rule_paths)
+        rule_manifest = dict(rule_manifest)
+        rule_manifest['source'] = (
+            'custom_cli'
+            if args.rules
+            else 'repository_default'
+        )
+
         hash_catalogue = (None if args.no_executable_hash else
                           load_blacklist(args.hash_blacklist))
         if args.scan_mode == 'autopaint-bridge' and not any(
@@ -689,12 +773,25 @@ def main(argv=None):
                 begin = time.monotonic()
                 scanned_external_pids = set()
                 event = scan_loaded_autopaint_bridge_once(
-                    rules, process, session, raw, timeout=args.timeout,
-                    bridge_only=args.scan_mode == 'autopaint-bridge')
+                    rules,
+                    process,
+                    session,
+                    raw,
+                    timeout=args.timeout,
+                    bridge_only=args.scan_mode == 'autopaint-bridge',
+                    ruleset=rule_manifest,
+                )
                 # 기본 모드에서 bridge가 없거나 일치하지 않으면 게임 전체의
                 # 읽을 수 있는 메모리로 범위를 넓힌다.
                 if event is None and args.scan_mode == 'auto':
-                    event = scan_once(rules, process, session, raw, timeout=args.timeout)
+                    event = scan_once(
+                        rules,
+                        process,
+                        session,
+                        raw,
+                        timeout=args.timeout,
+                        ruleset=rule_manifest,
+                    )
                 if event is None:
                     # 실패한 평가에는 공통 정상 0점을 만들지 않는다. 반복 실패는
                     # 관측 불가 상태로 종료해 운영자가 알아볼 수 있게 한다.
@@ -727,9 +824,16 @@ def main(argv=None):
                     # 외부 도구를 자동으로 찾는 옵션은 Python 실행기 후보에만
                     # 적용된다. 후보 이름이나 존재 자체를 치트 판정으로 쓰지 않는다.
                     external_cursor, external_failures = scan_external_python_candidates(
-                        rules, process, session, raw, timeout=args.external_timeout,
-                        max_targets=args.external_max_targets, cursor=external_cursor,
-                        scanned_pids=scanned_external_pids)
+                        rules,
+                        process,
+                        session,
+                        raw,
+                        timeout=args.external_timeout,
+                        max_targets=args.external_max_targets,
+                        cursor=external_cursor,
+                        scanned_pids=scanned_external_pids,
+                        ruleset=rule_manifest,
+                    )
                     if external_failures:
                         heartbeat.update_component(
                             'localguard_input_signature', 'degraded', pid=os.getpid(),
