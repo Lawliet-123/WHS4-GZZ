@@ -31,6 +31,13 @@ _HARD_UNRESOLVED_POLICY_STATES = frozenset({
 })
 
 
+# SelfDefense는 치트 탐지기가 아니라 안티치트 구성요소의 운영 상태를 보고한다.
+# 원본 Event는 Storage/Dashboard에 그대로 남기되 cheat-risk 계산에서는 제외한다.
+_OPERATIONAL_ONLY_MODULES = frozenset({
+    "selfdefense",
+})
+
+
 @dataclass(frozen=True)
 class RiskSignalInput:
     """모듈 1개의 Policy + calibration 결과."""
@@ -156,6 +163,9 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
                 "module state and policy evaluation do not match"
             )
 
+        if state.module in _OPERATIONAL_ONLY_MODULES:
+            continue
+
         measurement_available = (
             signal.state not in _MEASUREMENT_UNAVAILABLE_STATES
         )
@@ -236,5 +246,9 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
         unresolved_policy_modules=tuple(unresolved),
         event_history_modules=tuple(history_required),
         entity_scoped_modules=tuple(entity_scoped),
-        correlation_candidates=snapshot.correlation_candidates,
+        correlation_candidates=tuple(
+            candidate
+            for candidate in snapshot.correlation_candidates
+            if not _OPERATIONAL_ONLY_MODULES.intersection(candidate.modules)
+        ),
     )
