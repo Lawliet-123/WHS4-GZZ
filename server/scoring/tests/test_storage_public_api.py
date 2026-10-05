@@ -5,6 +5,8 @@ from unittest.mock import Mock, patch
 
 import server.scoring as scoring
 from server.scoring.main import (
+    backfill_external_access_history_from_writer,
+    get_external_access_history,
     get_external_access_scoped_state,
     get_whistle_window_conflicts,
     get_whistle_window_history,
@@ -32,6 +34,79 @@ class StoragePublicApiTests(unittest.TestCase):
             "player_1",
             "external_access",
             "external_process",
+        )
+
+    @patch("server.scoring.main._get_store")
+    def test_external_access_history_backfill_replays_only_external_access(
+        self,
+        mocked_get_store,
+    ):
+        store = Mock()
+        mocked_get_store.return_value = store
+
+        external = Mock(
+            result={
+                "module": "external_access",
+                "raw_score": 2,
+            },
+            event_id="external-event",
+            sequence=10,
+        )
+        noclip = Mock(
+            result={
+                "module": "noclip",
+                "raw_score": 3,
+            },
+            event_id="noclip-event",
+            sequence=11,
+        )
+
+        writer = Mock()
+        writer.iter_stored.return_value = [external, noclip]
+
+        result = backfill_external_access_history_from_writer(
+            writer,
+            batch_size=100,
+        )
+
+        self.assertEqual(result, 11)
+
+        store.process_event.assert_called_once_with(
+            external.result,
+            event_id="external-event",
+            sequence=10,
+        )
+
+        writer.iter_stored.assert_called_once_with(
+            after_sequence=0,
+            limit=100,
+        )
+
+    @patch("server.scoring.main._get_store")
+    def test_external_access_history_wrapper_delegates(
+        self,
+        mocked_get_store,
+    ):
+        store = Mock()
+        expected = [object(), object()]
+        store.get_external_access_history.return_value = expected
+        mocked_get_store.return_value = store
+
+        result = get_external_access_history(
+            "session_1",
+            "player_1",
+            "module_integrity",
+            after_sequence=10,
+            limit=25,
+        )
+
+        self.assertIs(result, expected)
+        store.get_external_access_history.assert_called_once_with(
+            "session_1",
+            "player_1",
+            "module_integrity",
+            after_sequence=10,
+            limit=25,
         )
 
     @patch("server.scoring.main._get_store")
@@ -94,6 +169,14 @@ class StoragePublicApiTests(unittest.TestCase):
 
     def test_package_exports_new_storage_interfaces(self):
         self.assertIs(
+            scoring.backfill_external_access_history_from_writer,
+            backfill_external_access_history_from_writer,
+        )
+        self.assertIs(
+            scoring.get_external_access_history,
+            get_external_access_history,
+        )
+        self.assertIs(
             scoring.get_external_access_scoped_state,
             get_external_access_scoped_state,
         )
@@ -106,6 +189,7 @@ class StoragePublicApiTests(unittest.TestCase):
             get_whistle_window_conflicts,
         )
 
+        self.assertTrue(hasattr(scoring, "ExternalAccessEvent"))
         self.assertTrue(hasattr(scoring, "WindowEvent"))
         self.assertTrue(hasattr(scoring, "WindowConflict"))
 

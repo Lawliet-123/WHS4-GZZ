@@ -36,10 +36,17 @@ class ModuleCalibration:
     threshold: float | None
     version: str = CALIBRATION_VERSION
     note: str = ""
+    submodule: str | None = None
 
     def __post_init__(self) -> None:
         if not self.module:
             raise ValueError("module must not be empty")
+
+        if self.submodule is not None and (
+            not isinstance(self.submodule, str)
+            or not self.submodule
+        ):
+            raise ValueError("submodule must be None or a non-empty string")
 
         if self.mode in ("threshold", "event_threshold"):
             if (
@@ -153,7 +160,16 @@ _ITEMS = (
     ),
 
     # 현재 중앙 risk calibration 근거가 없는 알려진 모듈들.
-    ModuleCalibration("external_access", "pending", None),
+    ModuleCalibration(
+        "external_access",
+        "pending",
+        None,
+        note=(
+            "Derived aggregate only. external_process and module_integrity "
+            "have different score/state semantics, so aggregate max(raw_score) "
+            "must not be calibrated directly."
+        ),
+    ),
     ModuleCalibration(
         "localguard_executable_hash",
         "threshold",
@@ -188,11 +204,47 @@ CALIBRATIONS: Mapping[str, ModuleCalibration] = MappingProxyType(
 )
 
 
+# external_access는 하나의 module 문자열 아래 서로 다른 두 탐지 채널이 있다.
+# 두 채널은 raw 범위와 NORMAL 0의 의미가 다르므로 별도 calibration을 유지한다.
+_EXTERNAL_ACCESS_CALIBRATIONS: Mapping[str, ModuleCalibration] = MappingProxyType({
+    "external_process": ModuleCalibration(
+        "external_access",
+        "pending",
+        None,
+        note=(
+            "external_process calibration requires representative NORMAL and "
+            "controlled positive E2E. Multiple positive handle observations in "
+            "one scan must not be collapsed to the last Event."
+        ),
+        submodule="external_process",
+    ),
+    "module_integrity": ModuleCalibration(
+        "external_access",
+        "pending",
+        None,
+        note=(
+            "module_integrity calibration requires DLL-change history. "
+            "A later NORMAL 0 means no new suspicious change in that scan and "
+            "does not prove that an earlier DLL observation was removed or safe."
+        ),
+        submodule="module_integrity",
+    ),
+})
+
+
 _OVERLAY_ACTIVE_SIGNATURES = frozenset({
     "서명없음",
     "위조",
     "신뢰안됨",
 })
+
+
+def get_external_access_calibration(
+    submodule: str,
+) -> ModuleCalibration | None:
+    """external_access 하위 채널의 별도 calibration을 반환한다."""
+
+    return _EXTERNAL_ACCESS_CALIBRATIONS.get(submodule)
 
 
 def get_calibration(module: str) -> ModuleCalibration | None:
@@ -216,7 +268,31 @@ def resolve_calibration(
     """
     base = get_calibration(module)
 
-    if module != "overlay_hook" or base is None:
+    if base is None:
+        return None
+
+    if module == "external_access":
+        submodule = evidence.get("submodule")
+
+        # 과거 external_process Event는 source_pid만 있고
+        # submodule 필드가 없던 형식도 있었다.
+        if submodule is None and "source_pid" in evidence:
+            submodule = "external_process"
+
+        scoped = (
+            get_external_access_calibration(submodule)
+            if isinstance(submodule, str)
+            else None
+        )
+
+        if scoped is not None:
+            return scoped
+
+        # aggregate / 미분류 / 과거 불완전 Event는
+        # module-level pending 규칙을 유지한다.
+        return base
+
+    if module != "overlay_hook":
         return base
 
     # 정상 측정 0점은 그대로 INACTIVE 판정할 수 있다.

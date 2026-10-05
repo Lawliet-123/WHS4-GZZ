@@ -33,6 +33,7 @@ from .storage import (
     DeltaEvent,
     EVENT_DELTA_MODULES,
     EXTERNAL_ACCESS_SUBMODULES,
+    ExternalAccessEvent,
     ModuleState,
     ProcessReceipt,
     ScoringStore,
@@ -311,6 +312,30 @@ def get_player_signal_inventory(session_id: str, player_id: str):
     return inspect_player_snapshot(get_player_snapshot(session_id, player_id))
 
 
+def get_external_access_history(
+    session_id: str,
+    player_id: str,
+    submodule: str,
+    *,
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[ExternalAccessEvent]:
+    """external_access 하위 채널의 원본 Event 이력을 조회한다."""
+
+    if submodule not in EXTERNAL_ACCESS_SUBMODULES:
+        raise ValueError(
+            "unsupported external_access submodule"
+        )
+
+    return _get_store().get_external_access_history(
+        session_id,
+        player_id,
+        submodule,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
 def get_external_access_scoped_state(
     session_id: str,
     player_id: str,
@@ -456,5 +481,50 @@ def backfill_event_delta_history_from_writer(writer, *, batch_size: int = 1000) 
                     record.result, event_id=record.event_id, sequence=record.sequence
                 )
             cursor = record.sequence
+        if len(batch) < batch_size:
+            return cursor
+
+
+def backfill_external_access_history_from_writer(
+    writer,
+    *,
+    batch_size: int = 1000,
+) -> int:
+    """과거 external_access Event를 Shared 원본에서 history로 backfill한다.
+
+    일반 recover_from_writer()는 recovery cursor 이후만 읽으므로
+    external_access_history 도입 전에 이미 처리된 과거 Event는 다시 보지 않는다.
+
+    처음부터 Shared 원본을 훑되 external_access만 재처리한다.
+    동일 event_id는 storage의 기존 중복 처리 경로를 통해 history만 안전하게
+    보완되며 최신 상태를 점수 합산하지 않는다.
+
+    반환값은 마지막으로 검사한 Shared sequence다.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    store = _get_store()
+    cursor = 0
+
+    while True:
+        batch = writer.iter_stored(
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            return cursor
+
+        for record in batch:
+            if record.result["module"] == "external_access":
+                store.process_event(
+                    record.result,
+                    event_id=record.event_id,
+                    sequence=record.sequence,
+                )
+
+            cursor = record.sequence
+
         if len(batch) < batch_size:
             return cursor

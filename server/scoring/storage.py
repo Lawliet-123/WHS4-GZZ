@@ -81,6 +81,22 @@ class DeltaEvent:
 
 
 @dataclass(frozen=True)
+class ExternalAccessEvent:
+    """external_access 하위 채널의 원본 관측 1건."""
+
+    event_id: str
+    sequence: int
+    session_id: str
+    player_id: str
+    module: str
+    submodule: str
+    timestamp_ms: int
+    raw_score: float
+    evidence: dict[str, Any]
+    reasons: list[str]
+
+
+@dataclass(frozen=True)
 class WindowEvent:
     """whistle_rpc 검사 window 1개의 보존된 관측.
 
@@ -322,6 +338,32 @@ class ScoringStore:
                     """CREATE INDEX IF NOT EXISTS ix_delta_player_sequence
                        ON event_delta_history(session_id, player_id, module, sequence)"""
                 )
+
+                # external_access는 한 scan에서 여러 양수 Event가 발생할 수 있고,
+                # module_integrity의 후속 NORMAL 0은 과거 DLL 변화의 해소를 뜻하지 않는다.
+                # scoped_latest_state와 별도로 원본 Event 흐름을 모두 보존한다.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS external_access_history (
+                        event_id TEXT PRIMARY KEY,
+                        sequence INTEGER NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL,
+                        player_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        submodule TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        raw_score REAL NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        FOREIGN KEY(event_id) REFERENCES processed_events(event_id)
+                    )"""
+                )
+                db.execute(
+                    """CREATE INDEX IF NOT EXISTS ix_external_access_history
+                       ON external_access_history(
+                           session_id, player_id, submodule, sequence
+                       )"""
+                )
+
                 db.commit()
         except sqlite3.Error as exc:
             raise RuntimeError("cannot initialize scoring storage") from exc
@@ -377,6 +419,53 @@ class ScoringStore:
             return submodule
 
         return None
+
+    @classmethod
+    def _remember_external_access_event(
+        cls,
+        db: sqlite3.Connection,
+        event: dict[str, Any],
+        event_id: str,
+        sequence: int,
+    ) -> None:
+        """external_access의 인식 가능한 두 하위 채널 원본을 모두 보존한다."""
+
+        if event["module"] != "external_access":
+            return
+
+        submodule = cls._external_access_submodule(event)
+        if submodule is None:
+            return
+
+        db.execute(
+            """INSERT INTO external_access_history(
+                   event_id, sequence, session_id, player_id,
+                   module, submodule, timestamp_ms, raw_score,
+                   evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(event_id) DO NOTHING""",
+            (
+                event_id,
+                sequence,
+                event["session_id"],
+                event["player_id"],
+                event["module"],
+                submodule,
+                event["timestamp_ms"],
+                float(event["raw_score"]),
+                json.dumps(
+                    event["evidence"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    event["reasons"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
 
     @staticmethod
     def _update_external_access_scoped(
@@ -1043,6 +1132,12 @@ class ScoringStore:
                         sequence,
                     )
                     self._remember_delta_event(db, event, event_id, sequence)
+                    self._remember_external_access_event(
+                        db,
+                        event,
+                        event_id,
+                        sequence,
+                    )
 
                     # YARA scoped 저장이 추가되기 전에 처리된 기존 DB도
                     # Shared recovery/retry 시 정확한 원본 이벤트로 안전하게 보완한다.
@@ -1207,6 +1302,12 @@ class ScoringStore:
                 # processed_events + 최신 상태 + 새 사건 이력을 한 트랜잭션으로 묶는다.
                 # 이력 INSERT 실패 시 세 변경 사항 모두 롤백된다.
                 self._remember_delta_event(db, event, event_id, sequence)
+                self._remember_external_access_event(
+                    db,
+                    event,
+                    event_id,
+                    sequence,
+                )
                 db.commit()
                 return ProcessReceipt(event_id, sequence, "processed", should_update)
             except BaseException:
@@ -1345,6 +1446,74 @@ class ScoringStore:
                 semantic_key_valid=bool(
                     row["semantic_key_valid"]
                 ),
+                timestamp_ms=row["timestamp_ms"],
+                raw_score=row["raw_score"],
+                evidence=json.loads(row["evidence_json"]),
+                reasons=json.loads(row["reasons_json"]),
+            )
+            for row in rows
+        ]
+
+    def get_external_access_history(
+        self,
+        session_id: str,
+        player_id: str,
+        submodule: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[ExternalAccessEvent]:
+        """external_access 하위 채널의 원본 Event 흐름을 서버 순서로 조회한다."""
+
+        validate_identifier(session_id)
+        validate_identifier(player_id)
+
+        if submodule not in EXTERNAL_ACCESS_SUBMODULES:
+            raise ValueError("unsupported external_access submodule")
+
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError(
+                "after_sequence must be a nonnegative integer"
+            )
+
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError(
+                "limit must be between 1 and 1000"
+            )
+
+        try:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    """SELECT *
+                       FROM external_access_history
+                       WHERE session_id=?
+                         AND player_id=?
+                         AND module='external_access'
+                         AND submodule=?
+                         AND sequence>?
+                       ORDER BY sequence
+                       LIMIT ?""",
+                    (
+                        session_id,
+                        player_id,
+                        submodule,
+                        after_sequence,
+                        limit,
+                    ),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                "cannot read external_access history"
+            ) from exc
+
+        return [
+            ExternalAccessEvent(
+                event_id=row["event_id"],
+                sequence=row["sequence"],
+                session_id=row["session_id"],
+                player_id=row["player_id"],
+                module=row["module"],
+                submodule=row["submodule"],
                 timestamp_ms=row["timestamp_ms"],
                 raw_score=row["raw_score"],
                 evidence=json.loads(row["evidence_json"]),
