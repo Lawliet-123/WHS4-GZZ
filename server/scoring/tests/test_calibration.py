@@ -81,6 +81,186 @@ class CalibrationTests(unittest.TestCase):
                 self.assertIsNone(calibration.meets_threshold(0))
                 self.assertIsNone(calibration.meets_threshold(100))
 
+    def test_external_access_aggregate_stays_pending(self):
+        calibration = resolve_calibration(
+            "external_access",
+            raw_score=8,
+            evidence={
+                "submodule": "aggregate",
+                "status": "SUSPICIOUS",
+            },
+        )
+
+        self.assertEqual(calibration.module, "external_access")
+        self.assertIsNone(calibration.submodule)
+        self.assertEqual(calibration.mode, "pending")
+        self.assertIsNone(calibration.threshold)
+
+    def test_external_process_has_separate_pending_calibration(self):
+        calibration = resolve_calibration(
+            "external_access",
+            raw_score=8,
+            evidence={
+                "submodule": "external_process",
+                "status": "SUSPICIOUS",
+                "source_pid": 900,
+            },
+        )
+
+        self.assertEqual(calibration.module, "external_access")
+        self.assertEqual(calibration.submodule, "external_process")
+        self.assertEqual(calibration.mode, "pending")
+        self.assertIsNone(calibration.threshold)
+
+    def test_module_integrity_has_separate_pending_calibration(self):
+        calibration = resolve_calibration(
+            "external_access",
+            raw_score=2,
+            evidence={
+                "submodule": "module_integrity",
+                "status": "SUSPICIOUS",
+                "target_pid": 500,
+                "module_path": "C:/Game/example.dll",
+            },
+        )
+
+        self.assertEqual(calibration.module, "external_access")
+        self.assertEqual(calibration.submodule, "module_integrity")
+        self.assertEqual(calibration.mode, "pending")
+        self.assertIsNone(calibration.threshold)
+
+    def test_legacy_external_process_contract_uses_process_calibration(self):
+        calibration = resolve_calibration(
+            "external_access",
+            raw_score=3,
+            evidence={
+                "source_pid": 900,
+                "target_pid": 500,
+            },
+        )
+
+        self.assertEqual(calibration.submodule, "external_process")
+        self.assertEqual(calibration.mode, "pending")
+
+    def test_external_submodule_pending_does_not_force_threshold_result(self):
+        for evidence in (
+            {
+                "submodule": "external_process",
+                "source_pid": 900,
+            },
+            {
+                "submodule": "module_integrity",
+                "target_pid": 500,
+                "module_path": "C:/Game/example.dll",
+            },
+        ):
+            with self.subTest(submodule=evidence["submodule"]):
+                calibration = resolve_calibration(
+                    "external_access",
+                    raw_score=10,
+                    evidence=evidence,
+                )
+
+                self.assertFalse(calibration.calibrated)
+                self.assertIsNone(calibration.meets_threshold(10))
+
+    def test_yara_legacy_without_ruleset_stays_pending(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "pid": 500,
+                "scope": "selected_local_process_memory",
+            },
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertFalse(calibration.calibrated)
+        self.assertIn("Legacy", calibration.note)
+
+    def test_yara_custom_ruleset_is_advisory(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=10,
+            evidence={
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "custom_cli",
+                    "files": [{"file": "custom.yar", "sha256": "b" * 64}],
+                    "rule_count": 1,
+                    "test_rules_present": False,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+
+    def test_yara_test_ruleset_is_advisory(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "repository_default",
+                    "files": [
+                        {
+                            "file": "repository_cheats.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 12,
+                    "test_rules_present": True,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+
+    def test_yara_repository_default_identity_stays_pending_until_e2e(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "repository_default",
+                    "files": [
+                        {
+                            "file": "repository_cheats.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 12,
+                    "test_rules_present": False,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertFalse(calibration.calibrated)
+        self.assertIn("E2E", calibration.note)
+
+    def test_yara_malformed_repository_identity_stays_pending(self):
+        calibration = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence={
+                "ruleset": {
+                    "id": "not-a-digest",
+                    "source": "repository_default",
+                    "files": [],
+                    "rule_count": 0,
+                    "test_rules_present": False,
+                },
+            },
+        )
+
+        self.assertEqual(calibration.mode, "pending")
+        self.assertIn("malformed", calibration.note)
+
     def test_overlay_normal_zero_uses_base_threshold(self):
         calibration = resolve_calibration(
             "overlay_hook",

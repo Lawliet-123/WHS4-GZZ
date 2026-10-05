@@ -32,7 +32,7 @@ import sys
 
 import pymem
 
-from core import procopen, selfid, signature
+from core import procopen, selfid, signature, ue4ss_trust
 
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 
@@ -71,10 +71,21 @@ KNOWN_MODULES = {
 class Detection:
     """검사 하나의 결과. 탐지 여부와 근거를 같이 들고 다닌다."""
 
-    def __init__(self, check, caught, detail):
+    def __init__(self, check, caught, detail, note=None):
         self.check = check
         self.caught = caught
         self.detail = detail
+        # 점수에는 안 들어가지만 근거에 남겨야 하는 것(예: 해시가 맞는 우리 UE4SS
+        # 후킹을 제외했다는 사실). 조용히 빼지 않는다.
+        self.note = note
+
+
+def _trusted_note(hits):
+    """해시가 맞는 우리 UE4SS 때문에 뺀 건수를 한 줄로. 없으면 None."""
+    if not hits:
+        return None
+    return ("런처 설치 기록(해시 일치)과 맞는 모듈이라 제외: "
+            + ", ".join(f"{n} {c:,}건" for n, c in sorted(hits.items(), key=lambda kv: -kv[1])))
 
 
 def owner_of(addr, module_ranges):
@@ -262,7 +273,7 @@ def check_text_hash(pm, base, baseline=None):
 
 
 # ── [3] vtable 무결성 ────────────────────────────────────────────────────
-def check_vtable(pm, rows, module_ranges):
+def check_vtable(pm, rows, module_ranges, trusted_ranges=None):
     """UObject vtable 의 ProcessEvent 슬롯을 검사한다.
 
     원리: 정상이라면 이 포인터는 게임 실행파일 안을 가리킨다. 후킹되면
@@ -280,7 +291,7 @@ def check_vtable(pm, rows, module_ranges):
     for vtable, _cls, _e in rows:
         seen[vtable] = seen.get(vtable, 0) + 1
 
-    outside, checked = {}, 0
+    outside, checked, trusted_hits = {}, 0, {}
     for vtable, cnt in seen.items():
         try:
             fn = struct.unpack("<Q", pm.read_bytes(vtable + PROCESS_EVENT_IDX * 8, 8))[0]
@@ -288,21 +299,29 @@ def check_vtable(pm, rows, module_ranges):
             continue
         checked += cnt
         if not (game_lo <= fn < game_hi) and not _is_self_addr(fn, self_ranges):
+            # 런처가 깔면서 적어 둔 해시와 바이트가 맞는 모듈(우리 UE4SS)이면 뺀다.
+            # 이름이 아니라 해시로 가린다 — core/ue4ss_trust.py 참고.
+            own = ue4ss_trust.owner_in(fn, trusted_ranges or {})
+            if own:
+                trusted_hits[own] = trusted_hits.get(own, 0) + cnt
+                continue
             outside[fn] = outside.get(fn, 0) + cnt
 
+    note = _trusted_note(trusted_hits)
     if not outside:
         return Detection("vtable 무결성", False,
-                         f"오브젝트 {checked:,}개 / vtable {len(seen)}종 - ProcessEvent 전부 게임 모듈 내부")
+                         f"오브젝트 {checked:,}개 / vtable {len(seen)}종 - ProcessEvent 전부 게임 모듈 내부",
+                         note)
 
     lines = [f"0x{fn:016X}  ({owner_of(fn, module_ranges)})  오브젝트 {cnt:,}개"
              for fn, cnt in sorted(outside.items(), key=lambda kv: -kv[1])]
     return Detection("vtable 무결성", True,
                      f"vtable {len(seen)}종 중 게임 모듈 밖을 가리키는 ProcessEvent 발견\n      "
-                     + "\n      ".join(lines))
+                     + "\n      ".join(lines), note)
 
 
 # ── [4] ExecFunction 무결성 ──────────────────────────────────────────────
-def check_exec_function(pm, rows, module_ranges):
+def check_exec_function(pm, rows, module_ranges, trusted_ranges=None):
     """UFunction::ExecFunction(+0xD8) 포인터 교체를 검사한다.
 
     이건 vtable 검사로도 안 잡힌다. 네이티브 UFUNCTION 은 ProcessEvent 를
@@ -328,27 +347,35 @@ def check_exec_function(pm, rows, module_ranges):
         else:
             g[1].append(exec_fn)
 
-    suspects, fn_like = {}, 0
+    suspects, fn_like, trusted_hits = {}, 0, {}
     for _cls, (inside, outs) in groups.items():
         total = inside + len(outs)
         if total < 20 or inside / total < 0.9:
             continue                      # UFunction 계열로 보기엔 근거가 약하다
         fn_like += total
         for a in outs:
+            # UE4SS 는 Lua 모드를 돌리려고 ExecFunction 을 후킹한다. 팀 표준 설치가
+            # 깔린 PC 는 정상 세션도 전부 70점이 됐다(10/5 normal_002 실측).
+            # 이름이 아니라 **런처 설치 기록의 해시**로 가린다(core/ue4ss_trust.py).
+            own = ue4ss_trust.owner_in(a, trusted_ranges or {})
+            if own:
+                trusted_hits[own] = trusted_hits.get(own, 0) + 1
+                continue
             suspects[a] = suspects.get(a, 0) + 1
 
+    note = _trusted_note(trusted_hits)
     if not fn_like:
         return Detection("ExecFunction 무결성", False,
-                         "UFunction 계열 클래스를 식별하지 못했습니다 - 오프셋 확인 필요")
+                         "UFunction 계열 클래스를 식별하지 못했습니다 - 오프셋 확인 필요", note)
     if not suspects:
         return Detection("ExecFunction 무결성", False,
-                         f"UFunction 계열 {fn_like:,}개 - ExecFunction 전부 게임 모듈 내부")
+                         f"UFunction 계열 {fn_like:,}개 - ExecFunction 전부 게임 모듈 내부", note)
 
     lines = [f"0x{a:016X}  ({owner_of(a, module_ranges)})  {c}개"
              for a, c in sorted(suspects.items(), key=lambda kv: -kv[1])]
     return Detection("ExecFunction 무결성", True,
                      f"UFunction 계열 {fn_like:,}개 중 게임 모듈 밖을 가리키는 ExecFunction 발견\n      "
-                     + "\n      ".join(lines))
+                     + "\n      ".join(lines), note)
 
 
 def main():

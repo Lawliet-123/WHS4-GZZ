@@ -127,7 +127,7 @@ def existing_sessions(picked, session):
     return found
 
 
-def preflight(pm, only):
+def preflight(pm, only, *, allow_game_path_prompt=None):
     ui.line("=" * 76)
     ui.line("  MECCHA 안티치트 런처")
     ui.line("=" * 76)
@@ -141,7 +141,7 @@ def preflight(pm, only):
             ui.line(f"    - {s.name:<18} {s.detail}")
     if only:
         ui.line(f"  --only: {', '.join(only)}")
-    root = publish_game_dir()
+    root = publish_game_dir(allow_prompt=allow_game_path_prompt)
     if root:
         ui.line(f"  게임 폴더: {root}")
     else:
@@ -174,7 +174,7 @@ def report_stop(ended):
         ui.line("      signal.signal(signal.SIGBREAK, signal.default_int_handler)")
 
 
-def publish_game_dir(refresh=False):
+def publish_game_dir(refresh=False, *, allow_prompt=None):
     """찾은 게임 폴더를 자식 모듈들에게 환경변수로 알려준다.
 
     탐지기마다 게임 폴더를 따로 추측하고 있다 — filesystem 은 하드코딩 3줄,
@@ -190,11 +190,52 @@ def publish_game_dir(refresh=False):
     """
     if refresh:
         game_launcher._cache.clear()
-    root = game_launcher.find_game_root()
+    root = game_launcher.find_game_root(allow_prompt=allow_prompt)
     if root:
         os.environ["GZZ_GAME_ROOT"] = root
         os.environ["GZZ_GAME_BIN"] = game_launcher.find_game_dir()
     return root
+
+
+UE4SS_CONSUMERS = frozenset({"aimbot", "autopaint", "noclip", "godmode"})
+UE4SS_GUARDS = frozenset({"memory_integrity", "module_integrity", "external_access",
+                          "whistle_spoofing"})
+
+
+def _uses_ue4ss(picked):
+    """부분 실행에서는 UE4SS가 필요한 탐지기를 골랐을 때만 게임 파일을 준비한다."""
+    return any(module.name in UE4SS_CONSUMERS for module in picked)
+
+
+def _game_start_epoch(pid):
+    """이미 실행 중인 게임도 이전 실행의 UE4SS.log를 재사용하지 않게 시작 시각을 얻는다."""
+    ticks = registry.create_time(pid)  # Windows FILETIME: 1601년부터의 100ns 단위.
+    if not ticks:
+        return None
+    epoch = ticks / 10_000_000 - 11_644_473_600
+    return epoch if 0 < epoch <= time.time() + 5 else None
+
+
+def _ue4ss_status(result):
+    return f"{result.status}: {result.detail}"
+
+
+def _prepare_ue4ss(picked, root, game_pid):
+    """검증된 팀 ZIP이 있을 때만 준비하고, 실행 중인 게임 파일은 변경하지 않는다."""
+    if not _uses_ue4ss(picked):
+        # 부분 E2E에서 파일·주입 탐지기만 켜도, 이미 있는 UE4SS를 검증해
+        # 등록부를 남겨야 팀 파일을 자기 탐지기가 오탐하지 않는다. 다만 UE4SS가
+        # 전혀 없는 PC에 관측 런타임을 새로 설치할 이유는 없다.
+        if not root or not any(m.name in UE4SS_GUARDS for m in picked):
+            return None
+        bin_dir = os.path.join(root, game_launcher.WIN64_REL)
+        if not (os.path.exists(os.path.join(bin_dir, "dwmapi.dll")) or
+                os.path.exists(os.path.join(bin_dir, "ue4ss"))):
+            return None
+    if not root:
+        return game_launcher.UE4SSResult("MISSING", "게임 폴더를 찾지 못해 설치를 확인할 수 없습니다")
+    # game_pid를 못 찾았어도 설치 직전에 한 번 더 확인하도록 None을 넘긴다.
+    return game_launcher.prepare_ue4ss(root, game_running=True if game_pid else None)
 
 
 def main(argv=None):
@@ -212,6 +253,8 @@ def main(argv=None):
     ap.add_argument("--only", help="쉼표로 구분한 모듈 이름만 실행")
     ap.add_argument("--no-launch-game", action="store_true",
                     help="게임을 띄우지 않고, 이미 떠 있는 게임을 기다린다")
+    ap.add_argument("--no-game-path-prompt", action="store_true",
+                    help="자동 테스트에서 게임 경로 선택 창·콘솔 질문을 띄우지 않는다")
     ap.add_argument("--wait-game", type=float, default=180.0, metavar="SEC",
                     help="게임이 뜨기를 기다리는 시간 (기본 180초)")
     ap.add_argument("--status-every", type=float, default=10.0, metavar="SEC",
@@ -219,6 +262,10 @@ def main(argv=None):
     ap.add_argument("--overwrite", action="store_true",
                     help="같은 세션 이름의 기존 로그를 지우고 다시 쓴다")
     a = ap.parse_args(argv)
+
+    # 설치 기록의 위치는 탐지기와 약속한 고정 경로다. 이전 버전의 환경변수가
+    # 남아 있어도 자식 모듈이 다른 등록부를 읽거나 신뢰하지 않게 제거한다.
+    os.environ.pop("GZZ_UE4SS_MANIFEST", None)
 
     session = a.session or ("ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
     if not SESSION_RE.match(session):
@@ -268,7 +315,8 @@ def main(argv=None):
         ui.line(str(e))
         ui.line("먼저 뜬 런처를 끝내고 다시 실행하세요.")
         return 2
-    preflight(pm, only)
+    path_prompt = False if a.no_game_path_prompt else None
+    preflight(pm, only, allow_game_path_prompt=path_prompt)
 
     # 모듈 전체의 생존 상태를 중앙 서버에 한 발신자로 보낸다(launcher_heartbeat.py).
     # 서버 칸은 고정 문구가 아니라 하트비트 응답 결과로 채운다(10/4 재민님 요청).
@@ -283,6 +331,15 @@ def main(argv=None):
     ctx = {"session": session, "game_pid": None, "server": hb.server_text()}
     code = 0
     try:
+        # SelfDefense가 파일 변경을 관측하기 전에 팀 UE4SS와 해시 등록부를 함께 준비한다.
+        # --only가 UE4SS를 쓰지 않는 경우에는 게임 폴더를 수정하지 않는다.
+        prepared_root = publish_game_dir(allow_prompt=path_prompt)
+        preparation = _prepare_ue4ss(picked, prepared_root, game_launcher.find_game_pid())
+        ctx["ue4ss"] = (_ue4ss_status(preparation) if preparation else
+                        "선택한 모듈에서 사용 안 함")
+        if preparation:
+            ui.line(f"  UE4SS 준비: {ctx['ue4ss']}")
+
         ui.line("")
         ui.line("  [1/4] 게임과 무관한 모듈 시작")
         pm.start_group(needs_game=False)
@@ -294,7 +351,7 @@ def main(argv=None):
         if pid is None and not a.no_launch_game:
             ui.line("  [2/4] 게임 실행")
             if not game_launcher.launch():
-                ui.line("      게임을 띄우지 못했습니다. 직접 켜 주세요.")
+                ui.line("      Steam 실행 요청 실패. Steam에서 게임을 직접 켜 주세요.")
         elif pid is not None:
             ui.line(f"  [2/4] 게임이 이미 떠 있습니다 (PID {pid})")
 
@@ -310,12 +367,41 @@ def main(argv=None):
         pm.set_game_pid(pid)
         # 게임이 떴으니 이제 추정이 아니라 프로세스에서 경로를 얻을 수 있다.
         # 게임 관련 모듈을 띄우기 **전에** 갱신해야 그 값을 물려받는다.
-        found = publish_game_dir(refresh=True)
+        found = publish_game_dir(refresh=True, allow_prompt=path_prompt)
         if found:
             ui.line(f"      게임 폴더: {found}")
+        # Steam이 준비 단계와 다른 라이브러리의 설치본을 띄웠을 수 있다. 그 경우
+        # 실제 게임 폴더를 다시 검사하되, 실행 중인 게임에는 어떤 파일도 쓰지 않는다.
+        if preparation and found and (not prepared_root or os.path.normcase(os.path.realpath(found)) != os.path.normcase(os.path.realpath(prepared_root))):
+            preparation = _prepare_ue4ss(picked, found, pid)
+            ctx["ue4ss"] = _ue4ss_status(preparation)
+            ui.line(f"  ! 실행된 게임 위치가 달라 UE4SS를 다시 확인했습니다: {ctx['ue4ss']}")
 
         ui.line("  [4/4] 게임 관련 모듈 시작")
         pm.start_group(needs_game=True)
+
+        if preparation:
+            started_after = _game_start_epoch(pid)
+            if not found or started_after is None:
+                ctx["ue4ss"] = (f"{preparation.status}: 파일 준비 상태만 확인; "
+                                "이번 게임 실행의 로드 시각은 확인할 수 없음")
+            else:
+                # PaintObserver의 session.control은 AutoPaint 탐지기가 시작한 뒤에
+                # 만들어진다. 세션 로그를 기다리는 작업은 반드시 start_group 뒤다.
+                paint = pm.states.get("autopaint")
+                observed_session = session if paint and paint.status == RUNNING else None
+                if preparation.status == "READY":
+                    loaded = game_launcher.wait_for_ue4ss_log(
+                        found, observed_session, started_after, timeout_s=20.0)
+                    ctx["ue4ss"] = _ue4ss_status(loaded)
+                else:
+                    # 설치 자료가 없거나 충돌한 PC에서도 로그는 진단만 한다.
+                    # 로드 로그가 있어도 해시 검증 실패를 READY로 바꾸지 않는다.
+                    loaded = game_launcher.verify_ue4ss_log(
+                        found, observed_session, started_after)
+                    ctx["ue4ss"] = (f"{_ue4ss_status(preparation)} / "
+                                    f"로드 {loaded.status} (설치 파일 미검증)")
+            ui.line(f"  UE4SS 확인: {ctx['ue4ss']}")
 
         ui.line("")
         ui.line("  Ctrl+C 로 종료합니다. 게임이 꺼져도 자동으로 정리합니다.")
