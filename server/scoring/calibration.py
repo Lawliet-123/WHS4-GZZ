@@ -203,7 +203,16 @@ _ITEMS = (
             "controlled harness and unverifiable signatures are advisory."
         ),
     ),
-    ModuleCalibration("godmode_runtime", "pending", None),
+    ModuleCalibration(
+        "godmode_runtime",
+        "threshold",
+        5,
+        note=(
+            "Current score-capable detector: Invincible=2 and GodModeState=3. "
+            "Fresh 4.0.2 NORMAL E2E produced six complete raw_score=0 scans; "
+            "current-version controlled ON/OFF data separates 0 from 5."
+        ),
+    ),
     ModuleCalibration("noclip_runtime", "pending", None),
     ModuleCalibration("aimbot_runtime", "pending", None),
 )
@@ -219,23 +228,26 @@ CALIBRATIONS: Mapping[str, ModuleCalibration] = MappingProxyType(
 _EXTERNAL_ACCESS_CALIBRATIONS: Mapping[str, ModuleCalibration] = MappingProxyType({
     "external_process": ModuleCalibration(
         "external_access",
-        "pending",
-        None,
+        "threshold",
+        2,
         note=(
-            "external_process calibration requires representative NORMAL and "
-            "controlled positive E2E. Multiple positive handle observations in "
-            "one scan must not be collapsed to the last Event."
+            "Current detector contract: PROCESS_VM_WRITE and PROCESS_VM_OPERATION "
+            "each contribute raw 2 and PROCESS_CREATE_THREAD contributes raw 3. "
+            "Latest E2E kept NORMAL at 0 and produced controlled VM_WRITE positives "
+            "at raw 3. This channel is state-like and is evaluated from its current "
+            "scoped observation."
         ),
         submodule="external_process",
     ),
     "module_integrity": ModuleCalibration(
         "external_access",
-        "pending",
-        None,
+        "event_threshold",
+        2,
         note=(
-            "module_integrity calibration requires DLL-change history. "
-            "A later NORMAL 0 means no new suspicious change in that scan and "
-            "does not prove that an earlier DLL observation was removed or safe."
+            "Latest E2E kept NORMAL at 0 and produced an unsigned added-DLL event "
+            "at raw 2 (change 1 + unsigned 1). This channel is event-like: a later "
+            "NORMAL 0 means no new DLL change and does not erase a qualifying "
+            "historical event."
         ),
         submodule="module_integrity",
     ),

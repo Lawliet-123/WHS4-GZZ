@@ -24,6 +24,7 @@ class CalibrationTests(unittest.TestCase):
             "value_tamper": ("threshold", 100),
             "noclip": ("threshold", 3),
             "whistle": ("threshold", 60),
+            "godmode_runtime": ("threshold", 5),
             "localguard_executable_hash": ("threshold", 1),
             "overlay_hook": ("threshold", 60),
         }
@@ -56,6 +57,12 @@ class CalibrationTests(unittest.TestCase):
         self.assertFalse(calibration.meets_threshold(59))
         self.assertTrue(calibration.meets_threshold(60))
         self.assertTrue(calibration.meets_threshold(100))
+
+    def test_godmode_runtime_threshold_boundary_is_inclusive(self):
+        calibration = require_calibration("godmode_runtime")
+
+        self.assertFalse(calibration.meets_threshold(4))
+        self.assertTrue(calibration.meets_threshold(5))
 
     def test_executable_hash_threshold_boundary_is_inclusive(self):
         calibration = require_calibration("localguard_executable_hash")
@@ -104,10 +111,10 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(calibration.mode, "pending")
         self.assertIsNone(calibration.threshold)
 
-    def test_external_process_has_separate_pending_calibration(self):
+    def test_external_process_has_separate_threshold_calibration(self):
         calibration = resolve_calibration(
             "external_access",
-            raw_score=8,
+            raw_score=2,
             evidence={
                 "submodule": "external_process",
                 "status": "SUSPICIOUS",
@@ -117,10 +124,12 @@ class CalibrationTests(unittest.TestCase):
 
         self.assertEqual(calibration.module, "external_access")
         self.assertEqual(calibration.submodule, "external_process")
-        self.assertEqual(calibration.mode, "pending")
-        self.assertIsNone(calibration.threshold)
+        self.assertEqual(calibration.mode, "threshold")
+        self.assertEqual(calibration.threshold, 2)
+        self.assertFalse(calibration.meets_threshold(1))
+        self.assertTrue(calibration.meets_threshold(2))
 
-    def test_module_integrity_has_separate_pending_calibration(self):
+    def test_module_integrity_has_separate_event_threshold_calibration(self):
         calibration = resolve_calibration(
             "external_access",
             raw_score=2,
@@ -134,8 +143,10 @@ class CalibrationTests(unittest.TestCase):
 
         self.assertEqual(calibration.module, "external_access")
         self.assertEqual(calibration.submodule, "module_integrity")
-        self.assertEqual(calibration.mode, "pending")
-        self.assertIsNone(calibration.threshold)
+        self.assertEqual(calibration.mode, "event_threshold")
+        self.assertEqual(calibration.threshold, 2)
+        self.assertFalse(calibration.meets_threshold(1))
+        self.assertTrue(calibration.meets_threshold(2))
 
     def test_legacy_external_process_contract_uses_process_calibration(self):
         calibration = resolve_calibration(
@@ -148,29 +159,26 @@ class CalibrationTests(unittest.TestCase):
         )
 
         self.assertEqual(calibration.submodule, "external_process")
-        self.assertEqual(calibration.mode, "pending")
+        self.assertEqual(calibration.mode, "threshold")
+        self.assertEqual(calibration.threshold, 2)
 
-    def test_external_submodule_pending_does_not_force_threshold_result(self):
-        for evidence in (
-            {
-                "submodule": "external_process",
-                "source_pid": 900,
-            },
-            {
-                "submodule": "module_integrity",
-                "target_pid": 500,
-                "module_path": "C:/Game/example.dll",
-            },
-        ):
-            with self.subTest(submodule=evidence["submodule"]):
+    def test_external_submodule_threshold_boundaries(self):
+        cases = (
+            ("external_process", "threshold"),
+            ("module_integrity", "event_threshold"),
+        )
+
+        for submodule, mode in cases:
+            with self.subTest(submodule=submodule):
                 calibration = resolve_calibration(
                     "external_access",
-                    raw_score=10,
-                    evidence=evidence,
+                    raw_score=2,
+                    evidence={"submodule": submodule},
                 )
 
-                self.assertFalse(calibration.calibrated)
-                self.assertIsNone(calibration.meets_threshold(10))
+                self.assertEqual(calibration.mode, mode)
+                self.assertFalse(calibration.meets_threshold(1))
+                self.assertTrue(calibration.meets_threshold(2))
 
     def test_yara_legacy_without_ruleset_stays_pending(self):
         calibration = resolve_calibration(
