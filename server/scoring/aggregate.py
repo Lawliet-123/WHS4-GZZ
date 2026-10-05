@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Mapping
 
+from .autopaint_history import AutoPaintHistorySummary
 from .calibration import get_external_access_calibration
 from .correlation import CorrelationCandidate
 from .external_access_summary import ExternalAccessChannelSummary
@@ -184,6 +185,7 @@ def build_aggregate_evidence(
     risk_input: PlayerRiskInput,
     *,
     godmode_history: GodmodeHistorySummary | None = None,
+    autopaint_history: AutoPaintHistorySummary | None = None,
     external_access_summaries: (
         Mapping[str, ExternalAccessChannelSummary] | None
     ) = None,
@@ -224,6 +226,31 @@ def build_aggregate_evidence(
         history_total_events = None
         history_qualifying_events = None
         history_max_raw_score = None
+
+        if signal.module == "autopaint" and autopaint_history is not None:
+            if autopaint_history.session_id != risk_input.session_id:
+                raise ValueError(
+                    "autopaint history session_id does not match risk input"
+                )
+            if autopaint_history.player_id != risk_input.player_id:
+                raise ValueError(
+                    "autopaint history player_id does not match risk input"
+                )
+
+            history_total_events = autopaint_history.total_events
+            history_qualifying_events = autopaint_history.qualifying_events
+            history_max_raw_score = autopaint_history.max_raw_score
+
+            if autopaint_history.available_events > 0:
+                history_resolved = True
+
+            # 세션 중 threshold 이상으로 확정된 유효 snapshot이 있었다면
+            # 종료 직전 최신 snapshot이 내려가도 세션 evidence는 ACTIVE로 유지한다.
+            #
+            # 현재 순간의 raw_score / threshold_met은 AggregateSignal에
+            # 최신 snapshot 값 그대로 남아 있어 둘을 구분할 수 있다.
+            if autopaint_history.positive_seen:
+                status = "ACTIVE"
 
         if signal.module == "external_access":
             resolved_external_status = _resolve_external_access(
