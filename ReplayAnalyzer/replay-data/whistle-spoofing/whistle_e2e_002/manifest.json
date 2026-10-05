@@ -1,0 +1,45 @@
+{
+  "label": "CHEAT",
+  "player_id": "pc_rang",
+  "session_id": "whistle_e2e_002",
+  "cheat_type": "WHISTLE_SPOOFING",
+  "cheat_start_ms": 0,
+  "cheat_end_ms": 583312,
+  "cheat_windows_ms": [
+    [
+      0,
+      583312
+    ]
+  ],
+  "cheat_timing": "marked",
+  "cheat_open_ended": false,
+  "initial_state": "ON",
+  "module_timing": {
+    "whistle": "dll_resident",
+    "whistle_rpc": "toggle"
+  },
+  "post_off_censored": [],
+  "phase_counts": {
+    "ON": 32,
+    "OFF": 8,
+    "BOUNDARY": 1
+  },
+  "source": "external scan, single snapshot (run_session.py)",
+  "rounds": null,
+  "interval_s": null,
+  "samples": 41,
+  "span_ms": [
+    11507,
+    690800
+  ],
+  "modules": [
+    "whistle",
+    "whistle_rpc"
+  ],
+  "excluded_from_scoring": [
+    "whistle_rpc"
+  ],
+  "error_events": {
+    "whistle_rpc": 21
+  }
+}
