@@ -116,7 +116,8 @@ class Module:
         """존재 여부를 확인할 파일. `-m` 실행이면 모듈 경로로 바꿔 본다."""
         if "-m" in self.argv:
             mod = self.argv[self.argv.index("-m") + 1]
-            return os.path.join(REPO, *mod.split(".")) + ".py"
+            # `python -m` resolves the package from its working directory.
+            return os.path.join(self.cwd or REPO, *mod.split(".")) + ".py"
         for a in self.argv[1:]:
             if a.endswith(".py"):
                 return a if os.path.isabs(a) else os.path.join(REPO, a)
@@ -167,6 +168,18 @@ def selfdefense_integrity_module() -> Module:
         disabled_reason=disabled,
     )
 
+
+def kernel_thread_options() -> List[str]:
+    """The thread-origin sensor is supported only on Windows build 19045.
+
+    Other builds can still run the remaining observer with this sensor
+    explicitly disabled; that reduced coverage must be reported as such.
+    """
+    windows_version = getattr(sys, "getwindowsversion", None)
+    return [] if windows_version and windows_version().build == 19045 else [
+        "--thread-interval", "0"
+    ]
+
 MODULES: List[Module] = [
     # ── 게임과 무관하게 먼저 뜨는 것 ────────────────────────────────────
     Module(
@@ -192,10 +205,20 @@ MODULES: List[Module] = [
     Module(
         name="kernel_watcher",
         owner="5번 (찬준)",
-        argv=[PY, "client/KernelWatcher/main.py"],
-        needs_game=False,
-        needs_admin=True,          # 드라이버를 올려야 한다
-        note="커널 프로세스·드라이버 관측. 아직 폴더가 비어 있다",
+        argv=[PY, "-m", "agent.main", "watch",
+              "--pid", "{game_pid}", "--mode", "observe",
+              "--config", "config/policy.json",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--out", "runs/{session}"] + kernel_thread_options(),
+        cwd=os.path.join(REPO, "client", "KernelSentinelValidation-github", "KernelSentinel"),
+        mode=CONTINUOUS,
+        needs_game=True,
+        needs_admin=True,
+        # The collector creates --out exclusively; same-session restart fails.
+        restart=False,
+        session_log_dir="client/KernelSentinelValidation-github/KernelSentinel/runs",
+        # --t0 and Shared server transport are not implemented in this agent.
+        note="KernelSentinel observe 로컬 수집 (승인 .sys 필요; 공통 t0·중앙 전송 미지원)",
     ),
 
     # ── 게임이 떠 있어야 하는 것 ────────────────────────────────────────
