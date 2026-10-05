@@ -102,6 +102,63 @@ class DashboardIndex:
             rows = db.execute("SELECT * FROM events WHERE " + " AND ".join(clauses) + " ORDER BY sequence LIMIT ?", (*values, limit + 1)).fetchall()
         return [self.event(row) for row in rows[:limit]], len(rows) > limit
 
+    def selfdefense_statuses(self, session_id: str, player_id: str) -> list[dict]:
+        """Return latest SelfDefense operational events without interpreting raw_score."""
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM events
+                   WHERE session_id=? AND player_id=? AND module='selfdefense'
+                   ORDER BY sequence DESC""",
+                (session_id, player_id),
+            ).fetchall()
+
+        latest: dict[tuple[str, str | None], dict] = {}
+        for row in rows:
+            event = json.loads(row["payload"])
+            evidence = event.get("evidence", {})
+            if not isinstance(evidence, dict):
+                continue
+
+            kind = evidence.get("kind")
+            if not isinstance(kind, str) or not kind:
+                continue
+
+            target_module = evidence.get("target_module")
+            if not isinstance(target_module, str):
+                target_module = None
+
+            # Watchdog reports independent states per registered target.
+            # Other SelfDefense functions are latest-by-kind.
+            key = (
+                kind,
+                target_module if kind == "module_health" else None,
+            )
+            if key in latest:
+                continue
+
+            latest[key] = {
+                "kind": kind,
+                "component": evidence.get("component"),
+                "target_module": target_module,
+                "status": evidence.get("status"),
+                "scan_complete": evidence.get("scan_complete"),
+                "scope": evidence.get("scope"),
+                "timestamp_ms": event["timestamp_ms"],
+                "sequence": row["sequence"],
+                "event_id": row["id"],
+                "raw_score": event["raw_score"],
+                "reasons": event["reasons"],
+                "evidence": evidence,
+            }
+
+        return sorted(
+            latest.values(),
+            key=lambda item: (
+                item["kind"],
+                item["target_module"] or "",
+            ),
+        )
+
     def overview(self, *, after_session: str = "", limit: int = 100, heartbeat_sessions=None):
         heartbeat_sessions = {item["id"]: item["player_ids"] for item in (heartbeat_sessions or [])}
         with closing(self.connect()) as db:

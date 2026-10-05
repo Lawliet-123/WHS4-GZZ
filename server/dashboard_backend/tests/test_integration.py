@@ -204,6 +204,89 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(result["assessments"][0]["status"], "UNKNOWN")
         self.assertEqual(self.get("events").json()["items"][0]["event_kind"], "operational")
 
+    def test_selfdefense_statuses_preserve_operational_state_by_kind_and_target(self):
+        self.post(
+            module="selfdefense",
+            timestamp_ms=1000,
+            evidence={
+                "kind": "file_integrity",
+                "component": "integrity",
+                "status": "ERROR",
+                "scan_complete": False,
+                "scope": "release_files",
+            },
+            reasons=["BASELINE_READ_FAILED"],
+            raw_score=0,
+        )
+        self.post(
+            module="selfdefense",
+            timestamp_ms=2000,
+            evidence={
+                "kind": "debugger_presence",
+                "component": "anti_debug",
+                "status": "DETECTED",
+                "scan_complete": True,
+                "scope": "launcher_registered",
+            },
+            reasons=["DEBUGGER_PRESENT"],
+            raw_score=0,
+        )
+        self.post(
+            module="selfdefense",
+            timestamp_ms=3000,
+            evidence={
+                "kind": "module_health",
+                "component": "watchdog",
+                "target_module": "aimbot",
+                "status": "alive",
+                "scope": "launcher_registry",
+            },
+            reasons=[],
+            raw_score=0,
+        )
+        self.post(
+            module="selfdefense",
+            timestamp_ms=4000,
+            evidence={
+                "kind": "module_health",
+                "component": "watchdog",
+                "target_module": "godmode",
+                "status": "exited",
+                "scope": "launcher_registry",
+            },
+            reasons=["PROCESS_EXITED"],
+            raw_score=0,
+        )
+
+        overview = self.get("overview", session_id="s1", player_id="p1").json()
+        statuses = overview["selfdefense_statuses"]
+
+        self.assertEqual(len(statuses), 4)
+
+        by_key = {
+            (item["kind"], item["target_module"]): item
+            for item in statuses
+        }
+
+        integrity = by_key[("file_integrity", None)]
+        self.assertEqual(integrity["status"], "ERROR")
+        self.assertFalse(integrity["scan_complete"])
+        self.assertEqual(integrity["raw_score"], 0)
+
+        anti_debug = by_key[("debugger_presence", None)]
+        self.assertEqual(anti_debug["status"], "DETECTED")
+        self.assertTrue(anti_debug["scan_complete"])
+        self.assertEqual(anti_debug["raw_score"], 0)
+
+        self.assertEqual(
+            by_key[("module_health", "aimbot")]["status"],
+            "alive",
+        )
+        self.assertEqual(
+            by_key[("module_health", "godmode")]["status"],
+            "exited",
+        )
+
     def test_session_list_pagination_and_missing_status(self):
         self.post(session_id="a")
         self.post(session_id="b")
