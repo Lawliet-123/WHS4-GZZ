@@ -98,6 +98,28 @@ class ScoringStoreTests(unittest.TestCase):
         self.assertEqual([state.module for state in snapshot], ["aimbot", "noclip"])
         self.assertEqual([state.raw_score for state in snapshot], [7, 3])
 
+    def test_selfdefense_is_idempotent_and_kept_for_operational_status(self):
+        """SelfDefense health remains visible while policy excludes its cheat risk."""
+        payload = event(module="selfdefense", raw_score=0)
+        payload["evidence"] = {
+            "kind": "file_integrity",
+            "status": "ERROR",
+            "scan_complete": False,
+        }
+        key = event_id()
+
+        processed = self.store.process_event(payload, event_id=key, sequence=1)
+        duplicate = self.store.process_event(payload, event_id=key, sequence=1)
+
+        self.assertEqual(processed.status, "processed")
+        self.assertTrue(processed.state_updated)
+        self.assertEqual(duplicate.status, "duplicate")
+        self.assertFalse(duplicate.state_updated)
+        self.assertEqual(
+            [state.module for state in self.store.get_player_snapshot("session_1", "player_1")],
+            ["selfdefense"],
+        )
+
     def test_live_processing_does_not_advance_recovery_cursor(self):
         """실시간 처리만으로 복구 커서가 전진하지 않는지 확인."""
         self.store.process_event(event(), event_id=event_id(), sequence=7)
