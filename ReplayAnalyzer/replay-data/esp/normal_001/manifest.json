@@ -1,0 +1,28 @@
+{
+  "cheat_end_ms": null,
+  "cheat_start_ms": null,
+  "cheat_type": null,
+  "event_count": 132,
+  "label": "NORMAL",
+  "player_id": "player_042",
+  "session_id": "normal_001",
+  "source": {
+    "events_sha256": "6ed12d6a0ede957040a8aa2646ca8628afcb9239b49d3f5d71b99c149cac3c75",
+    "kind": "existing_esp_capture",
+    "manifest_sha256": "d1a8ecb37076a2c12d00f93c65d3ec20e18e61e02daa2496d2b7f7ed18f361d1",
+    "notes": [
+      "Existing captured results; this export is not a new test run.",
+      "Scores and timestamps were not recomputed with the current detector.",
+      "ON/OFF timing is supplied test metadata; missing timing remains null.",
+      "Evidence is privacy-filtered; original raw sensor logs are omitted.",
+      "NORMAL labels remain NORMAL even when captured scores cross a threshold."
+    ],
+    "producer": {
+      "name": "meccha-esp-localguard",
+      "revision": null,
+      "version": "0.2.0"
+    },
+    "schema_version": "meccha.telemetry-session.v1",
+    "session_status": "completed"
+  }
+}

@@ -7,6 +7,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from uuid import uuid4
@@ -151,6 +152,7 @@ class AntiEspController:
                 settings.telemetry.root,
                 session_id=self.session_id,
                 game_executable=settings.game_executable,
+                player_id=settings.telemetry.player_id,
                 host_identity=identity.to_dict(),
                 test_metadata={
                     "scenario": settings.telemetry.scenario,
@@ -342,6 +344,7 @@ class AntiEspController:
         """Collect one sensor cycle and return the number of new evidence events."""
 
         now = self._clock()
+        observed_sensors = {"collector", "game", "privilege", "sysmon"}
         legacy_events: list[EvidenceEvent] = []
         inserted = 0
 
@@ -429,6 +432,7 @@ class AntiEspController:
             >= self.settings.handle_monitor.scan_interval_seconds
         ):
             handle_batch = self._handle_sensor.poll(context)
+            observed_sensors.add("handles")
             inserted += self._pipeline.process_batch(
                 handle_batch
             ).accepted_evidence_count
@@ -454,6 +458,7 @@ class AntiEspController:
                 "message": "waiting for a visible game window",
             }
         elif now - self._last_overlay_scan >= self.settings.overlay_scan_interval_seconds:
+            observed_sensors.add("overlay")
             if self._legacy_overlay is not None:
                 try:
                     overlay_events: list[EvidenceEvent] = []
@@ -524,6 +529,7 @@ class AntiEspController:
             >= self.settings.module_monitor.scan_interval_seconds
         ):
             module_batch = self._module_sensor.poll(context)
+            observed_sensors.add("modules")
             inserted += self._pipeline.process_batch(
                 module_batch
             ).accepted_evidence_count
@@ -549,7 +555,55 @@ class AntiEspController:
             if self._store.append(event):
                 self._engine.add_event(event)
                 inserted += 1
+        self._record_poll_observation(now, targets, observed_sensors)
         return inserted
+
+    def _record_poll_observation(
+        self, now: float, targets: tuple[ProcessTarget, ...], observed_sensors: set[str]
+    ) -> None:
+        record = getattr(self._telemetry, "record_observation", None)
+        if not callable(record):
+            return  # Compatibility writers cannot provide empty-session proof.
+        with self._lock:
+            states = {name: dict(state) for name, state in self._sensor_state.items()}
+        required = {
+            "collector": "online" if self.running else "waiting",
+            "game": str(states["game"]["status"]),
+            "privilege": str(states["privilege"]["status"]),
+            "sysmon": str(states["sysmon"]["status"]),
+        }
+        for enabled, name in (
+            (self.settings.overlay.enabled, "overlay"),
+            (self.settings.module_monitor.enabled, "modules"),
+            (self.settings.handle_monitor.enabled, "handles"),
+        ):
+            if enabled:
+                required[name] = str(states[name]["status"])
+        # Partial/truncated collections can still have an online runtime state
+        # and sufficient display confidence. They cannot prove a clean empty
+        # replay, so conservatively disqualify only this new coverage record.
+        for name in required:
+            if states[name].get("truncated") is True or states[name].get("partial") is True:
+                required[name] = "unavailable"
+        instance = None
+        if len(targets) == 1:
+            target = targets[0]
+            created_at = target.created_at
+            if type(created_at) in (int, float) and math.isfinite(created_at) and created_at > 0:
+                # Session-bound identity detects restarts/PID reuse without
+                # adding executable paths, process IDs or birth times to raw.
+                material = f"{self.session_id}\0{target.pid}\0{created_at:.9f}"
+                instance = sha256(material.encode("utf-8")).hexdigest()
+        snapshot = self.snapshot()
+        record(
+            timestamp_ms=max(0, int(round((now - self._session_started_at) * 1000))),
+            status=snapshot["status"],
+            observation_confidence=snapshot["observation_confidence"],
+            minimum_observation_confidence=self._engine.minimum_observation_confidence,
+            required_sensor_status=required,
+            observed_sensors=observed_sensors & required.keys(),
+            game_instance_sha256=instance,
+        )
 
     def _overlay_source_is_allowlisted(self, event: EvidenceEvent) -> bool:
         source_path = event.details.get("process_path")

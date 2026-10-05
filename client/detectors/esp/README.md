@@ -169,6 +169,74 @@ py -3 .\run.py --headless --duration 30 --central-telemetry off `
 py -3 -m unittest discover -s tests -v
 ```
 
+## Logger 및 조회 API 종단 검증
+
+저장소 루트에서 다음 테스트를 실행한다. `server/requirements-dev.txt`의 서버 시험
+의존성이 필요하며 게임이나 운영 서버 설정·토큰은 사용하지 않는다.
+
+```powershell
+py -3 -m unittest server.scoring.tests.test_jiwan_pipeline_e2e -v
+```
+
+합성 센서 입력을 실제 ESP 판정기와 팀 Event 어댑터에 넣은 뒤, Shared SQLite outbox에서
+임시 `127.0.0.1` HTTP receiver로 전송한다. 실제 writer, scoring, Final Verdict,
+Dashboard 조회 API까지 연결하여 점수·경과 시각·개인정보 제거·중복 수신·재전송을
+검사한다. module_integrity의 NORMAL → SUSPICIOUS → ERROR → 정상 복구도 포함한다.
+오류와 정상 복구가 이전 양성 이력을 지우지 않는지 함께 확인한다.
+
+64비트 Windows에서는 별도로 생성한 두 보조 Python 프로세스의 실제 핸들과 DLL도
+관측한다. 첫 기준선 뒤에 한 보조 프로세스가 다른 보조 프로세스를 `VM_READ`로 열면
+실제 Windows 핸들 센서 → ESP 판정기 → 중앙 API까지 전달되는지 검사한다. 유지 중에는
+이벤트가 늘지 않고, 닫힌 상태를 관측한 뒤 다시 열면 새 이벤트가 생기는지도 확인한다.
+등록 제외 PID와 동일한 실제 핸들이 검사에서 제외되는지도 확인한다.
+DLL 시험은 대상 보조 프로세스가 정상 Windows 시스템 DLL을 자기 프로세스에 로드하게
+한다. 다른 프로세스에 DLL을 주입하거나 메모리를 읽고 쓰지 않는다.
+
+일반 세 가지 시험의 센서 입력은 합성이며, Windows 두 가지 시험은 보조 프로세스의
+실제 OS 관측이다. 둘 다 실제 게임 탐지율·새 Replay 수집·운영 서버 배포 또는 React
+화면 시험을 대신하지 않는다. ESP의 보정이 미확정인 상태에서는 생산 Final Verdict의
+`INCONCLUSIVE`를 유지하며 임의로 치트 확정값을 만들지 않는다.
+
+## 실제 Replay 수집 준비
+
+게임과 프로젝트 설정의 Sysmon을 준비한 뒤 관리자 PowerShell의 저장소 루트에서
+다음 스크립트를 실행한다. 준비 조건이 부족하면 collector와 세션 파일을 만들지 않고
+종료한다. Sysmon 설치·필터 변경, 게임 시작, ESP 시작/종료는 자동으로 수행하지 않는다.
+
+```powershell
+.\client\detectors\esp\scripts\collect_replay.ps1 `
+  -Scenario normal -PlayerId player_042 -DurationSeconds 180 -ExportReplay
+
+.\client\detectors\esp\scripts\collect_replay.ps1 `
+  -Scenario esp -PlayerId player_042 -DurationSeconds 180 -ExportReplay
+```
+
+매 실행마다 고유 세션 ID를 사용하고 중앙 전송 없이 실제 로컬 수집만 한다. 필요하면
+`-PythonExecutable`에 pywin32가 설치된 64비트 Python의 정확한 실행 경로를 전달한다.
+`-GamePid`를 전달하면 그 PID가 정확한 이름의 유일한 게임 프로세스인지 검사한다.
+종료 뒤에도 동일 PID·생성 시각인지 확인하여 재실행된 게임을 같은 시험으로 섞지 않는다.
+
+`-CheatOnMs`와 `-CheatOffMs`는 실제로 확인한 시각을 기록하는 옵션이며 ESP를 제어하지
+않는다. 기록하지 않은 경우 null을 유지한다. 정상 시험에는 ON/OFF 옵션을 넣지 않는다.
+ESP 시험은 첫 센서 기준선 이후에 승인된 테스트 환경에서 직접 ESP를 실행해야 한다.
+
+화면에는 status와 observation confidence만 표시한다. 실제 관측이 가능했던 상태가
+없거나 마지막 상태가 `INSUFFICIENT`면 성공으로 처리하지 않는다. `capture_health.json`은
+로컬 진단용 요약이며 공개 Replay에는 복사하지 않는다. 코드 상태 검증과 실제 플레이
+시나리오의 진위는 다르므로 실행 성공만으로 CHEAT 라벨이 입증됐다고 주장하지 않는다.
+수집 종료의 `completed` 역시 정상 판정을 뜻하지 않는다. 최종 export 검증을 통과한
+manifest/events만 공개하고 raw와 DB는 로컬에 보관한다.
+
+탐지 Event가 0건인 정상 시험도 센서가 꺼진 시험과 구분한다. 수집기는 완료된 각 poll의
+센서 실행·성공 횟수, confidence, 관측 구간과 동일 게임 인스턴스 여부를 manifest의
+`observation_summary`에 기록한다. 캐시된 online 상태와 실제 센서 실행 횟수는 별도다.
+새 계약의 NORMAL 0건 세션은 최소 두 번의 충분한 관측, 모든 필수 센서의 실제 성공,
+관측 중 실패·누락·게임 변경·partial/truncated가 없고 마지막 상태가 LOW일 때만
+내보낸다. 기존 빈 세션과 CHEAT 0건 세션은 거부한다. 가짜 0점 Event를 만들지 않는다.
+이 요약은 수집기가 기록한 진단 근거이지 변조 불가능한 증명이나 Sysmon 필터 정확성·
+플레이 상황의 진위를 보장하는 자료는 아니다. 수집 스크립트는 실제 raw 레코드 수와
+대상 PID도 확인하지만, exporter 단독 실행은 raw를 읽거나 공개하지 않는다.
+
 ## 허용목록
 
 `config.json`의 `allowlist.paths`에는 실행 파일의 정확한 전체 경로를, `allowlist.sha256`에는 64자리 SHA-256을 넣는다. 이 목록은 Sysmon 프로세스 접근과 오버레이 창 정황 양쪽에 적용된다.

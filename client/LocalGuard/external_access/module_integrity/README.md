@@ -13,7 +13,7 @@ ProcessLocator
   -> ArtifactCache(ArtifactInspector)
   -> ModuleAllowlist
   -> ModuleIntegrityDetector
-  -> append_detection_jsonl
+  -> local JSONL (+ Shared handoff ledger in central mode)
   -> shared 0.2.0 send_detection
 ```
 
@@ -25,6 +25,8 @@ ProcessLocator
 - `detector.py`: 추가 또는 변경 DLL과 파일 신뢰 정보를 하나의 설명 가능한 이벤트로
   만든다.
 - `runner.py`: 게임 탐색부터 JSONL 기록까지 순서대로 조립한다.
+- `shared_delivery.py`: 중앙 모드의 로컬 기록과 Shared 큐 등록을 연결하고, 실패한
+  이벤트를 같은 ID·원래 시각으로 복구한다.
 
 기준선은 목록 변화 비교 자료이지 자동 신뢰 목록이 아니다. 첫 스냅샷을 전부 새 DLL로
 처리하면 정상 Windows·엔진 DLL이 대량 오탐되므로 기본 모드에서는 첫 스냅샷 자체를
@@ -121,6 +123,13 @@ JSONL writer에 프로세스 간 잠금이 없으므로 서로 다른 출력 파
 outbox 저장 성공이며 중앙 receiver의 수신 확인이 아니다. 종료할 때 `flush_client()`와
 `shutdown_client()`를 호출하고, 서버 설정이 없거나 전송이 실패해도 로컬 관찰은 계속한다.
 
+Shared 큐 등록이 실패하면 스캔을 성공으로 확정하지 않고 기존 pending batch를 다시
+시도한다. `--output` 파일 옆의 `<파일명>.shared-delivery.sqlite3`에 등록 대기 이벤트를
+보존하므로 프로세스를 재시작해도 다음 상태/탐지 기록 시 먼저 재전송한다. 원래 timestamp와
+내용 기반 UUID를 유지하고 로컬 JSONL은 한 번만 기록한다. 기존 로그 전체를 읽거나 이전
+버전의 기록을 자동 전송하지 않는다. JSONL과 sidecar는 함께 보관하고, 이 writer가 사용하는
+출력 파일을 실행 중 수정·회전하지 않는다. 로컬 전용 모드와 `NORMAL` 0점 정책은 그대로다.
+
 이름만 같다고 허용하지 않는다. `allowlist.json`에 최소 DLL 이름과 검토한 SHA-256을
 넣어야 한다. 필요하면 `module_path`, `signature_status`, `publisher_contains` 조건을
 추가한다. 첫 관찰 결과를 자동으로 allowlist에 넣지 않는다.
@@ -140,6 +149,24 @@ py -3 -m client.LocalGuard.external_access.module_integrity.smoke_test
 `added` 이벤트가 공통 JSON 형식으로 정확히 한 번 기록되는지 확인한다. 게임 프로세스나
 게임 파일은 수정하지 않는다. 성공하면 `PASS`와 탐지 DLL, 점수, JSONL 저장 경로가
 출력된다.
+
+Windows 가상환경의 `python.exe`는 실행용 부모 프로세스와 실제 Python 프로세스의
+PID가 다를 수 있다. 스모크 테스트는 보조 Python이 준비 응답으로 보고한 자신의 PID를
+검사한다. 따라서 venv로 실행해도 DLL이 로드되지 않은 부모를 검사하는 오류를 피한다.
+이 PID 처리는 테스트 보조 프로세스에만 적용하며 실제 게임 PID 탐색 정책은 바꾸지 않는다.
+
+저장소 루트의 아래 시험은 실제 임시 HTTP receiver, Shared SQLite outbox, scoring,
+Final Verdict, Dashboard 조회 API까지 연결한다. 서버 시험 의존성이 필요하며 운영
+설정이나 인증 키는 사용하지 않는다.
+
+```powershell
+py -3 -m unittest server.scoring.tests.test_jiwan_pipeline_e2e -v
+```
+
+64비트 Windows의 DLL 시험은 보조 프로세스의 실제 DLL 추가·파일 서명을 관측하고
+해당 이벤트가 중앙 조회까지 도달하는지 검사한다. 별도 핸들 시험은 두 보조 프로세스
+사이의 실제 `VM_READ` 핸들을 ESP 센서로 관측한다. 나머지 실패·복구·중복 전송
+시험은 합성 입력을 사용한다. 실게임 Replay나 운영 서버 검증을 대신하지 않는다.
 
 ### 실제 게임 1: 정상 플레이 세션
 

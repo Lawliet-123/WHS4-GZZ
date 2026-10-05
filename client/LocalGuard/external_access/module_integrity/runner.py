@@ -37,6 +37,7 @@ from .models import (
     ScanContext,
 )
 from .module_sensor import ModuleSensorUnavailable, ToolhelpModuleSensor
+from .shared_delivery import write_local_and_queue
 
 
 Writer = Callable[[Path, Dict[str, Any]], None]
@@ -54,15 +55,8 @@ def _configure_shared_client() -> bool:
 
 
 def _write_local_and_send(path: Path, result: Dict[str, Any]) -> None:
-    """Persist the exact seven-field result before queueing it for delivery."""
-    append_detection_jsonl(path, result)
-    try:
-        receipt = send_detection(result)
-    except SharedError as error:
-        print(f"[shared] detection not queued: {type(error).__name__}")
-        return
-    # queued means durable local outbox acceptance, not receiver acknowledgement.
-    print(f"[shared] detection {receipt.status}: {receipt.event_id}")
+    """Persist once and retain failed Shared handoffs for the next attempt."""
+    write_local_and_queue(path, result, send=send_detection)
 
 
 def _finish_shared_client() -> None:
