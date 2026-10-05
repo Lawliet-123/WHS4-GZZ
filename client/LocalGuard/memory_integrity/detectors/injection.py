@@ -51,13 +51,14 @@ import time
 import pymem
 import pymem.exception
 
-from core import procopen
-from core import scan_engine as D
-# 이 파일을 직접 실행해도 core/ 를 찾게 한다.
-# 팀원마다 실행 방식이 달라서 둘 다 되게 해둔다.
+# 이 파일을 직접 실행해도 core/ 를 찾게 한다. 팀원마다 실행 방식이 달라서 둘 다 되게
+# 해두는데, **경로를 넣기 전에 import 하면 직접 실행이 깨진다**(10/5 ModuleNotFoundError).
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+from core import procopen
+from core import scan_engine as D
+from core import ue4ss_trust
 from core.result import DetectorResult, Evidence
 
 # Detection.check 문자열 -> (안정 코드, 점수)
@@ -114,13 +115,29 @@ def scan(baseline=None):
     r.meta["objects_total"] = total
     r.meta["modules"] = len(module_ranges)
 
+    # UE4SS 는 Lua 모드를 돌리려고 ExecFunction 을 후킹한다. 팀 표준 설치가 깔린 PC 는
+    # 정상 세션도 exec_function_hooked 70점이 됐다(10/5 normal_002 실측, 3바퀴 전부).
+    # 휘파람 핵도 같은 자리를 후킹하므로 그대로 두면 둘을 구분할 수 없다.
+    # **이름이 아니라 런처 설치 기록의 해시로** 가린다(core/ue4ss_trust.py).
+    # 등록부가 없거나 깨졌으면 아무것도 안 봐준다 — 그 PC 는 예전처럼 그대로 잡힌다.
+    paths_by_name = {n.lower(): p for n, p in D._module_rows(pm)}
+    trusted_names, manifest_state = ue4ss_trust.trusted_modules(paths_by_name)
+    trusted_ranges = ue4ss_trust.ranges_of(trusted_names, module_ranges)
+    r.meta["ue4ss_manifest"] = manifest_state
+    env_try = ue4ss_trust.attempted_env_override()
+    if env_try:
+        # 등록부 경로를 환경변수로 바꾸려는 시도는 무시하되 근거에 남긴다.
+        r.meta["ue4ss_manifest_env_ignored"] = env_try
+    if trusted_ranges:
+        r.meta["ue4ss_trusted_modules"] = sorted(trusted_ranges)
+
     # 검사 하나가 터져도 나머지는 살린다. 빠진 검사는 meta 에 남긴다.
     checks = [
         ("모듈 이름 화이트리스트", lambda: D.check_module_names(pm)),
         ("모듈 서명 + 경로",      lambda: D.check_module_trust(pm, game_dir)),
         (".text 해시",            lambda: D.check_text_hash(pm, base, baseline)),
-        ("vtable 무결성",         lambda: D.check_vtable(pm, rows, module_ranges)),
-        ("ExecFunction 무결성",   lambda: D.check_exec_function(pm, rows, module_ranges)),
+        ("vtable 무결성",         lambda: D.check_vtable(pm, rows, module_ranges, trusted_ranges)),
+        ("ExecFunction 무결성",   lambda: D.check_exec_function(pm, rows, module_ranges, trusted_ranges)),
     ]
 
     failed = []
@@ -142,6 +159,10 @@ def scan(baseline=None):
             # 기준 해시가 없으면 비교를 한 것이 아니다.
             r.meta["text_hash"] = "기준 해시 미지정 — 비교 안 함"
             continue
+
+        # 제외한 것(해시가 맞는 우리 UE4SS)은 점수와 상관없이 근거에 남긴다.
+        if getattr(det, "note", None):
+            r.meta.setdefault("trusted_excluded", {})[CODES[title][0]] = det.note
 
         code, points = CODES[title]
         if det.caught:
@@ -185,7 +206,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     session = argv[0] if argv else "injection_001"
     baseline = argv[1] if len(argv) > 1 else None
-    from result import to_team_event
+    from core.result import to_team_event
     ev = to_team_event(scan(baseline), session)
     print(json.dumps(ev, ensure_ascii=False, indent=2))
     return {"NORMAL": 0, "ERROR": 2, "OFFLINE": 2}.get(ev["status"], 1)

@@ -173,6 +173,43 @@ def _read(rt, addr, off, ty):
     return struct.unpack(FMT[ty], raw)[0]
 
 
+def _plausible(v, ty):
+    """읽은 값이 **설정값으로 쓸 수 있는 값인가.**
+
+    객체가 아직 생성 중이면 그 자리는 초기화 전 메모리다. 거기서 읽은 실수는
+    비정규(denormal)나 NaN 으로 나오는데, 기본값과 "다르기만" 하면 변조로 세던
+    탓에 맵 로딩 중 검사가 통째로 양수가 됐다.
+
+    10/5 normal_005 실측(정상 세션인데 한 바퀴만 100점):
+        Angle=5.45353e-312 (기본값 20) / AngleBias=6.36599e-314 (기본값 2)
+        InteractLength=8.18986e-312 (기본값 250)
+    같은 바퀴에서 오브젝트가 57,795 -> 63,888 로 늘고 있었다(스폰 중).
+
+    0 은 뺀다 — 핵이 0 으로 바꾸는 건 말이 되는 변조다. 대신 **대상 필드가 전부
+    0 인 객체**는 아래에서 따로 거른다(초기화 전 메모리는 0 으로 채워져 있다).
+    """
+    if ty in ("d", "f"):
+        if v != v or v in (float("inf"), float("-inf")):   # NaN / inf
+            return False
+        # 비정규. 정상 설정값이 이 크기로 들어올 일은 없다.
+        if v != 0.0 and abs(v) < 1e-300:
+            return False
+    return True
+
+
+def _uninitialized(vals):
+    """대상 실수 필드가 **전부 0** 인데 기준은 0 이 아니면 아직 안 채워진 객체다.
+
+    초기화 전 메모리는 0 으로 채워져 있다. 값 하나만 보면 0 은 멀쩡한 설정값이라
+    (핵이 0 으로 바꾸는 것도 말이 된다) 객체 단위로 봐야 가를 수 있다.
+
+    vals: [(이름, 타입, 대상, 읽은값, 기준값)]
+    """
+    nums = [(v, b) for _n, t, _w, v, b in vals if t in ("d", "f")]
+    return bool(nums) and all(v == 0.0 for v, _b in nums) \
+        and any(b != 0.0 for _v, b in nums)
+
+
 def _differs(a, b, ty):
     if ty in ("d", "f"):
         return abs(a - b) > EPS * max(1.0, abs(b))
@@ -256,6 +293,8 @@ def scan():
         by_class.setdefault(cls, []).append((name, off, ty, who))
 
     checked = 0
+    skipped_objects = 0        # 생성 중이라 값이 안 채워진 객체
+    skipped_unnamed = 0        # 이름조차 못 읽은 객체
     cdo_missing = set()
     # 클래스별로 몇 개를 만났는지 센다. 0 이면 그 클래스는 **검사한 게 아니다.**
     # 이름을 잘못 적으면 에러 없이 검사 0건이 되는데 그게 조용한 미탐지다.
@@ -297,16 +336,41 @@ def scan():
             # **살아있는 인스턴스만 센다.** 파생 블루프린트마다 CDO 가 하나씩
             # 있어서 전체 개수를 세면 검사하지도 않은 것이 커버리지로 잡힌다.
             found[base] = found.get(base, 0) + 1
+
+            # 이름도 못 읽는 객체는 그 자리가 아직(또는 이미) 우리 것이 아니다.
+            # 10/5 normal_005 에서 이름이 None 인 객체가 변조로 보고됐다.
+            obj_name = rt.name_of(row)
+            if not obj_name:
+                skipped_unnamed += 1
+                continue
+
+            # **객체 단위로 먼저 읽고, 쓸 수 있는 값인지 본다.** 필드 하나씩
+            # 판정하면 생성 중인 객체의 초기화 전 메모리가 변조로 샌다
+            # (10/5 normal_005, 맵 로딩 중 한 바퀴가 통째로 100점).
+            vals, usable = [], True
             for name, off, ty, who in fields:
                 try:
                     live = _read(rt, row.addr, off, ty)
                     base_v = _read(rt, ref, off, ty)
                 except Exception:
                     continue
+                if not (_plausible(live, ty) and _plausible(base_v, ty)):
+                    usable = False
+                    break
+                vals.append((name, ty, who, live, base_v))
+
+            if usable and _uninitialized(vals):
+                usable = False
+
+            if not usable:
+                skipped_objects += 1
+                continue
+
+            for name, ty, who, live, base_v in vals:
                 checked += 1
                 if _differs(live, base_v, ty):
                     violations.setdefault((name, ty, who), []).append(
-                        (rt.name_of(row), live, base_v))
+                        (obj_name, live, base_v))
 
     for (name, ty, who), hits in sorted(violations.items()):
         obj, live, base_v = hits[0]
@@ -319,6 +383,11 @@ def scan():
                for o, v, b in hits[:3]])
 
     r.meta["config_checks"] = checked
+    # 조용히 빼지 않는다. 몇 개를 왜 뺐는지 근거에 남긴다.
+    if skipped_objects:
+        r.meta["skipped_uninitialized_objects"] = skipped_objects
+    if skipped_unnamed:
+        r.meta["skipped_unnamed_objects"] = skipped_unnamed
     r.meta["fields"] = len(CONFIG_FIELDS)
     r.meta["live_instances"] = {b: found.get(b, 0) for b in by_class}
 
