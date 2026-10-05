@@ -18,6 +18,24 @@ python client/Launcher/main.py
 
 커널 모듈을 쓰려면 **관리자 권한**으로 실행해야 한다. 아니면 그 모듈만 건너뛴다.
 
+SelfDefense Watchdog는 기존 `self_defense` 등록으로 실행한다. 별도
+`selfdefense_integrity` 항목은 파일 무결성 검사기이며 게임보다 먼저 실행한다.
+다만 승인된 배포 기준이 없는 PC에서는 `SKIPPED`로 표시하고 시작하지 않는다.
+배포 담당자가 정상 릴리스에서 확정한 아래 세 값을 런처 환경에 제공해야 한다.
+
+- `GZZ_INTEGRITY_ROOT`: 검사할 배포본의 절대 경로
+- `GZZ_INTEGRITY_BASELINE`: 승인된 기준 JSON의 절대 경로
+- `GZZ_INTEGRITY_BASELINE_SHA256`: 기준 JSON의 승인된 고정 SHA-256 (소문자 64자리)
+
+현재 사용자 PC의 파일에서 기준이나 고정 해시를 실행할 때마다 새로 만들면 안 된다.
+값이 모두 설정되면 런처가 공통 세션·플레이어·시작 시각과 함께 Integrity에 전달한다.
+Integrity의 이벤트는 운영 상태(`module=selfdefense`, `evidence.kind=file_integrity`,
+`raw_score=0`)이며 플레이어 치트 점수와 별개다. 이 환경변수만으로 값의 신뢰성이
+보장되는 것은 아니다. 실제 배포 시에는 승인된 릴리스 설정에서 공급해야 한다.
+
+현재 소스 기준 AntiDebug 진입점은 아직 저장소에 없으므로 등록·실행하지 않는다.
+커널와쳐도 검증된 드라이버와 실행 계약을 담당자에게 확인한 뒤 별도로 연결한다.
+
 에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
 확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 

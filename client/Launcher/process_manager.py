@@ -126,7 +126,10 @@ class ProcessManager:
             st = ModuleState(m)
             st.log_path = os.path.join(LOG_DIR, f"{m.name}.log")
             path = m.script_path()
-            if path and not os.path.exists(path):
+            if m.disabled_reason:
+                st.status = SKIPPED
+                st.detail = m.disabled_reason
+            elif path and not os.path.exists(path):
                 # **없는 모듈을 조용히 넘기지 않는다.** 아직 안 만든 것과
                 # 만들었는데 안 붙는 것은 원인이 완전히 다르다.
                 st.status = MISSING

@@ -81,6 +81,9 @@ class Module:
     # 등록부에 같이 적어서 런처·워치독이 되살릴 때도 같은 값을 쓴다.
     env: Dict[str, str] = field(default_factory=dict)
     note: str = ""
+    # Release prerequisites that have not been supplied yet. Keep the module
+    # visible as SKIPPED instead of starting it with placeholder arguments.
+    disabled_reason: str = ""
 
     @staticmethod
     def _fill(a: str, ctx: Dict[str, object]) -> str:
@@ -128,6 +131,42 @@ PY = sys.executable
 # manifest 가 running 으로 남는다. 그래서 한 곳에서 같이 정한다.
 YARA_TIMEOUT_S = 45
 
+
+def selfdefense_integrity_module() -> Module:
+    """Register Integrity without inventing a baseline for the user's PC.
+
+    These values must come from the approved release configuration. The
+    Integrity process itself validates the pinned baseline and reports scan
+    failures; Launcher only prevents an incomplete configuration from running.
+    """
+    root = os.environ.get("GZZ_INTEGRITY_ROOT", "").strip()
+    baseline = os.environ.get("GZZ_INTEGRITY_BASELINE", "").strip()
+    pin = os.environ.get("GZZ_INTEGRITY_BASELINE_SHA256", "").strip()
+    if not all((root, baseline, pin)):
+        disabled = "승인된 Integrity 배포 루트·baseline·고정 SHA-256 미설정"
+    elif not os.path.isabs(root) or not os.path.isabs(baseline):
+        disabled = "Integrity 배포 루트와 baseline은 절대 경로여야 합니다"
+    elif len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
+        disabled = "Integrity baseline SHA-256 형식 오류 (소문자 64자리)"
+    else:
+        disabled = ""
+    return Module(
+        name="selfdefense_integrity",
+        owner="4번 (성민)",
+        argv=[PY, "client/SelfDefense/integrity/main.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--telemetry", "{telemetry}",
+              "--root", root, "--baseline", baseline,
+              "--baseline-sha256", pin],
+        mode=CONTINUOUS,
+        needs_game=False,
+        restart=True,
+        stop_grace_s=30.0,
+        session_log_dir="client/SelfDefense/integrity/logs",
+        note="승인된 배포 파일 무결성 관측 (치트 점수와 별개)",
+        disabled_reason=disabled,
+    )
+
 MODULES: List[Module] = [
     # ── 게임과 무관하게 먼저 뜨는 것 ────────────────────────────────────
     Module(
@@ -149,6 +188,7 @@ MODULES: List[Module] = [
         session_log_dir="client/SelfDefense/watchdog/logs",
         note="워치독: registry 로 상주 모듈 생존 확인·복구, 운영 상태 보고",
     ),
+    selfdefense_integrity_module(),
     Module(
         name="kernel_watcher",
         owner="5번 (찬준)",
