@@ -177,6 +177,30 @@ class RiskInputTests(unittest.TestCase):
             ("localguard_yara",),
         )
 
+    def test_noclip_runtime_calibration_is_resolved(self) -> None:
+        snapshot = PlayerPolicySnapshot(
+            session_id="session_1",
+            player_id="player_1",
+            modules=(
+                _module_snapshot(
+                    "noclip_runtime",
+                    raw_score=1.0,
+                    policy_state="POLICY_NOT_CALIBRATED",
+                    raw_fraction_pct=None,
+                ),
+            ),
+            correlation_candidates=(),
+        )
+
+        result = build_player_risk_input(snapshot)
+
+        signal = result.signals[0]
+        self.assertEqual(signal.calibration_mode, "threshold")
+        self.assertEqual(signal.calibration_threshold, 1.0)
+        self.assertTrue(signal.threshold_met)
+        self.assertEqual(result.unresolved_policy_modules, ())
+
+
     def test_unresolved_module_is_kept_instead_of_dropped(self) -> None:
         snapshot = PlayerPolicySnapshot(
             session_id="session_1",
