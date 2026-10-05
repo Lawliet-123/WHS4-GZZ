@@ -1,9 +1,10 @@
 """게임 위치 선택과 UE4SS 안전 설치의 임시 묶음 테스트."""
 import hashlib  # 테스트용 ZIP·시그니처의 예상 SHA-256을 계산한다.
+import io  # 직접 실행 명령의 화면 출력을 검사한다.
 import json  # 설치 등록부에 기록된 필드를 확인한다.
 import os  # 임시 환경변수와 로그 수정 시각을 설정한다.
 from pathlib import Path  # 가짜 게임 폴더와 파일 경로를 만든다.
-import subprocess  # 직접 실행 프로세스의 대기 시간 초과를 흉내 낸다.
+from contextlib import redirect_stdout  # 테스트 중 준비 명령 출력을 캡처한다.
 import sys  # 테스트 대상 모듈의 import 경로를 등록한다.
 import tempfile  # 실제 게임 폴더 대신 자동 정리되는 임시 폴더를 쓴다.
 import time  # 로그가 이번 실행의 것인지 확인할 기준 시각이다.
@@ -15,11 +16,12 @@ LAUNCHER = Path(__file__).resolve().parents[1]  # 테스트 파일에서 Launche
 sys.path.insert(0, str(LAUNCHER))  # 직접 실행 파일 형태의 모듈을 import할 수 있게 한다.
 
 import game_launcher as gl  # 실제 게임 설치 코드를 테스트한다.
+import ue4ss_manifest  # 설치 등록부의 실제 기본 저장 위치를 테스트에서 격리한다.
 
 
 class GameLauncherTests(unittest.TestCase):
     def setUp(self):
-        """매 테스트마다 별도 가짜 게임·ZIP·서명 파일을 준비한다."""
+        """매 테스트마다 별도 가짜 게임·ZIP·선택적 시그니처 파일을 준비한다."""
         self.temp = tempfile.TemporaryDirectory()  # PC의 실제 게임 디렉터리와 격리한다.
         self.addCleanup(self.temp.cleanup)  # 테스트가 끝나면 임시 파일을 자동 정리한다.
         self.base = Path(self.temp.name)  # 파일 생성 기준 경로를 보관한다.
@@ -37,7 +39,11 @@ class GameLauncherTests(unittest.TestCase):
         self.signature.write_bytes(b"-- test-only signature")  # 실제 게임 시그니처는 쓰지 않는다.
         self.signature_sha = hashlib.sha256(self.signature.read_bytes()).hexdigest()  # 테스트용 고정 해시다.
         self.manifest = self.base / "ue4ss_install.json"  # 등록부도 임시 디렉터리로 보낸다.
-        self.env = mock.patch.dict(os.environ, {"GZZ_UE4SS_MANIFEST": str(self.manifest)}, clear=False)  # 경로 주입이다.
+        self.manifest_path = mock.patch.object(ue4ss_manifest, "DEFAULT_PATH", str(self.manifest))
+        self.manifest_path.start()
+        self.addCleanup(self.manifest_path.stop)
+        self.env = mock.patch.dict(os.environ, {"GZZ_UE4SS_MANIFEST": str(self.base / "ignored.json"),
+                                                "GZZ_UE4SS_SIGNATURE": ""}, clear=False)  # 경로 주입이다.
         self.env.start()  # 설치 함수가 임시 등록부 위치를 보게 한다.
         self.addCleanup(self.env.stop)  # 테스트 뒤 원래 환경변수를 복원한다.
         gl._cache.clear()  # 앞 테스트가 찾은 게임 경로 캐시를 제거한다.
@@ -46,9 +52,7 @@ class GameLauncherTests(unittest.TestCase):
     def install(self, **kwargs):
         """반복 테스트에서 검증된 가짜 번들 인자를 동일하게 넘긴다."""
         return gl.prepare_ue4ss(str(self.root), str(self.zip_path), self.zip_sha,
-                                signature_path=str(self.signature),  # ZIP과 별도인 게임 시그니처다.
-                                expected_signature_sha256=self.signature_sha,  # 정확한 예상 해시다.
-                                game_running=False, **kwargs)  # 가짜 게임은 실행 중이 아니다.
+                                game_running=False, **kwargs)  # 기본 배포본은 별도 시그니처가 없다.
 
     def test_game_root_accepts_install_bin_and_exe_paths(self):
         """루트·Win64·exe 어느 경로를 받아도 같은 게임 루트로 정규화한다."""
@@ -70,31 +74,137 @@ class GameLauncherTests(unittest.TestCase):
             self.assertEqual(json.loads(saved.read_text(encoding="utf-8"))["game_root"], str(self.root))  # JSON도 확인한다.
 
     def test_missing_fixed_hash_never_writes_game_folder(self):
-        """팀 ZIP 해시를 아직 모르면 게임 폴더에 단 한 파일도 쓰지 않는다."""
-        result = gl.prepare_ue4ss(str(self.root), str(self.zip_path), game_running=False)  # 기본 해시는 빈 값이다.
+        """팀 ZIP 해시 설정이 빠지면 게임 폴더에 단 한 파일도 쓰지 않는다."""
+        with mock.patch.object(gl, "PINNED_UE4SS_ZIP_SHA256", ""):  # 잘못된 배포 설정만 흉내 낸다.
+            result = gl.prepare_ue4ss(str(self.root), str(self.zip_path), game_running=False)  # 고정 해시 없이 시도한다.
         self.assertEqual(result.status, "MISSING")  # 원인이 부족한 배포 자료임을 구분한다.
         self.assertFalse((self.bin / "dwmapi.dll").exists())  # 프록시 DLL을 만들지 않았다.
         self.assertFalse(self.manifest.exists())  # 설치 완료 등록부도 만들지 않았다.
+
+    def test_approved_release_zip_hash_is_pinned(self):
+        """문서와 대조한 팀 배포 ZIP만 기본 설치 후보로 인정한다."""
+        self.assertEqual(gl.PINNED_UE4SS_ZIP_SHA256,
+                         "050948bdf6b4aae2ff8d834aaebadbf7535d4cb8478fbb579966a5ca3142f86a")  # 실물 ZIP 해시다.
+
+    def test_bundled_zip_is_found_without_environment_variable(self):
+        """배포본 assets/의 승인 ZIP은 새 PC에서도 환경변수 없이 사용한다."""
+        sidecar = self.base / "assets" / gl.UE4SS_BUNDLE_NAME
+        sidecar.parent.mkdir()
+        sidecar.write_bytes(self.zip_path.read_bytes())
+        with mock.patch.object(gl, "UE4SS_ASSET_DIR", sidecar.parent), \
+             mock.patch.object(gl, "PINNED_UE4SS_ZIP_SHA256", self.zip_sha), \
+             mock.patch.dict(os.environ, {gl.UE4SS_BUNDLE_ENV: ""}):
+            result = gl.prepare_ue4ss(str(self.root), game_running=False)
+        self.assertEqual(result.status, "READY", result.detail)
+        self.assertTrue(self.manifest.exists())
+
+    def test_real_bundle_installs_into_fake_game_when_supplied(self):
+        """실제 배포 ZIP을 가짜 게임 폴더에 설치해 경로·해시·파일 구성을 확인한다."""
+        bundle_arg = os.environ.get("GZZ_TEST_UE4SS_ZIP")
+        bundle = bundle_arg or gl._bundled_ue4ss_zip()
+        if not bundle:  # 팀 ZIP이 없는 다른 개발자 PC에서도 기본 테스트는 실행된다.
+            self.skipTest("GZZ_TEST_UE4SS_ZIP이 지정되지 않았습니다")
+        self.assertEqual(hashlib.sha256(Path(bundle).read_bytes()).hexdigest(),
+                         gl.PINNED_UE4SS_ZIP_SHA256)  # 승인된 ZIP과 바이트까지 같다.
+        result = gl.prepare_ue4ss(str(self.root), bundle_arg, game_running=False)
+        self.assertEqual(result.status, "READY", result.detail)  # 실제 ZIP 구조가 코드의 기대와 맞는다.
+        self.assertFalse((self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua").exists())
+        self.assertEqual(result.installed, len(gl.UE4SS_BUNDLE_FILES) + len(gl.TEAM_MOD_FILES))
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["bundle"]["sha256"], gl.PINNED_UE4SS_ZIP_SHA256)
+
+    def test_approved_bundle_installs_without_optional_game_signature(self):
+        """팀이 검증한 런타임 ZIP은 별도 시그니처 없이 설치한다."""
+        with mock.patch.object(gl, "PINNED_UE4SS_ZIP_SHA256", self.zip_sha):  # 가짜 ZIP만 고정값과 맞춘다.
+            result = gl.prepare_ue4ss(str(self.root), str(self.zip_path), game_running=False)  # 시그니처 없이 시도한다.
+        self.assertEqual(result.status, "READY")  # 없는 선택 파일 때문에 설치가 막히지 않는다.
+        self.assertTrue((self.bin / "dwmapi.dll").exists())  # 필수 런타임은 설치한다.
+        self.assertFalse((self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua").exists())
+        self.assertTrue(self.manifest.exists())  # 설치한 파일 해시는 정상적으로 기록한다.
+
+    def test_prepare_cli_uses_approved_bundle_without_signature(self):
+        """사용자가 실행할 준비 명령도 동일한 설치 경로를 거친다."""
+        output = io.StringIO()
+        with mock.patch.object(gl, "PINNED_UE4SS_ZIP_SHA256", self.zip_sha), redirect_stdout(output):
+            code = gl._cli(["prepare", "--game-dir", str(self.root), "--bundle", str(self.zip_path)])
+        self.assertEqual(code, 0)
+        self.assertIn("READY:", output.getvalue())
+        self.assertFalse((self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua").exists())
+
+    def test_wait_load_cli_requires_new_log(self):
+        """대기 명령은 과거 로그를 정상 로드 근거로 재사용하지 않는다."""
+        output = io.StringIO()
+        with mock.patch.object(gl, "wait_for_ue4ss_log", return_value=gl.UE4SSResult("READY", "로드 확인")) as waiter, \
+             redirect_stdout(output):
+            code = gl._cli(["wait-load", "--game-dir", str(self.root), "--timeout", "2"])
+        self.assertEqual(code, 0)
+        self.assertIsNone(waiter.call_args.args[1])  # 세션 연결은 지정할 때만 요구한다.
+        self.assertGreater(waiter.call_args.args[2], 0)  # 새 로그의 기준 시각을 넘긴다.
+        self.assertIn("READY:", output.getvalue())
+
+    def test_explicit_signature_requires_hash_and_is_recorded(self):
+        """별도 파일은 팀 승인 해시와 맞아야 설치·등록한다."""
+        missing_hash = self.install(signature_path=str(self.signature))
+        self.assertEqual(missing_hash.status, "CONFLICT")
+        self.assertFalse((self.bin / "dwmapi.dll").exists())
+        result = self.install(signature_path=str(self.signature),
+                              expected_signature_sha256=self.signature_sha)
+        self.assertEqual(result.status, "READY")
+        self.assertEqual(result.installed, len(gl.UE4SS_BUNDLE_FILES) + len(gl.TEAM_MOD_FILES) + 1)
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertIn("Chameleon/Binaries/Win64/ue4ss/UE4SS_Signatures/StaticConstructObject.lua",
+                      manifest["files"])
+
+    def test_approved_existing_signature_is_recorded_without_source(self):
+        """은지님 설치본처럼 이미 있는 승인 시그니처는 복사 없이 해시 등록한다."""
+        target = self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(self.signature.read_bytes())
+        with mock.patch.object(gl, "PINNED_SIGNATURE_SHA256", self.signature_sha):
+            result = self.install()
+        self.assertEqual(result.status, "READY", result.detail)
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertIn("Chameleon/Binaries/Win64/ue4ss/UE4SS_Signatures/StaticConstructObject.lua",
+                      manifest["files"])
+        self.assertEqual(manifest["files"]["Chameleon/Binaries/Win64/ue4ss/UE4SS_Signatures/StaticConstructObject.lua"],
+                         self.signature_sha)
+        self.assertFalse((self.base / "ignored.json").exists())
+
+    def test_unrequested_existing_signature_is_a_conflict(self):
+        """기존에 깔린 게임별 패턴을 검증 없이 정상 설치물로 오인하지 않는다."""
+        target = self.bin / "ue4ss" / "UE4SS_Signatures" / "StaticConstructObject.lua"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"unverified override")
+        result = self.install()
+        self.assertEqual(result.status, "CONFLICT")
+        self.assertFalse((self.bin / "dwmapi.dll").exists())
+        self.assertFalse(self.manifest.exists())
 
     def test_installs_once_preserves_other_mod_and_records_hashes(self):
         """필수 파일만 설치하고, 기존 타 모드·줄바꿈·해시 기록을 유지한다."""
         mods_path = self.bin / "ue4ss" / "Mods" / "mods.txt"  # 이미 쓰던 사용자 모드 설정이다.
         mods_path.parent.mkdir(parents=True)  # 가짜 게임에 기존 UE4SS 설정 경로를 만든다.
-        mods_path.write_bytes(b"GodMode : 1\r\nDamageLogger : 0\r\n")  # 기존 다른 모드는 보존해야 한다.
+        mods_path.write_bytes(b"GodMode : 1\r\nCheatManagerEnablerMod : 1\r\nDamageLogger : 0\r\n")  # 기존 다른 모드는 판정·수정하지 않고 보존한다.
         result = self.install()  # 처음 설치한다.
         self.assertEqual(result.status, "READY")  # 파일 준비가 끝났다는 뜻이다.
-        self.assertEqual(result.installed, len(gl.UE4SS_BUNDLE_FILES) + len(gl.TEAM_MOD_FILES) + 1)  # 시그니처도 센다.
+        self.assertIn("기존 타 모드 안전성은 평가하지 않음", result.detail)
+        self.assertEqual(result.installed, len(gl.UE4SS_BUNDLE_FILES) + len(gl.TEAM_MOD_FILES))  # 실제로 받은 파일만 센다.
         mods = mods_path.read_bytes()  # 설정을 바이트로 읽는다.
         self.assertIn(b"GodMode : 1\r\n", mods)  # 다른 모드를 임의로 제거하지 않는다.
-        self.assertIn(b"DamageLogger : 1\r\n", mods)  # 꺼져 있던 팀 모드를 켠다.
-        self.assertIn(b"GZZPaintObserver : 1\r\n", mods)  # 없던 팀 모드를 추가한다.
+        self.assertIn(b"CheatManagerEnablerMod : 1\r\n", mods)  # UE4SS 기본 모드 설정도 보존하며 핵 판정으로 해석하지 않는다.
+        for name in gl.TEAM_MODS:  # 네 관측 모드 모두 활성화해야 한다.
+            self.assertIn(f"{name} : 1\r\n".encode("ascii"), mods)  # 기존 줄바꿈 방식도 유지한다.
         self.assertEqual(mods.count(b"DamageLogger"), 1)  # 중복 줄은 만들지 않는다.
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))  # 탐지기용 등록부다.
         self.assertEqual(manifest["bundle"]["sha256"], self.zip_sha)  # 실제 설치 ZIP의 해시가 기록됐다.
         self.assertEqual(manifest["game_root"], str(self.root))  # 설치 루트가 가짜 게임과 같다.
         self.assertIn("Chameleon/Binaries/Win64/dwmapi.dll", manifest["files"])  # 프록시도 등록됐다.
-        self.assertIn("DamageLogger", manifest["mods"])  # 첫 팀 모드가 등록됐다.
-        self.assertIn("GZZPaintObserver", manifest["mods"])  # 둘째 팀 모드가 등록됐다.
+        self.assertEqual(manifest["mods"], list(gl.TEAM_MODS))  # 설치한 네 모드를 빠짐없이 예외 등록한다.
+        client_root = LAUNCHER.parent  # 각 관측 모드 원본을 찾을 client 폴더다.
+        for target, relative in gl.TEAM_MOD_FILES.items():  # 네 모드의 모든 Lua 파일을 확인한다.
+            installed = self.bin / target  # 게임 폴더에 복사된 파일이다.
+            self.assertEqual(installed.read_bytes(), (client_root / relative).read_bytes())  # 원본과 바이트가 같다.
+            self.assertIn("Chameleon/Binaries/Win64/" + target, manifest["files"])  # 해시 등록부에서도 빠지지 않는다.
         second = self.install()  # 정상 상태에서 다시 실행한다.
         self.assertEqual(second.status, "READY")  # 재검사도 정상이다.
         self.assertEqual(second.installed, 0)  # 같은 파일을 반복 복사하지 않는다.
@@ -105,8 +215,8 @@ class GameLauncherTests(unittest.TestCase):
         result = self.install()  # 기존 mods.txt가 없는 가짜 게임에 설치한다.
         self.assertEqual(result.status, "READY")  # 팀 모드만 켜는 설치는 성공해야 한다.
         mods = (self.bin / "ue4ss" / "Mods" / "mods.txt").read_text(encoding="utf-8")  # 새 목록이다.
-        self.assertEqual(mods, "DamageLogger : 1\nGZZPaintObserver : 1\n")  # 팀 모드만 있다.
-        self.assertNotIn("GodMode", mods)  # ZIP 기본 설정의 타 모드를 가져오지 않았다.
+        self.assertEqual(mods, "".join(f"{name} : 1\n" for name in gl.TEAM_MODS))  # 팀 모드 네 개만 있다.
+        self.assertNotIn("GodMode : 1", mods)  # 핵 PoC GodMode와 관측 모드 GodModeTelemetry를 구분한다.
 
     def test_verified_directory_bundle_installs_only_required_runtime_files(self):
         """압축 해제 폴더도 설치 파일 지문이 고정됐을 때만 사용할 수 있다."""
@@ -147,35 +257,51 @@ class GameLauncherTests(unittest.TestCase):
         self.assertFalse(self.manifest.exists())  # 설치 성공 기록도 만들지 않았다.
 
     def test_file_picker_runs_without_interactive_console(self):
-        """콘솔 없는 EXE에서도 자동 탐색 실패 시 파일 선택 창을 호출한다."""
+        """패키징된 GUI 실행파일은 콘솔이 없어도 경로 선택을 할 수 있다."""
         with mock.patch.object(gl, "find_game_pid", return_value=None), \
              mock.patch.object(gl, "_steam_libraries", return_value=[]), \
              mock.patch.object(gl, "GAME_DIR", str(self.base / "missing")), \
              mock.patch.object(gl, "choose_game_root", return_value=str(self.root)) as chooser, \
              mock.patch.object(sys, "stdin", None), \
+             mock.patch.object(sys, "frozen", True, create=True), \
              mock.patch.dict(os.environ, {"GZZ_GAME_DIR": ""}):  # 자동 탐색 경로를 모두 제거한다.
             self.assertEqual(gl.find_game_root(), str(self.root))  # 선택 창의 결과를 쓴다.
             chooser.assert_called_once_with()  # TTY 부재가 GUI 호출을 막지 않았다.
 
-    def test_direct_game_exit_falls_back_to_steam(self):
-        """직접 실행한 EXE가 즉시 종료되면 Steam 프로토콜로 재시도한다."""
+    def test_noninteractive_discovery_never_opens_picker(self):
+        """E2E처럼 표준 입력이 없는 Python 실행에서는 선택 창 때문에 멈추지 않는다."""
         with mock.patch.object(gl, "find_game_pid", return_value=None), \
-             mock.patch.object(gl, "find_game_dir", return_value=str(self.bin)), \
-             mock.patch.object(gl.subprocess, "Popen") as popen, \
+             mock.patch.object(gl, "_saved_game_root", return_value=None), \
+             mock.patch.object(gl, "_steam_libraries", return_value=[]), \
+             mock.patch.object(gl, "GAME_DIR", str(self.base / "missing")), \
+             mock.patch.object(gl, "choose_game_root", return_value=str(self.root)) as chooser, \
+             mock.patch.object(sys, "stdin", None), \
+             mock.patch.dict(os.environ, {"GZZ_GAME_DIR": ""}):
+            self.assertIsNone(gl.find_game_root())
+            chooser.assert_not_called()
+            self.assertEqual(gl.find_game_root(allow_prompt=True), str(self.root))
+            chooser.assert_called_once_with()
+
+    def test_steam_launch_is_primary_even_if_game_exe_exists(self):
+        """Steam 게임은 EXE가 있어도 Steam 프로토콜로 먼저 실행한다."""
+        with mock.patch.object(gl, "find_game_pid", return_value=None), \
              mock.patch.object(gl.os, "startfile") as steam:  # 실제 게임·Steam은 실행하지 않는다.
-            popen.return_value.wait.return_value = 1  # 직접 실행 프로세스가 바로 끝났다.
-            self.assertTrue(gl.launch())  # Steam 재시도를 요청했으므로 True다.
+            self.assertTrue(gl.launch())  # Steam 실행 요청을 전달한다.
             steam.assert_called_once_with(f"steam://rungameid/{gl.STEAM_APPID}")  # 정확한 게임 ID다.
 
-    def test_live_direct_game_does_not_launch_steam_again(self):
-        """직접 실행 프로세스가 계속 살아 있으면 중복 Steam 실행을 하지 않는다."""
+    def test_steam_failure_never_starts_game_exe_without_token(self):
+        """Steam이 없으면 인증 토큰 없는 직접 실행을 하지 않고 실패를 표시한다."""
         with mock.patch.object(gl, "find_game_pid", return_value=None), \
-             mock.patch.object(gl, "find_game_dir", return_value=str(self.bin)), \
-             mock.patch.object(gl.subprocess, "Popen") as popen, \
              mock.patch.object(gl.os, "startfile") as steam:  # 실제 게임·Steam은 실행하지 않는다.
-            popen.return_value.wait.side_effect = subprocess.TimeoutExpired("game", 2)  # 게임이 유지된다.
-            self.assertTrue(gl.launch())  # 정상 실행 요청으로 처리한다.
-            steam.assert_not_called()  # 두 번째 실행 요청은 보내지 않는다.
+            steam.side_effect = OSError("Steam URI handler missing")
+            self.assertFalse(gl.launch())
+
+    def test_existing_game_is_not_launched_twice(self):
+        """게임이 이미 켜져 있을 때는 Steam에 다시 실행 요청하지 않는다."""
+        with mock.patch.object(gl, "find_game_pid", return_value=12345), \
+             mock.patch.object(gl.os, "startfile") as steam:
+            self.assertFalse(gl.launch())
+            steam.assert_not_called()
 
     def test_conflicting_proxy_dll_is_not_overwritten(self):
         """다른 dwmapi.dll이 있으면 기존 파일과 나머지 폴더를 건드리지 않는다."""
@@ -212,11 +338,11 @@ class GameLauncherTests(unittest.TestCase):
         """해석할 수 없는 기존 설정은 추측해 바꾸지 않는다."""
         mods = self.bin / "ue4ss" / "Mods" / "mods.txt"  # 기존 사용자 설정 파일이다.
         mods.parent.mkdir(parents=True)  # 가짜 모드 설정 폴더를 만든다.
-        mods.write_text("DamageLogger : maybe\n", encoding="utf-8")  # 0/1이 아닌 값이다.
+        mods.write_text("NoclipLogger : maybe\n", encoding="utf-8")  # 새 팀 모드의 0/1이 아닌 값이다.
         result = self.install()  # 팀 모드 활성화를 시도한다.
         self.assertEqual(result.status, "ERROR")  # 모호한 설정을 오류로 보고한다.
         self.assertFalse((self.bin / "dwmapi.dll").exists())  # 설치 전 단계에서 멈췄다.
-        self.assertEqual(mods.read_text(encoding="utf-8"), "DamageLogger : maybe\n")  # 기존 값을 보존했다.
+        self.assertEqual(mods.read_text(encoding="utf-8"), "NoclipLogger : maybe\n")  # 기존 값을 보존했다.
 
     def test_missing_bundle_file_fails_before_copy(self):
         """ZIP 전체 해시가 맞더라도 필수 DLL이 누락되면 설치하지 않는다."""
@@ -243,12 +369,15 @@ class GameLauncherTests(unittest.TestCase):
     def test_mods_txt_preserves_comments_and_deduplicates_team_mods(self):
         """기존 주석·타 모드·CRLF를 유지하고 팀 모드 중복만 제거한다."""
         original = (b"# note\r\nGodMode : 1\r\nDamageLogger : 0 ; team\r\n"
-                    b"DamageLogger : 0\r\nGZZPaintObserver : 0\r\n")  # 일부러 중복 선언한다.
+                    b"DamageLogger : 0\r\nGZZPaintObserver : 0\r\n"
+                    b"NoclipLogger : 0\r\nNoclipLogger : 0\r\nGodModeTelemetry : 0\r\n")  # 새 모드도 중복·비활성화한다.
         result = gl._desired_mods_text(original)  # 설치 코드의 설정 변환을 직접 호출한다.
         self.assertIn(b"# note\r\nGodMode : 1\r\n", result)  # 다른 모드·주석이 남았다.
         self.assertIn(b"DamageLogger : 1 ; team\r\n", result)  # 값만 바꾸고 주석·CRLF는 보존했다.
         self.assertEqual(result.count(b"DamageLogger"), 1)  # 중복 줄을 정리했다.
-        self.assertEqual(result.count(b"GZZPaintObserver"), 1)  # 해당 모드도 한 줄이다.
+        for name in gl.TEAM_MODS:  # 네 팀 모드는 각각 한 번만 남는다.
+            self.assertEqual(result.count(name.encode("ascii")), 1)  # 중복을 제거한다.
+            self.assertIn(f"{name} : 1".encode("ascii"), result)  # 모두 활성화한다.
         self.assertEqual(gl._desired_mods_text(result), result)  # 재실행해도 파일을 또 바꾸지 않는다.
 
     def test_log_verification_distinguishes_stale_incomplete_and_current(self):
@@ -259,14 +388,25 @@ class GameLauncherTests(unittest.TestCase):
         log.write_text("PS scan successful\nGit SHA #f6d5f942\n"
                        "[DamageLogger] loaded\n"
                        "[GZZPaintObserver] loaded; waiting for Python session control\n"
-                       "[GZZPaintObserver] session=sample_001\n", encoding="utf-8")  # 정상 로그 문자열이다.
+                       "[GZZPaintObserver] session=sample_001\n"
+                       "[NoclipLogger] loaded\n"
+                       "[GodModeTelemetry] Telemetry sensor loaded\n", encoding="utf-8")  # 네 모드의 실제 시작 문자열이다.
         os.utime(log, (now - 100, now - 100))  # 먼저 100초 전 로그로 만든다.
         self.assertEqual(gl.verify_ue4ss_log(str(self.root), "sample_001", now).status, "STALE")  # 재사용 금지다.
+        os.utime(log, (now - 1, now - 1))  # 바로 직전 실행의 로그도 이번 확인에 재사용하지 않는다.
+        self.assertEqual(gl.verify_ue4ss_log(str(self.root), None, now).status, "STALE")
         os.utime(log, (now, now))  # 이제 이번 실행의 새 로그로 바꾼다.
         self.assertEqual(gl.verify_ue4ss_log(str(self.root), "other", now).status, "UNAVAILABLE")  # 세션이 다르다.
+        self.assertEqual(gl.verify_ue4ss_log(str(self.root), None, now).status, "READY")  # 로드만 확인할 수도 있다.
         self.assertEqual(gl.verify_ue4ss_log(str(self.root), "sample_001", now).status, "READY")  # 전부 맞는다.
+        self.assertIn("기존 타 모드 안전성은 평가하지 않음",
+                      gl.verify_ue4ss_log(str(self.root), "sample_001", now).detail)
         self.assertEqual(gl.wait_for_ue4ss_log(str(self.root), "sample_001", now,
                                                timeout_s=0).status, "READY")  # 대기 함수도 즉시 성공한다.
+        log.write_text(log.read_text(encoding="utf-8").replace("[NoclipLogger] loaded\n", ""),
+                       encoding="utf-8")  # 한 모드가 누락된 로그로 바꾼다.
+        self.assertEqual(gl.verify_ue4ss_log(str(self.root), "sample_001", now).status,
+                         "UNAVAILABLE")  # 일부만 로드됐는데 전체 정상으로 표시하면 안 된다.
 
 
 if __name__ == "__main__":

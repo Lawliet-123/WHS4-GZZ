@@ -10,7 +10,7 @@ python client/Launcher/main.py
 | 옵션 | 뜻 |
 |---|---|
 | `--session ID` | 세션 이름 (기본: 시각으로 자동 생성) |
-| `--player ID` | 플레이어 식별자 (기본 `player_001`) |
+| `--player ID` | 플레이어 식별자 (기본: 이 PC의 저장된 ID 또는 컴퓨터 이름 기반 ID) |
 | `--only a,b` | 그 모듈만 실행 |
 | `--no-launch-game` | 게임은 내가 직접 켠다. 뜰 때까지 기다리기만 |
 | `--wait-game SEC` | 게임을 기다리는 시간 (기본 180초) |
@@ -22,21 +22,44 @@ python client/Launcher/main.py
 확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 
 게임 경로는 실행 중인 게임·저장된 사용자 선택·Steam 라이브러리 순서로 검증한다.
-모두 실패하면 콘솔 유무와 관계없이 게임 exe 선택 창을 한 번 열고 `%LOCALAPPDATA%`에
-저장한다. GUI를 열 수 없고 콘솔이 있다면 경로를 직접 입력받는다.
+모두 실패하면 대화형 콘솔 또는 패키징된 GUI에서 게임 exe 선택 창을 한 번 열고
+`%LOCALAPPDATA%`에 저장한다. 표준 입력이 없는 자동 E2E에서는 창을 열지 않고
+미발견으로 돌아가며, 콘솔에서 명시적으로 `find_game_root(allow_prompt=True)`를
+호출하면 선택을 다시 시도할 수 있다. E2E 실행에는 `--no-game-path-prompt`를
+명시해 입력 스트림 상태와 관계없이 창을 막을 수 있다. GUI를 열 수 없고 콘솔이
+있다면 경로를 직접 입력받는다.
 `GZZ_GAME_DIR`로 설치 루트 또는 게임 exe 경로를 직접 지정할 수도 있다.
 폴더만 존재하는 경로는 쓰지 않고 `PenguinHotel-Win64-Shipping.exe`까지 확인한다.
-게임 exe를 직접 실행했는데 곧바로 종료되면 Steam URL로 한 번 재시도한다.
+게임은 `steam://rungameid/4704690`으로만 실행한다. Steam URL을 열 수 없으면
+실패로 표시하고 사용자가 Steam에서 직접 켜도록 안내한다. 게임 EXE 직접 실행은
+`missing authentication token` 오류를 낼 수 있어 대체 경로로 쓰지 않는다.
+실행 요청 성공은 게임 창이 보인다는 뜻이 아니므로 런처는 게임 PID를 별도로 기다린다.
 
-`game_launcher.prepare_ue4ss()`는 팀 ZIP 또는 압축을 푼 폴더와 게임 전용 시그니처의
-고정 SHA-256이 없으면 설치하지 않는다. ZIP은 전체 파일 해시를, 폴더는 실제 설치할
-필수 파일의 경로·길이·내용을 묶은 지문을 사용한다. 기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를
-돌려준다. `READY`는 파일 준비 상태일 뿐, 게임 실행 후에는
-`verify_ue4ss_log()`로 실제 로드를 별도로 확인해야 한다. 현재 팀 실물과 해시가
-확인이 없어 `main.py` 자동 호출은 아직 연결되지 않았다. 로컬 테스트는
+`game_launcher.prepare_ue4ss()`는 팀이 확인한 UE4SS ZIP의 전체 SHA-256을 고정해
+검증한다. 압축 해제 폴더는 별도로 설치 파일 지문을 고정해야 사용할 수 있다.
+별도 `StaticConstructObject.lua`는 팀 ZIP에 없고 모든 PC에서 필수는 아니다.
+은지님이 동작 확인한 파일 SHA-256 `9ed5765bd48526e89594515ed1f72edcc4bb619097c460a3897254968af0235e`를
+고정했다. 파일이 이미 있으면 이 해시와 같을 때만 등록부에 포함한다. 없으면 설치를
+막지 않는다. 새로 공급할 때는 `GZZ_UE4SS_SIGNATURE`로 경로를 지정할 수 있다.
+기존 DLL과 해시가 다르면 덮어쓰지 않고 `CONFLICT`를 돌려준다. `READY`는
+파일 준비 상태일 뿐, 게임 실행 후에는 `verify_ue4ss_log()`로 실제 로드를 별도로
+확인해야 한다. `main.py`는 UE4SS를 쓰는 탐지기를 선택했을 때 게임 실행 전
+`prepare_ue4ss()`를 호출하고, 탐지기 시작 후 이번 게임의 로드 로그를 확인한다.
+이미 게임이 실행 중이면 설치 파일을 바꾸지 않고 검사만 한다. 팀 ZIP은
+`client/Launcher/assets/UE4SS_v3.0.1-1136-g35d1795d.zip`에서 자동으로 찾고,
+필요하면 `GZZ_UE4SS_BUNDLE`로 다른 경로를 명시할 수 있다. 패키징된 실행파일은
+실행파일 옆 `assets/`도 확인한다. ZIP이 빠지거나 충돌하면 다른 모듈은 계속 실행하되
+UE4SS 상태를 `MISSING`·`CONFLICT` 등으로 표시한다. 상태 `RUNNING`만으로
+UE4SS 의존 탐지가 유효하다고 판단하지 않는다. 로컬 테스트는
 `python -B -m unittest discover -s client/Launcher/tests -q`로 실행한다.
+`UE4SS READY`는 팀 파일 준비 또는 이번 게임의 팀 관측 모드 로드 확인만 뜻한다.
+기존에 켜진 타 모드의 안전성이나 핵 사용 여부를 판정하지 않는다.
+파일·주입 관련 탐지기만 선택했더라도 게임 폴더에 UE4SS가 이미 있으면 승인 ZIP과
+설치 파일을 검증하고 고정 경로 `client/Launcher/logs/ue4ss_install.json`에 기록한다.
+UE4SS가 전혀 없다면 이 경우 새로 설치하지 않는다. 옛 `GZZ_UE4SS_MANIFEST` 환경변수는
+등록부를 다른 곳에 쓰거나 읽게 만들 수 있어 런처가 자식 프로세스를 시작하기 전에 제거한다.
 새 설치에서는 UE4SS 묶음의 기본 `mods.txt`를 그대로 복사하지 않는다.
-`CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 모드 두 개만 새로
+`CheatManagerEnablerMod` 같은 기본 모드가 켜질 수 있어서 팀 관측 모드 네 개만 새로
 등록한다. 이미 있는 사용자 `mods.txt`의 다른 줄은 보존한다.
 
 ---
