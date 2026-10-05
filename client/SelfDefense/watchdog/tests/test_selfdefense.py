@@ -17,13 +17,15 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if (ROOT / "client" / "SelfDefense" / "watchdog" / "main.py").is_file():
-    from client.SelfDefense.watchdog.launcher_adapter import LauncherRegistry, RegistryError
+    from client.SelfDefense.watchdog.launcher_adapter import LauncherRegistry, RegistryError, Snapshot, Target, ProcessState
+    from client.SelfDefense.watchdog.process_probe import ProcessProbe
     from client.SelfDefense.watchdog.monitor import Watchdog, Observation
     from client.SelfDefense.watchdog.reporting import SessionLog, Reporter
     ENTRY = ROOT / "client" / "SelfDefense" / "watchdog" / "main.py"
 else:
     sys.path.insert(0, str(ROOT))  # ZIP root or installed watchdog/tests.
-    from launcher_adapter import LauncherRegistry, RegistryError
+    from launcher_adapter import LauncherRegistry, RegistryError, Snapshot, Target, ProcessState
+    from process_probe import ProcessProbe
     from monitor import Watchdog, Observation
     from reporting import SessionLog, Reporter
     ENTRY = ROOT / "main.py"
@@ -39,8 +41,8 @@ class FakeRegistry:
         self.names, self.status, self.pid = names, status, pid
         self.calls = []
 
-    def restartable_names(self):
-        return self.names
+    def inspect(self):
+        return Snapshot(False, tuple(Target(n, 123, "continuous", True, ProcessState("missing")) for n in self.names))
 
     def restart_if_dead(self, name, *, by):
         self.calls.append((name, by))
@@ -52,8 +54,8 @@ class WatchdogTests(unittest.TestCase):
         registry = FakeRegistry(("module_a", "SelfDefense", "autopaint"))
         result = Watchdog(registry).poll()
         self.assertEqual(registry.calls, [("module_a", "watchdog")])
-        self.assertEqual([x.status for x in result], ["alive", "alive", "skip", "skip"])
-        self.assertFalse(any(x.report for x in result))
+        self.assertEqual([x.status for x in result], ["alive", "alive", "exited", "exited"])
+        self.assertTrue(all(x.report for x in result[1:]))
 
     def test_no_oneshot_discovery_or_spawning_outside_registry(self):
         registry = FakeRegistry(())
@@ -65,6 +67,7 @@ class WatchdogTests(unittest.TestCase):
         watchdog = Watchdog(registry)
         for state in ("alive", "backoff", "stopping", "skip"):
             registry.status = state
+            watchdog.poll()
             self.assertFalse(watchdog.poll()[-1].report)
         for state in ("gave_up", "orphaned"):
             registry.status, registry.pid = state, None
@@ -79,12 +82,13 @@ class WatchdogTests(unittest.TestCase):
         self.assertTrue(watchdog.poll()[-1].report)
         self.assertTrue(watchdog.poll()[-1].report)
 
-    def test_invalid_names_result_in_no_restart_calls(self):
-        for names in ("module_a", {"a": 1}, ["a", "A"], [None], [""]):
-            registry = FakeRegistry(names)
-            result = Watchdog(registry).poll()
-            self.assertEqual(result[0].error_code, "REGISTRY_INVALID_NAMES")
-            self.assertEqual(registry.calls, [])
+    def test_unknown_inspect_exception_is_sanitized(self):
+        registry = FakeRegistry()
+        registry.inspect = lambda: (_ for _ in ()).throw(RuntimeError("SECRET"))
+        result = Watchdog(registry).poll()
+        self.assertEqual(result[0].error_code, "REGISTRY_LIST_FAILED")
+        self.assertNotIn("SECRET", str(result))
+        self.assertEqual(registry.calls, [])
 
     def test_invalid_result_is_not_normal(self):
         for answer in (("surprise", 1, None), ("alive", None, None), ("alive", True, None), ("alive", 1)):
@@ -108,7 +112,7 @@ class WatchdogTests(unittest.TestCase):
     def test_missing_registry_is_reported_once_and_recovers(self):
         registry = FakeRegistry()
         watchdog = Watchdog(registry)
-        with patch.object(registry, "restartable_names", side_effect=RegistryError("REGISTRY_UNAVAILABLE")):
+        with patch.object(registry, "inspect", side_effect=RegistryError("REGISTRY_UNAVAILABLE")):
             self.assertTrue(watchdog.poll()[0].report)
             self.assertFalse(watchdog.poll()[0].report)
         self.assertTrue(watchdog.poll()[0].report)
@@ -284,7 +288,8 @@ class SelfDefenseFileTests(unittest.TestCase):
         self.assertFalse(list(self.root.rglob("manifest.json")))
 
     def guarded_registry(self, **changes):
-        state = dict(session_id="expected", stopping=False, entries={},
+        state = dict(session_id="expected", stopping=False,
+                     entries={"module_a": dict(pid=42, create_time=456, restartable=True)},
                      launcher_pid=12, launcher_create_time=123)
         state.update(changes)
         module = types.SimpleNamespace(load=lambda: state, is_alive=lambda *a: True,
@@ -292,6 +297,9 @@ class SelfDefenseFileTests(unittest.TestCase):
                                        restart_if_dead=lambda *a, **k: ("alive", 42, None))
         adapter = LauncherRegistry(self.root, expected_session="expected")
         adapter._module = module
+        adapter._modes = {"module_a": ("continuous", True)}
+        adapter.probe = types.SimpleNamespace(read=lambda *a: ProcessState("alive") if module.is_alive(*a[1:]) else ProcessState("missing"),
+                                              retain=lambda *a: None, close=lambda: None)
         return adapter, module
 
     def test_session_guard_valid_and_wrong_session(self):
@@ -349,12 +357,13 @@ class SelfDefenseFileTests(unittest.TestCase):
         launcher = team / "client/Launcher"
         launcher.mkdir()
         (launcher / "registry.py").write_text(
-            "def load(): return dict(session_id='nested_test', stopping=False, entries={}, "
-            "launcher_pid=123, launcher_create_time=456)\n"
+            "def load(): return dict(session_id='nested_test', stopping=True, entries={}, "
+            "launcher_pid=None, launcher_create_time=None)\n"
             "def is_alive(*args): return True\n"
             "def restartable_names(): return ['module_a']\n"
             "def restart_if_dead(name, *, by): return 'alive', 123, None\n",
             encoding="utf-8")
+        (launcher / "modules.py").write_text("MODULES = []\n", encoding="utf-8")
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
         env.pop("PYTHONHOME", None)
@@ -368,9 +377,9 @@ class SelfDefenseFileTests(unittest.TestCase):
             cwd=self.root, env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(run.returncode, 0, run.stderr)
         manifest = next((watchdog / "logs").rglob("manifest.json"))
-        self.assertEqual(json.loads(manifest.read_text())["collector_version"], "0.2.1")
+        self.assertEqual(json.loads(manifest.read_text())["collector_version"], "0.3.0")
         raw = [json.loads(line) for line in (manifest.parent / "raw/watchdog.jsonl").read_bytes().splitlines()]
-        self.assertTrue(any(x["target"] == "module_a" and x["status"] == "alive" for x in raw))
+        self.assertTrue(any(x["target"] == "registry" and x["status"] == "stopping" for x in raw))
         self.assertFalse(any(x["status"] == "error" for x in raw))
         self.assertFalse((watchdog.parent / "logs").exists())
 
