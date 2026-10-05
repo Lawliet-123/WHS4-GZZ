@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .aggregate import AggregateEvidence, build_aggregate_evidence
+from .external_access_summary import (
+    ExternalAccessChannelSummary,
+    summarize_external_access_history,
+)
 from .history_summary import (
     GodmodeHistorySummary,
     summarize_godmode_history,
@@ -161,9 +165,24 @@ def get_player_aggregate_evidence(
             player_id,
         )
 
+    external_access_summaries = None
+    if any(
+        signal.module == "external_access"
+        for signal in risk_input.signals
+    ):
+        external_access_summaries = {
+            submodule: get_external_access_history_summary(
+                session_id,
+                player_id,
+                submodule,
+            )
+            for submodule in EXTERNAL_ACCESS_SUBMODULES
+        }
+
     return build_aggregate_evidence(
         risk_input,
         godmode_history=godmode_history,
+        external_access_summaries=external_access_summaries,
     )
 
 
@@ -333,6 +352,50 @@ def get_external_access_history(
         submodule,
         after_sequence=after_sequence,
         limit=limit,
+    )
+
+
+def get_external_access_history_summary(
+    session_id: str,
+    player_id: str,
+    submodule: str,
+    *,
+    batch_size: int = 1000,
+) -> ExternalAccessChannelSummary:
+    """external_access 하위 채널 전체 history를 잘리지 않게 요약한다."""
+
+    if submodule not in EXTERNAL_ACCESS_SUBMODULES:
+        raise ValueError("unsupported external_access submodule")
+
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    rows: list[ExternalAccessEvent] = []
+    cursor = 0
+
+    while True:
+        batch = get_external_access_history(
+            session_id,
+            player_id,
+            submodule,
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            break
+
+        rows.extend(batch)
+        cursor = batch[-1].sequence
+
+        if len(batch) < batch_size:
+            break
+
+    return summarize_external_access_history(
+        rows,
+        session_id=session_id,
+        player_id=player_id,
+        submodule=submodule,
     )
 
 
