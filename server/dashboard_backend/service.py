@@ -73,9 +73,15 @@ class DashboardService:
         pairs = [(session_id, player_id)] if session_id is not None else [
             (row["session_id"], row["player_id"]) for row in overview["assessments"]
         ]
-        launcher_statuses, module_statuses = [], []
+        launcher_statuses, module_statuses, selfdefense_statuses = [], [], []
         for session, player in pairs:
             status = self.status(session, player)
+            for item in self.index.selfdefense_statuses(session, player):
+                selfdefense_statuses.append({
+                    **item,
+                    "session_id": session,
+                    "player_id": player,
+                })
             launcher = status["launcher"]
             launcher_statuses.append({"session_id": session, "player_id": player, **launcher})
             if launcher["source"] is not None:
@@ -103,8 +109,12 @@ class DashboardService:
             "capabilities": {"final_assessment": self.verdict_provider is not None, "launcher_heartbeat": self.heartbeat_store is not None, "evidence_images": False, "heartbeat_query": self.heartbeat_store is not None},
             "connection": {"Receiver": receiver_connection, "Scoring": scoring_connection, "Launcher": launcher_connection},
             **overview,
-            "events": [], "module_statuses": module_statuses, "launcher_statuses": launcher_statuses,
-            "events_endpoint": "/api/dashboard/events", "index": sync,
+            "events": [],
+            "module_statuses": module_statuses,
+            "launcher_statuses": launcher_statuses,
+            "selfdefense_statuses": selfdefense_statuses,
+            "events_endpoint": "/api/dashboard/events",
+            "index": sync,
         }
 
     def detail(self, event_id):
