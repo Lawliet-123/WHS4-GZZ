@@ -7,10 +7,12 @@
 # Receiver/서버 통합부는 아래 함수들을 import해 사용한다.
 from .main import (
     backfill_event_delta_history_from_writer,
+    backfill_external_access_history_from_writer,
     configure_scoring,
     evaluate_event_policy,
     get_event_delta_history,
     get_godmode_history_summary,
+    get_external_access_history,
     get_external_access_scoped_state,
     get_player_final_verdict,
     get_player_fusion_plan,
@@ -30,12 +32,17 @@ from .aggregate import AggregateEvidence, AggregateSignal
 from .aggregate_risk import AggregateRisk
 from .final_verdict import FinalVerdict
 from .history_summary import GodmodeHistorySummary
+from .external_access_summary import (
+    ExternalAccessChannelSummary,
+    summarize_external_access_history,
+)
 from .fusion import FusionEvidenceUnit, FusionPlan
 from .overlap import OverlapGroup
 from .correlation import CorrelationCandidate
 from .player_snapshot import ModulePolicySnapshot, PlayerPolicySnapshot
 from .storage import (
     DeltaEvent,
+    ExternalAccessEvent,
     ModuleState,
     ProcessReceipt,
     ScoringStore,
@@ -49,10 +56,12 @@ __all__ = (
     "AggregateSignal",
     "CorrelationCandidate",
     "DeltaEvent",
+    "ExternalAccessEvent",
     "FusionEvidenceUnit",
     "FusionPlan",
     "FinalVerdict",
     "GodmodeHistorySummary",
+    "ExternalAccessChannelSummary",
     "ModulePolicySnapshot",
     "ModuleState",
     "OverlapGroup",
@@ -62,10 +71,12 @@ __all__ = (
     "WindowConflict",
     "WindowEvent",
     "backfill_event_delta_history_from_writer",
+    "backfill_external_access_history_from_writer",
     "configure_scoring",
     "evaluate_event_policy",
     "get_event_delta_history",
     "get_godmode_history_summary",
+    "get_external_access_history",
     "get_external_access_scoped_state",
     "get_player_final_verdict",
     "get_player_fusion_plan",
@@ -80,4 +91,5 @@ __all__ = (
     "get_player_signal_inventory",
     "process",
     "recover_from_writer",
+    "summarize_external_access_history",
 )

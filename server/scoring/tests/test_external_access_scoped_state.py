@@ -247,5 +247,80 @@ class ExternalAccessScopedStateTests(unittest.TestCase):
         self.assertEqual(state.raw_score, 3)
 
 
+    def test_module_integrity_history_keeps_positive_then_normal(self):
+        self.store.process_event(
+            event(
+                "module_integrity",
+                score=2,
+                status="SUSPICIOUS",
+                timestamp_ms=1000,
+            ),
+            event_id=uid(),
+            sequence=1,
+        )
+
+        self.store.process_event(
+            event(
+                "module_integrity",
+                score=0,
+                status="NORMAL",
+                timestamp_ms=2000,
+            ),
+            event_id=uid(),
+            sequence=2,
+        )
+
+        history = self.store.get_external_access_history(
+            "external_session",
+            "player_1",
+            "module_integrity",
+        )
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(
+            [item.raw_score for item in history],
+            [2, 0],
+        )
+        self.assertEqual(
+            [item.evidence["status"] for item in history],
+            ["SUSPICIOUS", "NORMAL"],
+        )
+
+    def test_external_access_history_keeps_multiple_same_scan_positives(self):
+        self.store.process_event(
+            event(
+                "external_process",
+                score=8,
+                status="SUSPICIOUS",
+                timestamp_ms=1000,
+            ),
+            event_id=uid(),
+            sequence=1,
+        )
+
+        self.store.process_event(
+            event(
+                "external_process",
+                score=3,
+                status="SUSPICIOUS",
+                timestamp_ms=1000,
+            ),
+            event_id=uid(),
+            sequence=2,
+        )
+
+        history = self.store.get_external_access_history(
+            "external_session",
+            "player_1",
+            "external_process",
+        )
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(
+            [item.raw_score for item in history],
+            [8, 3],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
