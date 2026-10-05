@@ -25,6 +25,7 @@ class CalibrationTests(unittest.TestCase):
             "noclip": ("threshold", 3),
             "whistle": ("threshold", 60),
             "godmode_runtime": ("threshold", 5),
+            "noclip_runtime": ("threshold", 1),
             "localguard_executable_hash": ("threshold", 1),
             "overlay_hook": ("threshold", 60),
         }
@@ -63,6 +64,13 @@ class CalibrationTests(unittest.TestCase):
 
         self.assertFalse(calibration.meets_threshold(4))
         self.assertTrue(calibration.meets_threshold(5))
+
+    def test_noclip_runtime_threshold_boundary_is_inclusive(self):
+        calibration = require_calibration("noclip_runtime")
+
+        self.assertFalse(calibration.meets_threshold(0))
+        self.assertTrue(calibration.meets_threshold(1))
+
 
     def test_executable_hash_threshold_boundary_is_inclusive(self):
         calibration = require_calibration("localguard_executable_hash")

@@ -213,7 +213,17 @@ _ITEMS = (
             "current-version controlled ON/OFF data separates 0 from 5."
         ),
     ),
-    ModuleCalibration("noclip_runtime", "pending", None),
+    ModuleCalibration(
+        "noclip_runtime",
+        "threshold",
+        1,
+        note=(
+            "Live E2E: OFF raw_score=0 with collision_flags=0x2B, "
+            "controlled Noclip ON raw_score=1 with collision_flags=0x23 "
+            "and collision_bit_cleared, then OFF returned to raw_score=0. "
+            "Detector contract assigns one point per scan for this condition."
+        ),
+    ),
     ModuleCalibration("aimbot_runtime", "pending", None),
 )
 
