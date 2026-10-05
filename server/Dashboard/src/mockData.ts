@@ -4,6 +4,7 @@ import type {
   EventListResponse,
   FinalAssessmentStatus,
   FinalVerdict,
+  GodModeHistoryResponse,
   ModuleSnapshot,
   OverviewResponse,
   SnapshotResponse,
@@ -472,6 +473,13 @@ export const demoSnapshots: Record<string, SnapshotResponse> = Object.fromEntrie
   assessments.map((assessment) => [
     `${assessment.session_id}::${assessment.player_id}`,
     snapshotFrom(assessment),
+  ]),
+);
+
+export const demoGodModeHistories: Record<string, GodModeHistoryResponse> = Object.fromEntries(
+  assessments.map((assessment) => [
+    `${assessment.session_id}::${assessment.player_id}`,
+    { items: [], has_more: false, next_after_sequence: null, final_assessment: false },
   ]),
 );
 

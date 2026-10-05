@@ -26,6 +26,8 @@ describe("dashboard interactions", () => {
     expect(screen.queryByText(/현재 보호 상태와 탐지 근거/)).toBeNull();
     expect(screen.queryByText(/의심 상태는 검토 우선순위/)).toBeNull();
     expect(screen.queryByText(/현재는 시연 데이터입니다/)).toBeNull();
+    expect(screen.getAllByText("미제공").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole("heading", { name: "GodMode 사건 이력" })).toBeTruthy();
   });
 
   it("keeps the sidebar selection synchronized with the visible section", () => {
@@ -160,8 +162,10 @@ describe("dashboard interactions", () => {
     const longPlayer = "BP_FirstPersonCharacter_Hunter_Default_C_2147479755";
     let resolveOldSnapshot: ((response: Response) => void) | undefined;
     let resolveOldStatus: ((response: Response) => void) | undefined;
+    let resolveOldHistory: ((response: Response) => void) | undefined;
     const oldSnapshotResponse = new Promise<Response>((resolve) => { resolveOldSnapshot = resolve; });
     const oldStatusResponse = new Promise<Response>((resolve) => { resolveOldStatus = resolve; });
+    const oldHistoryResponse = new Promise<Response>((resolve) => { resolveOldHistory = resolve; });
     const response = (body: unknown): Response => ({
       ok: true,
       status: 200,
@@ -175,8 +179,10 @@ describe("dashboard interactions", () => {
       if (url.includes("/api/dashboard/events?")) return Promise.resolve(response(demoEvents));
       if (url.includes("/snapshot") && url.includes(longPlayer)) return oldSnapshotResponse;
       if (url.includes("/status") && url.includes(longPlayer)) return oldStatusResponse;
+      if (url.includes("/history") && url.includes(longPlayer)) return oldHistoryResponse;
       if (url.includes("/snapshot") && url.includes("player_042")) return Promise.resolve(response(demoSnapshots["demo_esp_001::player_042"]));
       if (url.includes("/status") && url.includes("player_042")) return Promise.resolve(response(demoStatuses["demo_esp_001::player_042"]));
+      if (url.includes("/history") && url.includes("player_042")) return Promise.resolve(response({ items: [], has_more: false, next_after_sequence: null, final_assessment: false }));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -198,12 +204,19 @@ describe("dashboard interactions", () => {
 
       resolveOldSnapshot?.(response(demoSnapshots[`demo_aimbot_001::${longPlayer}`]));
       resolveOldStatus?.(response(demoStatuses[`demo_aimbot_001::${longPlayer}`]));
+      resolveOldHistory?.(response({
+        items: [{ event_id: "old-history", sequence: 999, session_id: "demo_aimbot_001", player_id: longPlayer, module: "godmode", timestamp_ms: 1000, raw_score: 3, evidence: {}, reasons: ["OLD SUBJECT HISTORY"] }],
+        has_more: false,
+        next_after_sequence: null,
+        final_assessment: false,
+      }));
       await Promise.resolve();
       await Promise.resolve();
 
       expect(screen.getByRole("heading", { name: "player_042" })).toBeTruthy();
       const moduleCards = [...document.querySelectorAll(".module-state-card")];
       expect(moduleCards.some((card) => card.textContent?.includes("입력 행동"))).toBe(false);
+      expect(screen.queryByText("OLD SUBJECT HISTORY")).toBeNull();
     } finally {
       vi.unstubAllGlobals();
       HTMLDialogElement.prototype.showModal = originalShowModal;
@@ -235,6 +248,7 @@ describe("dashboard interactions", () => {
       if (url.includes("/api/dashboard/events?")) return Promise.resolve(response(demoEvents));
       if (url.includes("/snapshot")) return Promise.resolve(response(demoSnapshots[firstKey]));
       if (url.includes("/status")) return Promise.resolve(response(demoStatuses[firstKey]));
+      if (url.includes("/history")) return Promise.resolve({ ...response({ detail: "unavailable" }), ok: false, status: 503 } as Response);
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -248,6 +262,7 @@ describe("dashboard interactions", () => {
 
       await waitFor(() => expect(screen.getByText("LIVE")).toBeTruthy());
       await waitFor(() => expect(document.querySelectorAll(".module-state-card").length).toBeGreaterThan(0));
+      await waitFor(() => expect(screen.getByText("Dashboard 데이터 저장소를 현재 사용할 수 없습니다.")).toBeTruthy());
       const detailBeforeFailure = [...document.querySelectorAll(".module-state-card")].map((card) => card.textContent).join(" ");
 
       failRefresh = true;

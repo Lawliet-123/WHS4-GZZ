@@ -83,7 +83,7 @@ Launcher는 본체 상태 외에 아래 13개 보호·탐지 컴포넌트를 보
 - `UNKNOWN`과 `INCONCLUSIVE`를 정상으로 바꾸지 않는다.
 - `NO_ACTIVE_EVIDENCE`는 현재 평가 범위에 활성 근거가 없다는 뜻이며 전체 PC의 정상 보증이 아니다.
 - 모듈마다 `raw_score` 생성식과 threshold가 다르므로 서로 합산하거나 같은 색 기준으로 비교하지 않는다.
-- `score`와 `confidence`가 `null`이면 임의의 숫자 위험도나 확률을 만들지 않는다.
+- `score`와 `confidence`가 `null`이면 임의의 숫자 위험도나 확률을 만들지 않고 화면에 `미제공`으로 표시한다.
 - `event_kind=operational`은 실행·보호 상태 기록이며 탐지 Event와 구분한다.
 - `time_basis=unknown`이면 정밀한 공통 시간축으로 단정하지 않고 서버 `sequence`를 기본 순서로 사용한다.
 
@@ -106,6 +106,8 @@ Authorization: Bearer <GZZ_DASHBOARD_TOKEN>
 ```
 
 `overview.events`는 의도적으로 빈 배열이며 Event는 `/events`에서 읽는다. Event cursor는 첫 응답의 `through_sequence`에 고정해 끝까지 읽고, 이후 polling은 마지막 `sequence`를 `after_sequence`로 전달한다. 실서버 오류를 합성 데이터로 자동 대체하지 않는다.
+
+대상을 선택하면 snapshot, 실행 상태, GodMode 사건 이력을 서로 독립적으로 조회한다. 한 조회가 실패해도 성공한 다른 정보는 유지하며, GodMode 이력 항목을 누르면 해당 `event_id`로 원본 Event 상세를 다시 조회한다.
 
 각 endpoint 응답은 화면이 사용하는 필수 필드와 중첩 자료형을 런타임에 검증한다. 계약이 달라진 응답은 부분 렌더링하지 않고 연결·갱신 오류로 표시하며, 응답 본문이나 토큰은 오류 메시지에 포함하지 않는다.
 

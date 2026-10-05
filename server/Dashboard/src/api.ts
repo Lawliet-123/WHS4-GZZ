@@ -4,6 +4,7 @@ import type {
   DashboardFilters,
   EventListResponse,
   EventQuery,
+  GodModeHistoryResponse,
   LiveConnectionInput,
   OverviewResponse,
   PaginationLoadState,
@@ -337,6 +338,32 @@ function decodeSnapshot(value: unknown, status: number): SnapshotResponse {
   return snapshot as unknown as SnapshotResponse;
 }
 
+function decodeGodModeHistory(value: unknown, status: number): GodModeHistoryResponse {
+  const endpoint = "godmode history";
+  const response = objectAt(value, endpoint, "$", status);
+  arrayAt(response.items, endpoint, "items", status).forEach((value, index) => {
+    const item = objectAt(value, endpoint, `items[${index}]`, status);
+    stringAt(item.event_id, endpoint, `items[${index}].event_id`, status, false);
+    nonNegativeIntegerAt(item.sequence, endpoint, `items[${index}].sequence`, status);
+    stringAt(item.session_id, endpoint, `items[${index}].session_id`, status, false);
+    stringAt(item.player_id, endpoint, `items[${index}].player_id`, status, false);
+    const module = stringAt(item.module, endpoint, `items[${index}].module`, status, false);
+    if (module !== "godmode") invalidContract(endpoint, `items[${index}].module`, status);
+    finiteNumberAt(item.timestamp_ms, endpoint, `items[${index}].timestamp_ms`, status);
+    finiteNumberAt(item.raw_score, endpoint, `items[${index}].raw_score`, status);
+    objectAt(item.evidence, endpoint, `items[${index}].evidence`, status);
+    stringArrayAt(item.reasons, endpoint, `items[${index}].reasons`, status);
+  });
+  booleanAt(response.has_more, endpoint, "has_more", status);
+  if (response.next_after_sequence !== null) {
+    nonNegativeIntegerAt(response.next_after_sequence, endpoint, "next_after_sequence", status);
+  }
+  if (response.final_assessment !== false) {
+    invalidContract(endpoint, "final_assessment", status);
+  }
+  return response as unknown as GodModeHistoryResponse;
+}
+
 function decodeStatus(value: unknown, status: number): SubjectStatusResponse {
   const endpoint = "status";
   const response = objectAt(value, endpoint, "$", status);
@@ -541,6 +568,29 @@ export function fetchSubjectStatus(
     input,
     `/api/dashboard/sessions/${encodeURIComponent(sessionId)}/players/${encodeURIComponent(playerId)}/status`,
     decodeStatus,
+    signal,
+  );
+}
+
+export function fetchGodModeHistory(
+  input: LiveConnectionInput,
+  sessionId: string,
+  playerId: string,
+  options: { afterSequence?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<GodModeHistoryResponse> {
+  if (!sessionId.trim() || !playerId.trim()) {
+    throw new DashboardApiError("GodMode 이력 조회에는 세션과 플레이어 ID가 필요합니다.");
+  }
+  const query = queryString({
+    module: "godmode",
+    after_sequence: options.afterSequence,
+    limit: options.limit ?? 100,
+  });
+  return requestJson(
+    input,
+    `/api/dashboard/sessions/${encodeURIComponent(sessionId)}/players/${encodeURIComponent(playerId)}/history${query}`,
+    decodeGodModeHistory,
     signal,
   );
 }

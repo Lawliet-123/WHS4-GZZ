@@ -3,6 +3,7 @@ import {
   DashboardApiError,
   fetchEventDetail,
   fetchEvents,
+  fetchGodModeHistory,
   fetchOverview,
   fetchSnapshot,
   fetchSubjectStatus,
@@ -16,7 +17,7 @@ import {
   demoSnapshots,
   demoStatuses,
 } from "./mockData";
-import type { LiveConnectionInput, SnapshotResponse, SubjectStatusResponse } from "./types";
+import type { GodModeHistoryResponse, LiveConnectionInput, SnapshotResponse, SubjectStatusResponse } from "./types";
 
 const connection: LiveConnectionInput = {
   baseUrl: "http://dashboard.test",
@@ -50,6 +51,23 @@ const status: SubjectStatusResponse = {
   },
   has_more_sources: false,
   reason: "",
+};
+
+const history: GodModeHistoryResponse = {
+  items: [{
+    event_id: "00000000-0000-4000-8000-000000000099",
+    sequence: 99,
+    session_id: "session_001",
+    player_id: "player_001",
+    module: "godmode",
+    timestamp_ms: 12_000,
+    raw_score: 3,
+    evidence: { health_delta: 100 },
+    reasons: ["Health changed without a valid game event"],
+  }],
+  has_more: false,
+  next_after_sequence: null,
+  final_assessment: false,
 };
 
 function jsonResponse(body: unknown, responseStatus = 200): Response {
@@ -119,6 +137,7 @@ describe("Dashboard response contracts", () => {
       if (url.pathname === "/api/dashboard/events") return Promise.resolve(jsonResponse(demoEvents));
       if (url.pathname.endsWith("/snapshot")) return Promise.resolve(jsonResponse(demoSnapshot));
       if (url.pathname.endsWith("/status")) return Promise.resolve(jsonResponse(demoStatus));
+      if (url.pathname.endsWith("/history")) return Promise.resolve(jsonResponse(history));
       if (url.pathname.startsWith("/api/dashboard/events/")) return Promise.resolve(jsonResponse(demoEvent));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
@@ -129,6 +148,7 @@ describe("Dashboard response contracts", () => {
     await expect(fetchEventDetail(connection, demoEvent.id)).resolves.toEqual(demoEvent);
     await expect(fetchSnapshot(connection, demoSnapshot.session_id, demoSnapshot.player_id)).resolves.toEqual(demoSnapshot);
     await expect(fetchSubjectStatus(connection, demoStatus.session_id, demoStatus.player_id)).resolves.toEqual(demoStatus);
+    await expect(fetchGodModeHistory(connection, "session_001", "player_001")).resolves.toEqual(history);
   });
 
   it("normalizes the backend status response used when heartbeat storage is unavailable", async () => {
@@ -184,6 +204,12 @@ describe("Dashboard response contracts", () => {
         const value = Object.values(demoStatuses)[0]!;
         return fetchSubjectStatus(connection, value.session_id, value.player_id);
       },
+    },
+    {
+      name: "GodMode history item",
+      body: { ...history, items: [{ ...history.items[0]!, module: "noclip" }] },
+      path: "items[0].module",
+      request: () => fetchGodModeHistory(connection, "session_001", "player_001"),
     },
   ])("rejects a malformed $name response without returning partial data", async ({ body, path, request }) => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(body))));

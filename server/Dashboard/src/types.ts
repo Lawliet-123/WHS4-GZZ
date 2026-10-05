@@ -361,6 +361,30 @@ export interface SnapshotResponse {
   policy: Record<string, unknown>;
 }
 
+/**
+ * One durable event-delta record returned by the scoring history endpoint.
+ * This is incident evidence, not a cumulative score or a final assessment.
+ */
+export interface GodModeHistoryItem {
+  event_id: string;
+  sequence: number;
+  session_id: string;
+  player_id: string;
+  module: "godmode";
+  timestamp_ms: number;
+  raw_score: number;
+  evidence: Record<string, unknown>;
+  reasons: string[];
+}
+
+export interface GodModeHistoryResponse {
+  items: GodModeHistoryItem[];
+  has_more: boolean;
+  next_after_sequence: number | null;
+  /** The endpoint returns raw incident history; it does not issue a verdict. */
+  final_assessment: false;
+}
+
 export interface SubjectStatusResponse {
   session_id: string;
   player_id: string;

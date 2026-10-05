@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { DashboardApiError, fetchSnapshot, fetchSubjectStatus, loadDashboardBundle, loadEventDetail } from "./api";
+import { DashboardApiError, fetchGodModeHistory, fetchSnapshot, fetchSubjectStatus, loadDashboardBundle, loadEventDetail } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { EvidenceDrawer, redactSensitiveText } from "./components/EvidenceDrawer";
 import { Icon, type IconName } from "./components/Icon";
@@ -17,13 +17,15 @@ import {
   subjectKey,
   verdictMeta,
 } from "./domain";
-import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
+import { demoEvents, demoGodModeHistories, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 import { buildModuleRollups, moduleFilterOptions, protectionModuleGroupLabels } from "./moduleCatalog";
 import type {
   Assessment,
   DashboardEvent,
   DashboardBundle,
   DashboardFilters,
+  GodModeHistoryItem,
+  GodModeHistoryResponse,
   LiveConnectionInput,
   ModuleFilterOption,
   ModuleRollup,
@@ -293,6 +295,8 @@ function VerdictView({ assessment, snapshot, loading, error }: {
   const reasonCodes = snapshot ? snapshot.reason_codes : assessment.reason_codes;
   const assessmentAvailable = snapshot ? snapshot.assessment_available : assessment.assessment_available;
   const dataState = snapshot ? snapshot.data_state : assessment.data_state;
+  const score = snapshot ? snapshot.score : assessment.score;
+  const confidence = snapshot ? snapshot.confidence : assessment.confidence;
   const assessmentState = dataState === "not_connected"
     ? "Scoring 미연결"
     : dataState === "missing"
@@ -318,6 +322,8 @@ function VerdictView({ assessment, snapshot, loading, error }: {
       <div className={`verdict-status tone-${meta.tone}`}><span className="verdict-icon"><Icon name={status === "SUSPICIOUS" ? "alert" : status === "NO_ACTIVE_EVIDENCE" ? "check" : "clock"} size={24} /></span><div><span>최종 판정</span><strong>{meta.label}</strong></div></div>
 
       <div className="verdict-metrics">
+        <div><span>점수</span><strong className="metric-text">{score === null ? "미제공" : score}</strong></div>
+        <div><span>신뢰도</span><strong className="metric-text">{confidence === null ? "미제공" : confidence}</strong></div>
         <div><span>근거 단위</span><strong>{verdict?.evidence_unit_count ?? "—"}</strong></div>
         <div><span>활성 모듈</span><strong>{verdict?.active_module_count ?? "—"}</strong></div>
         <div><span>중복 보정</span><strong>{verdict?.overlap_adjustment_count ?? "—"}</strong></div>
@@ -361,6 +367,32 @@ function Timeline({ events, onSelect }: { events: DashboardEvent[]; onSelect: (e
       {ordered.length > 0 && <div className="sequence-timeline" aria-label={`서버 수신 순서 타임라인 · ${events.length}개 중 ${timelinePoints.length}개 표식`}><div className="sequence-rail">{timelinePoints.map((event) => <button type="button" className={`sequence-point kind-${event.event_kind}`} style={{ left: `${((event.sequence - firstSequence) / sequenceSpan) * 100}%` }} key={event.id} onClick={() => onSelect(event)} title={`${humanizeModule(event.module)} · #${event.sequence}`} aria-label={`${humanizeModule(event.module)} ${event.event_kind === "operational" ? "운영" : "관측"} 이벤트 #${event.sequence}`} />)}</div><div className="sequence-labels"><span>#{firstSequence}</span><strong>서버 수신 순서</strong><span>#{lastSequence}</span></div></div>}
       <div className="timeline-subhead">최근 Event</div>
       {latest.length ? <ol className="timeline-list">{latest.map((event) => <li key={event.id}><button type="button" onClick={() => onSelect(event)}><time title={event.time_basis === "unknown" ? "시간 기준 미확인" : event.time_basis}>{formatElapsed(event.timestamp_ms)}</time><span className={`timeline-dot kind-${event.event_kind}`} /><span><strong>{humanizeModule(event.module)}</strong><small>{event.reasons[0] ? redactSensitiveText(event.reasons[0]) : (event.event_kind === "operational" ? "운영 상태" : "관측 신호")}</small></span><span className={`event-kind kind-${event.event_kind}`}>{event.event_kind === "operational" ? "운영" : "관측"}</span><Icon name="chevron" size={15} /></button></li>)}</ol> : <EmptyState title="표시할 이벤트 없음" />}
+    </Panel>
+  );
+}
+
+function GodModeHistoryPanel({ history, loading, error, onSelect }: {
+  history: GodModeHistoryResponse | null;
+  loading: boolean;
+  error: string | null;
+  onSelect: (item: GodModeHistoryItem) => void;
+}) {
+  const items = [...(history?.items ?? [])].sort((left, right) => right.sequence - left.sequence).slice(0, 8);
+  return (
+    <Panel className="godmode-history-panel">
+      <SectionHeader title="GodMode 사건 이력" count={history?.items.length ?? 0} />
+      <DetailNotice loading={loading} error={error} />
+      {items.length ? <ol className="history-list">{items.map((item) => (
+        <li key={item.event_id}>
+          <button type="button" onClick={() => onSelect(item)} aria-label={`GodMode 사건 #${item.sequence} 상세 보기`}>
+            <time>{formatElapsed(item.timestamp_ms)}</time>
+            <span><strong>사건 #{item.sequence}</strong><small>{item.reasons[0] ? redactSensitiveText(item.reasons[0]) : "기록된 사유 없음"}</small></span>
+            <span className="raw-chip">raw {item.raw_score}</span>
+            <Icon name="chevron" size={15} />
+          </button>
+        </li>
+      ))}</ol> : !loading && !error ? <EmptyState title="GodMode 사건 이력 없음" /> : null}
+      {history?.has_more && <div className="history-more">최근 조회 범위 밖의 사건이 더 있습니다.</div>}
     </Panel>
   );
 }
@@ -540,6 +572,7 @@ export default function App() {
   const [selectedKey, setSelectedKey] = useState(demoOverview.assessments[0]?.id ?? "");
   const [snapshot, setSnapshot] = useState<SnapshotResponse | null>(null);
   const [subjectStatus, setSubjectStatus] = useState<SubjectStatusResponse | null>(null);
+  const [godModeHistory, setGodModeHistory] = useState<{ subjectKey: string; response: GodModeHistoryResponse } | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<DashboardEvent | null>(null);
   const [eventLoading, setEventLoading] = useState(false);
   const [eventError, setEventError] = useState<string | null>(null);
@@ -550,8 +583,10 @@ export default function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [transportStale, setTransportStale] = useState(false);
   const [loadWarning, setLoadWarning] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -621,6 +656,7 @@ export default function App() {
   const selectedSubjectKey = selectedAssessment ? subjectKey(selectedAssessment.session_id, selectedAssessment.player_id) : "";
   const visibleSnapshot = snapshot && subjectKey(snapshot.session_id, snapshot.player_id) === selectedSubjectKey ? snapshot : null;
   const visibleSubjectStatus = subjectStatus && subjectKey(subjectStatus.session_id, subjectStatus.player_id) === selectedSubjectKey ? subjectStatus : null;
+  const visibleGodModeHistory = godModeHistory?.subjectKey === selectedSubjectKey ? godModeHistory.response : null;
 
   useEffect(() => {
     const assessment = selectedAssessment;
@@ -628,27 +664,35 @@ export default function App() {
     const controller = new AbortController();
     setSnapshotError(null);
     setStatusError(null);
+    setHistoryError(null);
     if (!assessment) {
       setSnapshot(null);
       setSubjectStatus(null);
+      setGodModeHistory(null);
       setSnapshotLoading(false);
       setStatusLoading(false);
+      setHistoryLoading(false);
       return () => controller.abort();
     }
 
     const expectedKey = subjectKey(assessment.session_id, assessment.player_id);
     setSnapshot((current) => current && subjectKey(current.session_id, current.player_id) === expectedKey ? current : null);
     setSubjectStatus((current) => current && subjectKey(current.session_id, current.player_id) === expectedKey ? current : null);
+    setGodModeHistory((current) => current?.subjectKey === expectedKey ? current : null);
     if (mode === "demo") {
       setSnapshot(demoSnapshots[expectedKey] ?? null);
       setSubjectStatus(demoStatuses[expectedKey] ?? null);
+      const history = demoGodModeHistories[expectedKey];
+      setGodModeHistory(history ? { subjectKey: expectedKey, response: history } : null);
       setSnapshotLoading(false);
       setStatusLoading(false);
+      setHistoryLoading(false);
       return () => controller.abort();
     }
 
     setSnapshotLoading(true);
     setStatusLoading(true);
+    setHistoryLoading(true);
     void fetchSnapshot(connection, assessment.session_id, assessment.player_id, controller.signal)
       .then((detail) => {
         if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
@@ -675,6 +719,22 @@ export default function App() {
       })
       .finally(() => {
         if (!controller.signal.aborted && requestId === detailRequestRef.current) setStatusLoading(false);
+      });
+
+    void fetchGodModeHistory(connection, assessment.session_id, assessment.player_id, { limit: 200 }, controller.signal)
+      .then((history) => {
+        if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
+        if (history.items.some((item) => subjectKey(item.session_id, item.player_id) !== expectedKey)) {
+          throw new DashboardApiError("선택한 대상과 다른 GodMode 이력이 도착했습니다.");
+        }
+        setGodModeHistory({ subjectKey: expectedKey, response: history });
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted || requestId !== detailRequestRef.current) return;
+        setHistoryError(caught instanceof DashboardApiError ? caught.message : "GodMode 사건 이력을 불러오지 못했습니다.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && requestId === detailRequestRef.current) setHistoryLoading(false);
       });
 
     return () => controller.abort();
@@ -809,6 +869,22 @@ export default function App() {
     }
   };
 
+  const openHistoryEvent = (item: GodModeHistoryItem) => void openEvent({
+    id: item.event_id,
+    sequence: item.sequence,
+    session_id: item.session_id,
+    player_id: item.player_id,
+    module: item.module,
+    timestamp_ms: item.timestamp_ms,
+    evidence: item.evidence,
+    reasons: item.reasons,
+    raw_score: item.raw_score,
+    event_kind: "detection",
+    time_basis: "unknown",
+    evidence_image: null,
+    log_excerpt: null,
+  });
+
   useEffect(() => () => {
     connectControllerRef.current?.abort();
     refreshControllerRef.current?.abort();
@@ -861,6 +937,7 @@ export default function App() {
           </Panel>
 
           <div className="insight-grid"><Timeline events={subjectEvents} onSelect={(event) => void openEvent(event)} /><SubjectSystemStatus status={visibleSubjectStatus} loading={statusLoading} error={statusError} /></div>
+          <GodModeHistoryPanel history={visibleGodModeHistory} loading={historyLoading} error={historyError} onSelect={openHistoryEvent} />
           <EventsTable events={filteredEvents} page={page} onPage={setPage} onSelect={(event) => void openEvent(event)} />
           <SystemOverview overview={overview} launcherStatuses={filteredLauncherStatuses} operationalEventCount={operationalEventCount} />
         </div>

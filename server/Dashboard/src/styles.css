@@ -152,9 +152,10 @@ a { color: inherit; text-decoration: none; }
 .verdict-status > div { display: flex; flex-direction: column; gap: 3px; }
 .verdict-status > div span { opacity: .78; font-size: 11px; font-weight: 700; }
 .verdict-status strong { font-size: 19px; letter-spacing: -.025em; }
-.verdict-metrics { display: grid; grid-template-columns: repeat(4,1fr); overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 11px; }
+.verdict-metrics { display: grid; grid-template-columns: repeat(3,1fr); overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 11px; }
 .verdict-metrics > div { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 13px 12px; border-right: 1px solid var(--line); }
-.verdict-metrics > div:last-child { border-right: 0; }
+.verdict-metrics > div:nth-child(3n) { border-right: 0; }
+.verdict-metrics > div:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
 .verdict-metrics span { color: var(--muted); font-size: 10px; font-weight: 650; }
 .verdict-metrics strong { color: var(--strong); font-size: 19px; font-variant-numeric: tabular-nums; }
 .verdict-metrics strong.metric-text { font-size: 13px; line-height: 1.25; }
@@ -223,6 +224,18 @@ a { color: inherit; text-decoration: none; }
 .component-row > span:last-child { color: var(--muted); font-size: 10px; }
 .transport-note { display: flex; justify-content: space-between; gap: 12px; margin: 0 14px 12px; padding: 10px; color: var(--danger); background: var(--danger-soft); border: 1px solid #f3ccd3; border-radius: 8px; font-size: 11px; }
 .transport-note strong { overflow: hidden; color: inherit; text-overflow: ellipsis; white-space: nowrap; }
+.godmode-history-panel { margin-top: 14px; overflow: hidden; }
+.godmode-history-panel > .detail-notice { margin: 12px 14px 0; }
+.godmode-history-panel > .empty-state { min-height: 120px; }
+.history-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin: 0; padding: 12px 14px 14px; list-style: none; }
+.history-list button { display: grid; width: 100%; grid-template-columns: 58px minmax(0,1fr) auto 16px; gap: 10px; align-items: center; padding: 11px 12px; text-align: left; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; }
+.history-list button:hover { background: #f5f7fb; border-color: #d9deea; }
+.history-list time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.history-list strong, .history-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-list strong { font-size: 11px; }
+.history-list small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.history-list > li > button > svg { color: var(--faint); }
+.history-more { margin: -4px 14px 14px; color: var(--muted); font-size: 10px; }
 
 .session-panel { margin-top: 14px; overflow: hidden; }
 .session-table-wrap { max-height: 360px; overflow: auto; }
@@ -393,8 +406,9 @@ td:nth-child(6) { text-align: center; }
   .summary-grid { grid-template-columns: repeat(3,1fr); }
   .workspace-grid { grid-template-columns: 270px minmax(0,1fr); }
   .verdict-metrics { grid-template-columns: repeat(2,1fr); }
-  .verdict-metrics > div:nth-child(2) { border-right: 0; }
-  .verdict-metrics > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .verdict-metrics > div { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .verdict-metrics > div:nth-child(2n) { border-right: 0; }
+  .verdict-metrics > div:nth-last-child(-n+2) { border-bottom: 0; }
   .insight-grid { grid-template-columns: 1fr; }
   .connection-scope { display: none; }
   .system-overview-grid { grid-template-columns: 1fr; }
@@ -423,6 +437,7 @@ td:nth-child(6) { text-align: center; }
   .filter-bar { grid-template-columns: 1fr 1fr; }
   .search-field { grid-column: 1 / -1; }
   .workspace-grid { grid-template-columns: 1fr; }
+  .history-list { grid-template-columns: 1fr; }
   .subject-list-wrap, .verdict-view { border-right: 0; border-bottom: 1px solid var(--line); }
   .subject-list { max-height: 285px; }
   .module-state-card { width: calc(50% - 13px); }
