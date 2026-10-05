@@ -292,6 +292,87 @@ def resolve_calibration(
         # module-level pending 규칙을 유지한다.
         return base
 
+    if module == "localguard_yara":
+        ruleset = evidence.get("ruleset")
+
+        if not isinstance(ruleset, Mapping):
+            return ModuleCalibration(
+                "localguard_yara",
+                "pending",
+                None,
+                note=(
+                    "Legacy YARA Event lacks structured ruleset identity; "
+                    "raw_score cannot be promoted to an operating threshold."
+                ),
+            )
+
+        if ruleset.get("test_rules_present") is True:
+            return ModuleCalibration(
+                "localguard_yara",
+                "advisory",
+                None,
+                note=(
+                    "YARA ruleset contains test-only rules; evidence is "
+                    "calibration/debug information only."
+                ),
+            )
+
+        source = ruleset.get("source")
+
+        if source == "custom_cli":
+            return ModuleCalibration(
+                "localguard_yara",
+                "advisory",
+                None,
+                note=(
+                    "Custom CLI YARA ruleset is not an approved production "
+                    "calibration source."
+                ),
+            )
+
+        if source != "repository_default":
+            return ModuleCalibration(
+                "localguard_yara",
+                "pending",
+                None,
+                note="Unknown YARA ruleset source.",
+            )
+
+        ruleset_id = ruleset.get("id")
+        files = ruleset.get("files")
+        rule_count = ruleset.get("rule_count")
+
+        valid_identity = (
+            isinstance(ruleset_id, str)
+            and ruleset_id.startswith("sha256:")
+            and len(ruleset_id) == 71
+            and isinstance(files, list)
+            and bool(files)
+            and type(rule_count) is int
+            and rule_count > 0
+        )
+
+        if not valid_identity:
+            return ModuleCalibration(
+                "localguard_yara",
+                "pending",
+                None,
+                note=(
+                    "Repository-default YARA Event has incomplete or malformed "
+                    "ruleset identity."
+                ),
+            )
+
+        return ModuleCalibration(
+            "localguard_yara",
+            "pending",
+            None,
+            note=(
+                "Repository-default YARA ruleset identity is available; "
+                "threshold awaits exact-ruleset NORMAL/positive E2E calibration."
+            ),
+        )
+
     if module != "overlay_hook":
         return base
 

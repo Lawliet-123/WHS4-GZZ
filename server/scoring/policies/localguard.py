@@ -156,6 +156,44 @@ def _yara(event: Mapping[str, Any], notes: list[str]) -> str | None:
     notes.append("YARA는 규칙 문자열/바이트 일치 관측이다. identity_verified/active_cheat_proven/cheat_confirmed를 정책이 true로 바꾸지 않는다.")
     notes.append("YARA raw_score는 일치 규칙 점수의 최댓값이다. 규칙 수·문자열 수·재검사 횟수를 곱하거나 합산하지 않는다.")
     notes.append("YARA 실패는 공통 0점 Event 대신 로컬 오류·하트비트로 남을 수 있다. 중앙의 침묵을 정상이나 검사 성공으로 해석하지 않는다.")
+
+    ruleset = evidence.get("ruleset")
+    if not isinstance(ruleset, Mapping):
+        notes.append(
+            "ruleset identity가 없는 legacy YARA Event다. 같은 raw_score라도 "
+            "어떤 규칙 파일/버전에서 나온 값인지 확인할 수 없어 운영 threshold로 승격하지 않는다."
+        )
+    else:
+        source = ruleset.get("source")
+        ruleset_id = ruleset.get("id")
+
+        if ruleset.get("test_rules_present") is True:
+            notes.append(
+                "ruleset에 test_only 규칙이 포함되어 있다. 테스트/교정 근거로만 사용하고 "
+                "운영 탐지 threshold 근거로 승격하지 않는다."
+            )
+
+        if source == "custom_cli":
+            notes.append(
+                "사용자 지정 CLI ruleset이다. 저장소 기본 규칙과 점수 계약이 다를 수 있어 "
+                "production calibration과 분리한다."
+            )
+        elif source == "repository_default":
+            if isinstance(ruleset_id, str) and ruleset_id.startswith("sha256:"):
+                notes.append(
+                    "저장소 기본 YARA ruleset의 content-based identity가 전달되었다. "
+                    "정확히 같은 ruleset ID의 E2E calibration과 대조하기 전에는 ACTIVE로 확정하지 않는다."
+                )
+            else:
+                notes.append(
+                    "repository_default로 표시됐지만 유효한 ruleset ID가 없다. "
+                    "규칙 파일 정체성을 추정하지 않는다."
+                )
+        elif source is not None:
+            notes.append(
+                "미분류 YARA ruleset source다. production/custom/test 중 하나로 임의 해석하지 않는다."
+            )
+
     if evidence.get("test_rule_match") is True:
         notes.append("테스트 규칙 일치가 포함된다. 운영 핵 탐지 근거로 그대로 승격하지 않으며 실제 규칙과의 혼합 여부는 추가 계약이 필요하다.")
     if event["raw_score"] > 3:

@@ -282,6 +282,88 @@ class Tests(unittest.TestCase):
             with self.subTest(rule=expected):
                 self.assertEqual({m.rule for m in rules.match(data=data)}, {expected})
 
+    def test_ruleset_id_is_stable_for_same_rule_content(self):
+        """절대 경로가 달라도 같은 basename+내용이면 같은 ruleset ID다."""
+        first_dir = Path(self.temp.name) / 'first'
+        second_dir = Path(self.temp.name) / 'second'
+        first_dir.mkdir()
+        second_dir.mkdir()
+
+        source = (
+            'rule stable_rule { '
+            'meta: score=2 '
+            'strings: $a="stable-marker" '
+            'condition: $a }'
+        )
+
+        first = first_dir / 'same.yar'
+        second = second_dir / 'same.yar'
+        first.write_text(source, encoding='utf-8')
+        second.write_text(source, encoding='utf-8')
+
+        _, first_info = load_rules([first])
+        _, second_info = load_rules([second])
+
+        self.assertEqual(
+            first_info['ruleset_id'],
+            second_info['ruleset_id'],
+        )
+        self.assertTrue(
+            first_info['ruleset_id'].startswith('sha256:')
+        )
+
+    def test_success_event_carries_ruleset_identity_when_provided(self):
+        """중앙 Event에 raw score와 함께 실제 ruleset identity가 전달된다."""
+        rules, info = load_rules(
+            [ROOT / 'rules' / 'repository_cheats.yar']
+        )
+        info = dict(info)
+        info['source'] = 'repository_default'
+
+        event = scan_once(
+            SimpleNamespace(match=lambda **kw: []),
+            self.process,
+            self.session,
+            self.raw,
+            ruleset=info,
+        )
+
+        ruleset = event['evidence']['ruleset']
+
+        self.assertEqual(
+            ruleset['id'],
+            info['ruleset_id'],
+        )
+        self.assertEqual(
+            ruleset['source'],
+            'repository_default',
+        )
+        self.assertEqual(
+            ruleset['rule_count'],
+            info['rule_count'],
+        )
+        self.assertFalse(
+            ruleset['test_rules_present']
+        )
+        self.assertEqual(
+            ruleset['files'],
+            info['files'],
+        )
+
+    def test_event_without_ruleset_keeps_legacy_compatibility(self):
+        """직접 호출하는 과거/테스트 경로는 ruleset 필드 없이도 동작한다."""
+        event = scan_once(
+            SimpleNamespace(match=lambda **kw: []),
+            self.process,
+            self.session,
+            self.raw,
+        )
+
+        self.assertNotIn(
+            'ruleset',
+            event['evidence'],
+        )
+
     def test_autopaint_bridge_requires_full_combination(self):
         """Auto Paint 단어 하나만으로 양성 처리되지 않도록 조합을 요구한다."""
         rules,_ = load_rules([ROOT/'rules/repository_cheats.yar'])

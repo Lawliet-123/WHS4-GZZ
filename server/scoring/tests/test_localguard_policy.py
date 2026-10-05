@@ -222,6 +222,101 @@ class LocalGuardPolicyTests(unittest.TestCase):
         }))
         self.assert_note(result, "전체 프로세스 정상으로 확대하지 않는다")
 
+    def test_yara_legacy_event_notes_missing_ruleset_identity(self):
+        result = self.analyse(sample(
+            "localguard_yara",
+            score=3,
+            evidence={
+                "pid": 900,
+                "scope": "selected_local_process_memory",
+                "measurement_valid": True,
+                "matched_rules": ["rule_a"],
+            },
+        ))
+
+        self.assert_note(result, "ruleset identity가 없는 legacy")
+
+    def test_yara_repository_default_identity_is_not_auto_promoted(self):
+        result = self.analyse(sample(
+            "localguard_yara",
+            score=3,
+            evidence={
+                "pid": 900,
+                "scope": "selected_local_process_memory",
+                "measurement_valid": True,
+                "matched_rules": ["rule_a"],
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "repository_default",
+                    "files": [
+                        {
+                            "file": "repository_cheats.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 12,
+                    "test_rules_present": False,
+                },
+            },
+        ))
+
+        self.assert_note(result, "content-based identity")
+        self.assert_note(result, "E2E calibration")
+
+    def test_yara_custom_ruleset_is_separated_from_production(self):
+        result = self.analyse(sample(
+            "localguard_yara",
+            score=10,
+            evidence={
+                "pid": 900,
+                "scope": "selected_local_process_memory",
+                "measurement_valid": True,
+                "matched_rules": ["custom_rule"],
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "custom_cli",
+                    "files": [
+                        {
+                            "file": "custom.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 1,
+                    "test_rules_present": False,
+                },
+            },
+        ))
+
+        self.assert_note(result, "사용자 지정 CLI ruleset")
+        self.assertEqual(result.signal.raw_score, 10)
+
+    def test_yara_ruleset_with_test_rules_is_not_production_evidence(self):
+        result = self.analyse(sample(
+            "localguard_yara",
+            score=3,
+            evidence={
+                "pid": 900,
+                "scope": "selected_local_process_memory",
+                "measurement_valid": True,
+                "matched_rules": ["test_rule"],
+                "ruleset": {
+                    "id": "sha256:" + "a" * 64,
+                    "source": "repository_default",
+                    "files": [
+                        {
+                            "file": "repository_cheats.yar",
+                            "sha256": "b" * 64,
+                        },
+                    ],
+                    "rule_count": 12,
+                    "test_rules_present": True,
+                },
+            },
+        ))
+
+        self.assert_note(result, "test_only 규칙")
+        self.assertEqual(result.signal.raw_score, 3)
+
     def test_yara_test_rule_is_not_promoted_or_score_silently_removed(self):
         result = self.analyse(sample("localguard_yara", score=3, evidence={
             "pid": 900, "scope": "selected_local_process_memory", "matched_rules": ["test_rule", "real_rule"],
