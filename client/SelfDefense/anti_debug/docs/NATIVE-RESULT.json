@@ -1,0 +1,148 @@
+{
+  "status": "PASS",
+  "reference_commit": "31dc8332a770f51f2f50856637dcf8a1a4cee102",
+  "environments": {
+    "base": {
+      "python": "3.14.6",
+      "is_venv": false
+    },
+    "venv": {
+      "python": "3.14.6",
+      "is_venv": true
+    }
+  },
+  "results": {
+    "base": {
+      "status": "PASS",
+      "synthetic_fixture": true,
+      "native_debugger_tested": true,
+      "monitor_sha256": {
+        "main.py": "d13cb5319519345a10865a4155e57a03be503b6e1237f94a87b62ae0088fd0e4",
+        "monitor.py": "74c609ca4533d21e9ff0626bc5a6e4613add8ba0b96284ed3a552c7e4b43cc16",
+        "probe.py": "a2272159d5115871e059a12a560b9b3b942aff587722c45659de2ebc979cc9e7",
+        "registry_reader.py": "6a2589aae888dbb1ca893b3847d22750815e1c3ffc6216157087a2d9c6d27e14",
+        "reporting.py": "1db1cfedbf2e3c76eeed75a5ece13bbb942228b5c9d456187d941b4c466de89d",
+        "__init__.py": "3cf570591ecf59c29fdd501d5ba5002781cec9baf4db07e2ac679224a62c9a68"
+      },
+      "harness_sha256": {
+        "native_integration.py": "f5567d04685efec577c8032c2acf2b97b8aa30c375c1f698b7d7b0677e9ef4e0",
+        "snapshot_contract.py": "3f7d818dae8c8219c61ab94e02a8f6e3f50e1f5e8ee36673ca624d5e4e9e8f9b"
+      },
+      "cases": [
+        {
+          "case": "native_debugger_connected",
+          "status": "DETECTED",
+          "exit_code": 1,
+          "target_state": "DEBUGGER_PRESENT",
+          "scan_complete": true
+        },
+        {
+          "case": "native_debugger_detached",
+          "status": "NORMAL",
+          "exit_code": 0,
+          "target_state": "CLEAR",
+          "scan_complete": true
+        },
+        {
+          "case": "wrong_creation_time",
+          "status": "ERROR",
+          "exit_code": 2,
+          "target_state": "ERROR",
+          "scan_complete": false
+        },
+        {
+          "case": "target_exited",
+          "status": "NORMAL",
+          "exit_code": 0,
+          "target_state": "EXITED",
+          "scan_complete": true
+        },
+        {
+          "case": "launcher_stopping",
+          "status": "NORMAL",
+          "exit_code": 0,
+          "target_state": null,
+          "scan_complete": false
+        }
+      ],
+      "owned_child_pid": 9820,
+      "owned_child_stopped": true,
+      "reference_commit": "31dc8332a770f51f2f50856637dcf8a1a4cee102",
+      "registry_sha256": "fdc50c61d0abf931ee4cade8bea4ed430c26edb44ef0275d322ff6ebe2dcfb8d",
+      "launcher_source_unchanged": true,
+      "copied_registry_unchanged": true,
+      "monitor_is_venv": false,
+      "debuggee_is_direct_process": true,
+      "python": "3.14.6",
+      "real_game_tested": false,
+      "central_https_tested": false,
+      "local_paths_omitted": true
+    },
+    "venv": {
+      "status": "PASS",
+      "synthetic_fixture": true,
+      "native_debugger_tested": true,
+      "monitor_sha256": {
+        "main.py": "d13cb5319519345a10865a4155e57a03be503b6e1237f94a87b62ae0088fd0e4",
+        "monitor.py": "74c609ca4533d21e9ff0626bc5a6e4613add8ba0b96284ed3a552c7e4b43cc16",
+        "probe.py": "a2272159d5115871e059a12a560b9b3b942aff587722c45659de2ebc979cc9e7",
+        "registry_reader.py": "6a2589aae888dbb1ca893b3847d22750815e1c3ffc6216157087a2d9c6d27e14",
+        "reporting.py": "1db1cfedbf2e3c76eeed75a5ece13bbb942228b5c9d456187d941b4c466de89d",
+        "__init__.py": "3cf570591ecf59c29fdd501d5ba5002781cec9baf4db07e2ac679224a62c9a68"
+      },
+      "harness_sha256": {
+        "native_integration.py": "f5567d04685efec577c8032c2acf2b97b8aa30c375c1f698b7d7b0677e9ef4e0",
+        "snapshot_contract.py": "3f7d818dae8c8219c61ab94e02a8f6e3f50e1f5e8ee36673ca624d5e4e9e8f9b"
+      },
+      "cases": [
+        {
+          "case": "native_debugger_connected",
+          "status": "DETECTED",
+          "exit_code": 1,
+          "target_state": "DEBUGGER_PRESENT",
+          "scan_complete": true
+        },
+        {
+          "case": "native_debugger_detached",
+          "status": "NORMAL",
+          "exit_code": 0,
+          "target_state": "CLEAR",
+          "scan_complete": true
+        },
+        {
+          "case": "wrong_creation_time",
+          "status": "ERROR",
+          "exit_code": 2,
+          "target_state": "ERROR",
+          "scan_complete": false
+        },
+        {
+          "case": "target_exited",
+          "status": "NORMAL",
+          "exit_code": 0,
+          "target_state": "EXITED",
+          "scan_complete": true
+        },
+        {
+          "case": "launcher_stopping",
+          "status": "NORMAL",
+          "exit_code": 0,
+          "target_state": null,
+          "scan_complete": false
+        }
+      ],
+      "owned_child_pid": 29656,
+      "owned_child_stopped": true,
+      "reference_commit": "31dc8332a770f51f2f50856637dcf8a1a4cee102",
+      "registry_sha256": "fdc50c61d0abf931ee4cade8bea4ed430c26edb44ef0275d322ff6ebe2dcfb8d",
+      "launcher_source_unchanged": true,
+      "copied_registry_unchanged": true,
+      "monitor_is_venv": true,
+      "debuggee_is_direct_process": true,
+      "python": "3.14.6",
+      "real_game_tested": false,
+      "central_https_tested": false,
+      "local_paths_omitted": true
+    }
+  }
+}
