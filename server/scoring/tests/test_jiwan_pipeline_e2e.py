@@ -1,9 +1,11 @@
-"""Synthetic Jiwan sensors -> production Shared HTTP -> scoring -> Dashboard API.
+"""Jiwan sensors -> production Shared HTTP -> scoring -> Dashboard API.
 
 Run from the repository root with:
     python -m unittest server.scoring.tests.test_jiwan_pipeline_e2e -v
 
-Only sensor acquisition is substituted. These tests use the production ESP
+The portable cases substitute sensor acquisition. Windows-only cases observe
+real DLL loads and read-only process handles in helpers created by this test.
+Neither kind is real gameplay or a CHEAT Replay capture. Tests use production ESP
 detector/adapter/local outbox, module-integrity runner, Shared SQLite sender,
 HTTP transport, Receiver, durable writer, ScoringStore, FinalVerdict, and
 Dashboard API. One retry test injects a single failure after durable scoring.
@@ -15,8 +17,11 @@ The React UI is outside this test's coverage.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import socket
+import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -35,6 +40,7 @@ if str(ESP_ROOT) not in sys.path:
     sys.path.insert(0, str(ESP_ROOT))
 
 from anti_esp.core.events import SensorBatch, SensorEvent
+from anti_esp.core.context import ProcessTarget, SensorContext
 from anti_esp.core.session import SessionTelemetryWriter
 from anti_esp.detectors.esp_detector import EspEventDetector
 from anti_esp.pipeline import EspDetectionPipeline
@@ -42,6 +48,20 @@ from anti_esp.scoring import SuspicionEngine
 from anti_esp.shared_transport import SharedEventSink
 from anti_esp.store import SQLiteEvidenceStore
 from anti_esp.team_format import TeamEventAdapter
+from anti_esp.sensors.handle_sensor import (
+    CurrentProcessHandleSensor,
+    SystemHandleSnapshot,
+    WindowsHandleInventoryProvider,
+    enumerate_system_handles,
+)
+from client.LocalGuard.external_access.module_integrity.smoke_test import (
+    _HELPER_CODE,
+    _pick_unloaded_system_dll,
+    _read_reply,
+    _ready_pid,
+    _send,
+    _stop_helper,
+)
 from client.LocalGuard.external_access.common.models import TargetProcess
 from client.LocalGuard.external_access.module_integrity.models import (
     LoadedModule,
@@ -70,6 +90,43 @@ SESSION = "jiwan_synthetic_e2e"
 PLAYER = "synthetic_player"
 DETECTION_TOKEN = "synthetic-detection-token"
 DASHBOARD_TOKEN = "synthetic-dashboard-token"
+
+
+_READ_HANDLE_HELPER = r"""
+import ctypes
+from ctypes import wintypes
+import os
+import sys
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+kernel32.CloseHandle.restype = wintypes.BOOL
+handles = []
+print(f"READY\t{os.getpid()}", flush=True)
+try:
+    for line in sys.stdin:
+        command, _, value = line.rstrip("\r\n").partition("\t")
+        if command == "OPEN":
+            # Only our test's target. No memory read/write or DLL injection.
+            handle = kernel32.OpenProcess(0x1010, False, int(value))
+            if not handle:
+                print(f"ERROR\tOpenProcess failed: {ctypes.get_last_error()}", flush=True)
+            else:
+                handles.append(handle)
+                print("OPENED", flush=True)
+        elif command == "CLOSE":
+            for handle in handles:
+                kernel32.CloseHandle(handle)
+            handles.clear()
+            print("CLOSED", flush=True)
+        elif command == "EXIT":
+            break
+finally:
+    for handle in handles:
+        kernel32.CloseHandle(handle)
+"""
 
 
 class _SyntheticModuleSensor:
@@ -208,7 +265,7 @@ class JiwanPipelineE2ETests(unittest.TestCase):
     def dashboard_snapshot(self):
         return self.dashboard_get(f"sessions/{SESSION}/players/{PLAYER}/snapshot")
 
-    def esp_pipeline(self):
+    def esp_pipeline(self, *, session_started_at=100):
         store = SQLiteEvidenceStore(self.root / "esp.sqlite3")
         self.addCleanup(store.close)
         telemetry = SessionTelemetryWriter(
@@ -226,10 +283,144 @@ class JiwanPipelineE2ETests(unittest.TestCase):
         pipeline = EspDetectionPipeline(
             detectors=(EspEventDetector(),), store=store,
             scoring=SuspicionEngine(),
-            team_adapter=TeamEventAdapter(session_started_at=100, player_id=PLAYER),
+            team_adapter=TeamEventAdapter(session_started_at=session_started_at, player_id=PLAYER),
             telemetry=telemetry, team_event_sink=queue,
         )
         return pipeline, store, queued
+
+    def start_windows_helper(self, code):
+        helper = subprocess.Popen(
+            [sys.executable, "-I", "-u", "-c", code],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+            errors="replace", bufsize=1,
+        )
+
+        def stop():
+            try:
+                _stop_helper(helper)
+            finally:
+                for stream in (helper.stdin, helper.stdout):
+                    if stream is not None:
+                        stream.close()
+
+        self.addCleanup(stop)
+        return helper, _ready_pid(_read_reply(helper))
+
+    @unittest.skipUnless(os.name == "nt" and struct.calcsize("P") == 8,
+                         "real Windows acquisition requires 64-bit Windows Python")
+    def test_live_windows_dll_load_reaches_receiver_and_dashboard(self):
+        helper, target_pid = self.start_windows_helper(_HELPER_CODE)
+        dll_path = _pick_unloaded_system_dll(target_pid)
+        runner = ModuleIntegrityRunner(
+            game_executable_name=Path(sys.executable).name, game_pid=target_pid,
+            session_id=SESSION, player_id=PLAYER,
+            output_path=self.root / "live-modules.jsonl",
+            audit_initial_snapshot=False, writer=_write_local_and_send,
+            emit_status_events=True,
+        )
+        baseline = runner.scan_once()
+        self.assertIsNone(baseline.error)
+        self.assertTrue(baseline.baseline_created)
+        self.flush()
+
+        _send(helper, f"LOAD\t{dll_path}")
+        self.assertEqual(_read_reply(helper), "LOADED")
+        detected = runner.scan_once()
+        self.assertIsNone(detected.error)
+        self.assertGreaterEqual(detected.emitted_detections, 1)
+        self.flush()
+        events = self.dashboard_events(module="external_access", submodule="module_integrity")
+        matches = [item for item in events
+                   if item["evidence"].get("module_name", "").casefold() == dll_path.name.casefold()
+                   and item["evidence"].get("change_type") == "added"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["evidence"]["target_pid"], target_pid)
+        self.assertEqual(matches[0]["evidence"]["signature_status"], "trusted")
+        self.assertGreater(matches[0]["raw_score"], 0)
+        positive_count = sum(item["raw_score"] > 0 for item in events)
+        repeated = runner.scan_once()
+        self.assertIsNone(repeated.error)
+        self.assertEqual(repeated.emitted_detections, 0)
+        self.flush()
+        self.assertEqual(sum(item["raw_score"] > 0 for item in self.dashboard_events(
+            module="external_access", submodule="module_integrity")), positive_count)
+        self.assertTrue(self.dashboard_snapshot()["assessment_available"])
+
+    @unittest.skipUnless(os.name == "nt" and struct.calcsize("P") == 8,
+                         "real Windows acquisition requires 64-bit Windows Python")
+    def test_live_windows_read_handle_reaches_receiver_without_duplicates(self):
+        _, target_pid = self.start_windows_helper(_HELPER_CODE)
+        reader, reader_pid = self.start_windows_helper(_READ_HANDLE_HELPER)
+        started_at = time.time()
+
+        def scoped_enumeration():
+            raw = enumerate_system_handles()
+            # Keep real kernel facts, but inspect only helpers created here and
+            # our own marker handles. Never open unrelated personal processes.
+            entries = tuple(item for item in raw.entries
+                            if item.owner_pid in (os.getpid(), reader_pid, target_pid))
+            return SystemHandleSnapshot(
+                entries=entries, total_handle_count=len(entries),
+                scanned_handle_count=len(entries), buffer_size=raw.buffer_size,
+                truncated=raw.truncated,
+            )
+
+        provider = WindowsHandleInventoryProvider(enumeration_provider=scoped_enumeration)
+        sensor = CurrentProcessHandleSensor(enumeration_provider=provider)
+        context = SensorContext(
+            SESSION, targets=(ProcessTarget(target_pid, sys.executable),),
+            session_started_at=started_at,
+        )
+        initial = sensor.poll(context)
+        self.assertEqual(initial.status, "online", initial.message)
+        self.assertEqual(initial.events, ())
+        pipeline, _, _ = self.esp_pipeline(session_started_at=started_at)
+
+        _send(reader, f"OPEN\t{target_pid}")
+        self.assertEqual(_read_reply(reader), "OPENED")
+        opened = sensor.poll(context)
+        self.assertEqual(opened.status, "online", opened.message)
+        self.assertEqual(len(opened.events), 1)
+        self.assertEqual(opened.events[0].payload["source_pid"], reader_pid)
+        self.assertIn("VM_READ", opened.events[0].payload["access_labels"])
+        result = pipeline.process_batch(opened)
+        self.assertEqual(len(result.team_events), 1)
+        self.flush()
+        events = self.dashboard_events(module="esp")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["raw_score"], 2)
+        self.assertEqual(events[0]["evidence"]["source_pid"], reader_pid)
+        self.assertNotIn(sys.executable, json.dumps(events))
+
+        repeated = sensor.poll(context)
+        self.assertEqual(repeated.events, ())
+        pipeline.process_batch(repeated)
+        self.flush()
+        self.assertEqual(len(self.dashboard_events(module="esp")), 1)
+
+        # The registered anti-cheat exclusion is exercised against the same
+        # actual Windows handle, without suppressing unrelated identities.
+        excluded = CurrentProcessHandleSensor(
+            enumeration_provider=provider, excluded_pid_provider=lambda: (reader_pid,)
+        )
+        self.assertEqual(excluded.poll(context).events, ())
+        self.assertEqual(excluded.poll(context).events, ())
+        _send(reader, "CLOSE")
+        self.assertEqual(_read_reply(reader), "CLOSED")
+        closed = sensor.poll(context)
+        self.assertEqual(closed.status, "online", closed.message)
+        self.assertEqual(closed.details["filtered_record_count"], 0)
+        self.assertEqual(closed.events, ())
+        _send(reader, f"OPEN\t{target_pid}")
+        self.assertEqual(_read_reply(reader), "OPENED")
+        reopened = sensor.poll(context)
+        self.assertEqual(reopened.status, "online", reopened.message)
+        self.assertEqual(len(reopened.events), 1)
+        pipeline.process_batch(reopened)
+        self.flush()
+        self.assertEqual(len(self.dashboard_events(module="esp")), 2)
+        self.assertEqual(len({item["id"] for item in self.dashboard_events(module="esp")}), 2)
 
     @staticmethod
     def esp_event(*, trusted=False):

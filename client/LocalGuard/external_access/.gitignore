@@ -1,2 +1,3 @@
 # Runtime observations may include endpoint paths and local identity data.
 logs/
+*.shared-delivery.sqlite3*

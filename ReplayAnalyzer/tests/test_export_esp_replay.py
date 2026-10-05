@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from ReplayAnalyzer.tools.export_esp_replay import export_session
+from anti_esp.core.session import SessionTelemetryWriter
 from shared.schema import decode_event
 
 
@@ -153,7 +154,7 @@ class EspReplayExportTests(unittest.TestCase):
         original = deepcopy(self.events)
         self.events = []
         self.manifest["event_count"] = 0
-        self.assert_rejected_without_output("identifiable player")
+        self.assert_rejected_without_output("empty NORMAL")
         self.events = original
         self.manifest["event_count"] = 2
         for status in ("ERROR", "OFFLINE", "INSUFFICIENT", "INSUFFICIENT_OBSERVATION"):
@@ -207,6 +208,85 @@ class EspReplayExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the source"):
             export_session(self.source, self.source / "exports")
         self.assertFalse((self.source / "exports").exists())
+
+    def prepare_empty_observed_fixture(self):
+        # Explicit unit fixture: producer-generated metadata, no real game,
+        # no capture relabeling, no original raw files opened or copied.
+        self.output = self.root / "replay-data" / "esp"
+        with SessionTelemetryWriter(
+            self.root / "new-fixtures", session_id="empty_fixture_001",
+            player_id="player_fixture_001", game_executable="fixture-game.exe",
+            test_metadata={"scenario": "normal", "cheat_on_ms": None, "cheat_off_ms": None},
+        ) as writer:
+            for timestamp in (1000, 2000):
+                writer.record_observation(
+                    timestamp_ms=timestamp, status="LOW", observation_confidence=100,
+                    minimum_observation_confidence=60,
+                    required_sensor_status={name: "online" for name in
+                                            ("collector", "game", "privilege", "sysmon", "overlay", "modules", "handles")},
+                    observed_sensors={"collector", "game", "privilege", "sysmon", "overlay", "modules", "handles"},
+                    game_instance_sha256="a" * 64,
+                )
+        self.source = writer.session_dir
+        self.manifest = json.loads((self.source / "manifest.json").read_text("utf-8"))
+        self.events = []
+
+    def test_producer_verified_empty_normal_exports_without_fabricated_events(self):
+        self.prepare_empty_observed_fixture()
+        manifest, events = self.read_export(export_session(self.source, self.output))
+        self.assertEqual(events, [])
+        self.assertEqual((manifest["label"], manifest["cheat_type"], manifest["event_count"]),
+                         ("NORMAL", None, 0))
+        self.assertEqual(manifest["player_id"], "player_fixture_001")
+        self.assertIsNone(manifest["cheat_start_ms"])
+        self.assertIsNone(manifest["cheat_end_ms"])
+        self.assertEqual(manifest["source"]["observation_summary"]["raw_counts"], {})
+        from ReplayAnalyzer.analyzer.replay_analyzer import analyze_session, split_session_by_module
+        sessions = split_session_by_module(self.output / manifest["session_id"], manifest, events)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["module"], "esp")
+        self.assertEqual(analyze_session("esp", manifest, events, 1)["result"], "TN")
+
+    def test_empty_normal_rejects_missing_identity_contract_or_raw_count_declarations(self):
+        self.prepare_empty_observed_fixture()
+        original = deepcopy(self.manifest)
+        for key in ("player_id", "observation_summary", "raw_counts", "raw_event_count"):
+            with self.subTest(missing=key):
+                self.manifest = deepcopy(original)
+                del self.manifest[key]
+                self.assert_rejected_without_output("empty NORMAL|IDs must")
+        self.manifest = deepcopy(original)
+        del self.manifest["producer"]["observation_contract"]
+        self.assert_rejected_without_output("observation contract")
+
+    def test_empty_normal_rejects_incomplete_coverage_or_changed_game_instance(self):
+        self.prepare_empty_observed_fixture()
+        original = deepcopy(self.manifest)
+        cases = (("healthy_poll_count", 1), ("insufficient_poll_count", 1),
+                 ("game_instance_changed", True), ("game_instance_missing_poll_count", 1),
+                 ("last_status", "INSUFFICIENT"), ("min_observation_confidence", 59),
+                 ("timestamp_regression_count", 1), ("last_poll_ms", 1000),
+                 ("player_id", "other_player"), ("session_id", "other_session"))
+        for key, value in cases:
+            with self.subTest(field=key):
+                self.manifest = deepcopy(original)
+                self.manifest["observation_summary"][key] = value
+                self.assert_rejected_without_output("empty NORMAL")
+        self.manifest = deepcopy(original)
+        self.manifest["observation_summary"]["required_sensors"]["sysmon"]["online_observed_count"] = 0
+        self.assert_rejected_without_output("actual successful observation")
+        self.manifest = deepcopy(original)
+        self.manifest["raw_event_count"] = 1
+        self.assert_rejected_without_output("raw counts")
+        self.manifest = deepcopy(original)
+        self.manifest["test_metadata"]["scenario"] = "esp"
+        self.assert_rejected_without_output("explicitly NORMAL")
+
+    def test_empty_normal_requires_esp_output_folder(self):
+        self.prepare_empty_observed_fixture()
+        with self.assertRaisesRegex(ValueError, "must be named esp"):
+            export_session(self.source, self.root / "other-module")
+        self.assertFalse((self.root / "other-module").exists())
 
 
 if __name__ == "__main__":

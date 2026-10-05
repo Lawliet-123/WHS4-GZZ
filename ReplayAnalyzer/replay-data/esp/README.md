@@ -24,7 +24,7 @@
 
 ## Export an existing capture
 
-저장소 루트에서 실행한다. 수집 완료된 ESP 세션과 정확한 `test_metadata.scenario`가 필요하다. 기존 목적지 폴더가 있으면 덮어쓰지 않으며, 실패·관측 불가·빈 세션은 내보내지 않는다.
+저장소 루트에서 실행한다. 수집 완료된 ESP 세션과 정확한 `test_metadata.scenario`가 필요하다. 기존 목적지 폴더가 있으면 덮어쓰지 않으며, 실패·관측 불가·과거 빈 세션과 CHEAT 0건 세션은 내보내지 않는다.
 
 ```powershell
 py -3 ReplayAnalyzer/tools/export_esp_replay.py --source client/detectors/esp/data/sessions/normal_003 --output-root ReplayAnalyzer/replay-data/esp
@@ -32,3 +32,12 @@ py -3 -m unittest ReplayAnalyzer.tests.test_export_esp_replay -v
 ```
 
 `normal_003`은 실제 새 수집 폴더로 바꾼다. 이 명령은 수집이나 ESP ON/OFF를 실행하지 않고 기존 결과의 공개용 사본만 만든다.
+
+새 수집기의 NORMAL 0건은 `meccha.esp-observation.v1` 관측 요약이 있을 때만 별도로
+검증한다. 최소 두 번의 충분한 poll, 모든 필수 센서의 실제 성공, 동일 게임 인스턴스,
+일관된 관측 시각, 실패·누락·partial/truncated 없음, 마지막 LOW 상태를 요구한다.
+가짜 0점 Event 없이 빈 events.jsonl과 검증된 요약만 내보낸다. analyzer의 모듈 분류를
+위해 이 경우 출력 상위 폴더 이름은 `esp`여야 한다. 요약은 producer 진단이며 조작
+방지 인증은 아니다. exporter는 raw를 읽지 않으며 선언된 raw 건수의 일관성만 확인한다.
+새 실제 수집은 `client/detectors/esp/scripts/collect_replay.ps1 -ExportReplay`로
+준비 조건·실제 raw 건수·대상 PID까지 검증할 수 있다. 실제 플레이는 별도로 확인해야 한다.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -17,6 +18,9 @@ from .events import DetectorDecision, SensorEvent, TeamDetectionEvent
 
 
 SESSION_SCHEMA_VERSION = "meccha.telemetry-session.v1"
+OBSERVATION_SCHEMA_VERSION = "meccha.esp-observation.v1"
+OBSERVATION_BASE_SENSORS = frozenset({"collector", "game", "privilege", "sysmon"})
+OBSERVATION_SENSORS = OBSERVATION_BASE_SENSORS | {"overlay", "modules", "handles"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -43,6 +47,7 @@ class SessionTelemetryWriter:
         *,
         session_id: str,
         game_executable: str,
+        player_id: str | None = None,
         producer_name: str = "meccha-esp-localguard",
         producer_version: str = "0.2.0",
         host_identity: Mapping[str, Any] | None = None,
@@ -51,6 +56,11 @@ class SessionTelemetryWriter:
         self.session_id = str(session_id).strip()
         if not self.session_id:
             raise ValueError("session_id must be non-empty")
+        if player_id is not None and (
+            not isinstance(player_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", player_id)
+        ):
+            raise ValueError("player_id must be a safe identifier or None")
+        self.player_id = player_id
         self.root = Path(root).expanduser().resolve()
         self.session_dir = self.root / _safe_session_name(self.session_id)
         self.raw_dir = self.session_dir / "raw"
@@ -76,6 +86,7 @@ class SessionTelemetryWriter:
         self._manifest: dict[str, Any] = {
             "schema_version": SESSION_SCHEMA_VERSION,
             "session_id": self.session_id,
+            "player_id": player_id,
             "status": "running",
             "failure_reason": None,
             "started_at_utc": _utc_text(),
@@ -85,6 +96,7 @@ class SessionTelemetryWriter:
                 "name": str(producer_name),
                 "version": str(producer_version),
                 "pid": os.getpid(),
+                "observation_contract": OBSERVATION_SCHEMA_VERSION,
             },
             "host_identity": dict(host_identity or {}),
             "test_metadata": dict(test_metadata or {}),
@@ -110,6 +122,102 @@ class SessionTelemetryWriter:
         }
         self.events_path.touch(exist_ok=True)
         self._write_manifest_locked()
+
+    def record_observation(
+        self,
+        *,
+        timestamp_ms: int,
+        status: str,
+        observation_confidence: float,
+        minimum_observation_confidence: float,
+        required_sensor_status: Mapping[str, str],
+        observed_sensors: set[str],
+        game_instance_sha256: str | None,
+    ) -> None:
+        """Aggregate completed polls without recording paths, accounts or raw IDs.
+
+        online_poll_count may include a cached sensor state. In contrast,
+        online_observed_count increases only when that sensor actually ran.
+        A missing or changed game instance permanently disqualifies the session
+        from the exporter's conservative empty-NORMAL path.
+        """
+        if type(timestamp_ms) is not int or timestamp_ms < 0:
+            raise ValueError("observation timestamp_ms must be a nonnegative integer")
+        for value in (observation_confidence, minimum_observation_confidence):
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100:
+                raise ValueError("observation confidence must be finite and between 0 and 100")
+        if status not in {"LOW", "REVIEW", "HIGH", "CRITICAL", "INSUFFICIENT"}:
+            raise ValueError("observation status is invalid")
+        statuses = dict(required_sensor_status)
+        if not OBSERVATION_BASE_SENSORS <= statuses.keys() <= OBSERVATION_SENSORS:
+            raise ValueError("required sensor coverage must contain the base sensors")
+        if any(value not in {"online", "waiting", "unavailable", "error", "disabled"}
+               for value in statuses.values()):
+            raise ValueError("required sensor status is invalid")
+        if not isinstance(observed_sensors, set) or not observed_sensors <= statuses.keys():
+            raise ValueError("observed_sensors must name required sensors that actually ran")
+        if game_instance_sha256 is not None and (
+            not isinstance(game_instance_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", game_instance_sha256)
+        ):
+            raise ValueError("game instance must be a SHA-256 fingerprint or None")
+        with self._lock:
+            self._ensure_open()
+            summary = self._manifest.get("observation_summary")
+            if summary is None:
+                summary = {
+                    "schema_version": OBSERVATION_SCHEMA_VERSION,
+                    "session_id": self.session_id,
+                    "player_id": self.player_id,
+                    "poll_count": 0, "healthy_poll_count": 0, "insufficient_poll_count": 0,
+                    "first_poll_ms": timestamp_ms, "last_poll_ms": timestamp_ms,
+                    "timestamp_regression_count": 0,
+                    "minimum_observation_confidence": minimum_observation_confidence,
+                    "min_observation_confidence": observation_confidence,
+                    "last_observation_confidence": observation_confidence,
+                    "last_status": "INSUFFICIENT",
+                    "game_instance_sha256": None, "game_instance_changed": False,
+                    "game_instance_missing_poll_count": 0,
+                    "required_sensors": {
+                        name: {"poll_count": 0, "online_poll_count": 0,
+                               "observed_count": 0, "online_observed_count": 0,
+                               "last_status": "waiting"}
+                        for name in sorted(statuses)
+                    },
+                }
+                self._manifest["observation_summary"] = summary
+            if statuses.keys() != summary["required_sensors"].keys() or (
+                minimum_observation_confidence != summary["minimum_observation_confidence"]
+            ):
+                raise ValueError("required sensor policy must remain constant within a session")
+            summary["poll_count"] += 1
+            summary["timestamp_regression_count"] += int(timestamp_ms < summary["last_poll_ms"])
+            summary["last_poll_ms"] = timestamp_ms
+            summary["min_observation_confidence"] = min(
+                summary["min_observation_confidence"], observation_confidence
+            )
+            summary["last_observation_confidence"] = observation_confidence
+            if game_instance_sha256 is None:
+                summary["game_instance_missing_poll_count"] += 1
+            elif summary["game_instance_sha256"] is None:
+                summary["game_instance_sha256"] = game_instance_sha256
+            elif game_instance_sha256 != summary["game_instance_sha256"]:
+                summary["game_instance_changed"] = True
+            healthy = (
+                status != "INSUFFICIENT" and observation_confidence >= minimum_observation_confidence
+                and all(value == "online" for value in statuses.values())
+                and game_instance_sha256 is not None
+            )
+            summary["healthy_poll_count" if healthy else "insufficient_poll_count"] += 1
+            summary["last_status"] = status if healthy else "INSUFFICIENT"
+            for name, sensor_status in statuses.items():
+                coverage = summary["required_sensors"][name]
+                coverage["poll_count"] += 1
+                coverage["online_poll_count"] += int(sensor_status == "online")
+                coverage["observed_count"] += int(name in observed_sensors)
+                coverage["online_observed_count"] += int(name in observed_sensors and sensor_status == "online")
+                coverage["last_status"] = sensor_status
+            self._write_manifest_locked()
 
     def _ensure_open(self) -> None:
         if self._closed:

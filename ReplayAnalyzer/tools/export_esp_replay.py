@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -22,6 +23,7 @@ for import_root in (REPOSITORY_ROOT, ESP_ROOT):
         sys.path.insert(0, str(import_root))
 
 from anti_esp.team_format import _PATH_EVIDENCE_KEYS, _allowed_evidence_keys, _public_evidence
+from anti_esp.core.session import OBSERVATION_BASE_SENSORS, OBSERVATION_SCHEMA_VERSION, OBSERVATION_SENSORS
 from shared.errors import ValidationError
 from shared.schema import decode_event, encode_event, validate_identifier
 
@@ -115,7 +117,84 @@ def _export_evidence(evidence: dict[str, Any], session_id: str) -> dict[str, Any
     return _fingerprint_sensor_ids(sanitized, session_id)
 
 
-def _capture(source: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+def _empty_normal_observation(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Accept only new, fully observed NORMAL sessions with no detection events."""
+    if manifest["test_metadata"]["scenario"] != "normal":
+        raise ValueError("empty captures require an explicitly NORMAL scenario")
+    if manifest["producer"].get("observation_contract") != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError("empty NORMAL capture requires the new producer observation contract")
+    player_id = validate_identifier(manifest.get("player_id"))
+    summary = manifest.get("observation_summary")
+    if not isinstance(summary, dict) or summary.get("schema_version") != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError("empty NORMAL capture requires a versioned observation summary")
+    if summary.get("session_id") != manifest["session_id"] or summary.get("player_id") != player_id:
+        raise ValueError("empty NORMAL observation identity must match the capture")
+
+    def integer(mapping: dict[str, Any], key: str) -> int:
+        value = mapping.get(key)
+        if type(value) is not int or not 0 <= value <= 2**63 - 1:
+            raise ValueError(f"empty NORMAL observation requires nonnegative {key}")
+        return value
+
+    polls = integer(summary, "poll_count")
+    if polls < 2 or integer(summary, "healthy_poll_count") != polls or integer(summary, "insufficient_poll_count"):
+        raise ValueError("empty NORMAL capture requires at least two fully healthy polls")
+    first = integer(summary, "first_poll_ms")
+    last = integer(summary, "last_poll_ms")
+    if last <= first or integer(summary, "timestamp_regression_count"):
+        raise ValueError("empty NORMAL capture requires a positive, consistent observation interval")
+    if integer(summary, "game_instance_missing_poll_count") or summary.get("game_instance_changed") is not False:
+        raise ValueError("empty NORMAL capture must observe one unchanged game instance")
+    instance = summary.get("game_instance_sha256")
+    if not isinstance(instance, str) or not re.fullmatch(r"[0-9a-f]{64}", instance):
+        raise ValueError("empty NORMAL capture requires the game instance fingerprint")
+    confidences = {}
+    for key in ("minimum_observation_confidence", "min_observation_confidence", "last_observation_confidence"):
+        value = summary.get(key)
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100:
+            raise ValueError("empty NORMAL observation confidence must be finite")
+        confidences[key] = value
+    minimum = confidences["minimum_observation_confidence"]
+    if minimum < 60 or confidences["min_observation_confidence"] < minimum or (
+        confidences["last_observation_confidence"] < confidences["min_observation_confidence"]
+    ) or summary.get("last_status") != "LOW":
+        raise ValueError("empty NORMAL capture must retain sufficient confidence and LOW status")
+    sensors = summary.get("required_sensors")
+    if not isinstance(sensors, dict) or not OBSERVATION_BASE_SENSORS <= sensors.keys() <= OBSERVATION_SENSORS:
+        raise ValueError("empty NORMAL capture requires all base sensor coverage")
+    coverage = {}
+    for name, sensor in sensors.items():
+        if not isinstance(sensor, dict):
+            raise ValueError("empty NORMAL sensor coverage is invalid")
+        counts = {key: integer(sensor, key) for key in (
+            "poll_count", "online_poll_count", "observed_count", "online_observed_count"
+        )}
+        if counts["poll_count"] != polls or counts["online_poll_count"] != polls or not (
+            1 <= counts["online_observed_count"] <= counts["observed_count"] <= polls
+        ) or sensor.get("last_status") != "online":
+            raise ValueError("empty NORMAL capture requires actual successful observation of each required sensor")
+        coverage[name] = {**counts, "last_status": "online"}
+    raw_count = integer(manifest, "raw_event_count")
+    raw_counts = manifest.get("raw_counts")
+    raw_sensors = {"sysmon_process_access", "current_process_handles", "loaded_modules", "window_overlap"}
+    if not isinstance(raw_counts, dict) or not raw_counts.keys() <= raw_sensors:
+        raise ValueError("empty NORMAL capture requires declared raw sensor counts")
+    if any(type(value) is not int or value < 0 for value in raw_counts.values()) or sum(raw_counts.values()) != raw_count:
+        raise ValueError("empty NORMAL capture raw counts must be consistent")
+    # Return only validated scalar metadata. Never carry arbitrary source fields
+    # or a manually written console readiness report into exported provenance.
+    return {
+        "schema_version": OBSERVATION_SCHEMA_VERSION, "session_id": manifest["session_id"],
+        "player_id": player_id, "poll_count": polls, "healthy_poll_count": polls,
+        "insufficient_poll_count": 0, "first_poll_ms": first, "last_poll_ms": last,
+        "timestamp_regression_count": 0, "last_status": "LOW", **confidences,
+        "game_instance_sha256": instance, "game_instance_changed": False,
+        "game_instance_missing_poll_count": 0, "required_sensors": coverage,
+        "raw_event_count": raw_count, "raw_counts": dict(raw_counts),
+    }
+
+
+def _capture(source: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any] | None]:
     manifest_path = source / "manifest.json"
     events_path = source / "events.jsonl"
     if manifest_path.is_symlink() or events_path.is_symlink():
@@ -162,18 +241,19 @@ def _capture(source: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dict[s
         if event["evidence"].get("synthetic") is True:
             raise ValueError("source must contain captured results, not synthetic events")
         events.append(event)
-    if not events:
-        raise ValueError("source must contain ESP events with an identifiable player")
     if type(manifest.get("event_count")) is not int or manifest["event_count"] != len(events):
         raise ValueError("source manifest event_count must match events.jsonl")
-    if len({event["player_id"] for event in events}) != 1:
+    observation = _empty_normal_observation(manifest) if not events else None
+    if events and len({event["player_id"] for event in events}) != 1:
         raise ValueError("source session must contain exactly one player_id")
+    if events and manifest.get("player_id") is not None and manifest["player_id"] != events[0]["player_id"]:
+        raise ValueError("capture player_id must match its ESP events")
     unavailable = {"ERROR", "OFFLINE", "INSUFFICIENT", "INSUFFICIENT_OBSERVATION"}
-    if all(str(event["evidence"].get("status", "")).upper() in unavailable for event in events):
+    if events and all(str(event["evidence"].get("status", "")).upper() in unavailable for event in events):
         raise ValueError("source must contain usable ESP observations")
     hashes = {"manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
               "events_sha256": hashlib.sha256(events_bytes).hexdigest()}
-    return manifest, events, hashes
+    return manifest, events, hashes, observation
 
 
 def export_session(source: str | Path, output_root: str | Path) -> Path:
@@ -182,7 +262,9 @@ def export_session(source: str | Path, output_root: str | Path) -> Path:
     output_root = Path(output_root).resolve()
     if source == output_root or source in output_root.parents:
         raise ValueError("output_root must be outside the source capture")
-    capture, events, hashes = _capture(source)
+    capture, events, hashes, observation = _capture(source)
+    if observation is not None and output_root.name.casefold() != "esp":
+        raise ValueError("empty NORMAL output_root must be named esp for the analyzer's module fallback")
     session_id = capture["session_id"]
     destination = output_root / session_id
     if destination == source:
@@ -191,7 +273,7 @@ def export_session(source: str | Path, output_root: str | Path) -> Path:
     cheat = metadata["scenario"] == "esp"
     replay_manifest = {
         "session_id": session_id,
-        "player_id": events[0]["player_id"],
+        "player_id": events[0]["player_id"] if events else capture["player_id"],
         "label": "CHEAT" if cheat else "NORMAL",
         "cheat_type": "ESP" if cheat else None,
         "cheat_start_ms": metadata.get("cheat_on_ms"),
@@ -214,6 +296,12 @@ def export_session(source: str | Path, output_root: str | Path) -> Path:
             ],
         },
     }
+    if observation is not None:
+        replay_manifest["source"]["observation_summary"] = observation
+        replay_manifest["source"]["producer"]["observation_contract"] = OBSERVATION_SCHEMA_VERSION
+        replay_manifest["source"]["notes"].append(
+            "Empty NORMAL acceptance uses recorded poll coverage, not absence of alerts alone."
+        )
     payloads = []
     for event in events:
         exported = dict(event)

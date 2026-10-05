@@ -101,18 +101,15 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
             "reasons": ["Module appeared after the process baseline"],
             "raw_score": 1,
         }
-        receipt = SimpleNamespace(
-            event_id="00000000-0000-0000-0000-000000000001",
-            status="queued",
-        )
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "events.jsonl"
 
-            def fake_send(payload):
+            def fake_send(payload, *, event_id):
                 self.assertTrue(output.exists())
                 self.assertIn('"session_id":"esp_001"', output.read_text("utf-8"))
                 self.assertEqual(payload, event)
-                return receipt
+                self.assertRegex(event_id, r"^[0-9a-f-]{36}$")
+                return SimpleNamespace(event_id=event_id, status="queued")
 
             with patch.object(runner_module, "send_detection", side_effect=fake_send):
                 runner_module._write_local_and_send(output, event)
