@@ -2,6 +2,10 @@
 
 Receiver가 받은 공통 Event, Scoring의 최종 판정, Launcher가 보고한 실행 상태를 한 화면에서 조회하는 8-A React 프론트엔드다. 특정 탐지기 하나를 위한 화면이 아니라 세션·플레이어·보호 모듈·탐지 채널·운영 상태를 함께 보는 종합 관제 화면이다.
 
+![종합 안티치트 Dashboard 데모](./docs/report-evidence/dashboard-overview.png)
+
+보고용 캡처의 의미와 재현 범위는 [REPORT_EVIDENCE.md](./docs/report-evidence/REPORT_EVIDENCE.md)에 정리했다.
+
 ## 실행
 
 Node.js 20 이상이 필요하다.
