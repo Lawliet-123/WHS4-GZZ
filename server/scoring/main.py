@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .aggregate import AggregateEvidence, build_aggregate_evidence
+from .autopaint_history import (
+    AutoPaintHistorySummary,
+    summarize_autopaint_history,
+)
 from .external_access_summary import (
     ExternalAccessChannelSummary,
     summarize_external_access_history,
@@ -41,6 +45,8 @@ from .storage import (
     ModuleState,
     ProcessReceipt,
     ScoringStore,
+    SNAPSHOT_HISTORY_MODULES,
+    SnapshotEvent,
     WindowConflict,
     WindowEvent,
 )
@@ -158,6 +164,16 @@ def get_player_aggregate_evidence(
         max_time_distance_ms=max_time_distance_ms,
     )
 
+    autopaint_history = None
+    if any(
+        signal.module == "autopaint"
+        for signal in risk_input.signals
+    ):
+        autopaint_history = get_autopaint_history_summary(
+            session_id,
+            player_id,
+        )
+
     godmode_history = None
     if "godmode" in risk_input.event_history_modules:
         godmode_history = get_godmode_history_summary(
@@ -182,6 +198,7 @@ def get_player_aggregate_evidence(
     return build_aggregate_evidence(
         risk_input,
         godmode_history=godmode_history,
+        autopaint_history=autopaint_history,
         external_access_summaries=external_access_summaries,
     )
 
@@ -329,6 +346,64 @@ def get_player_signal_inventory(session_id: str, player_id: str):
     from .policy import inspect_player_snapshot
 
     return inspect_player_snapshot(get_player_snapshot(session_id, player_id))
+
+
+def get_snapshot_history(
+    session_id: str,
+    player_id: str,
+    *,
+    module: str,
+    after_sequence: int = 0,
+    limit: int = 100,
+) -> list[SnapshotEvent]:
+    """세션 history 대상으로 등록된 snapshot 원본을 조회한다."""
+
+    return _get_store().get_snapshot_history(
+        session_id,
+        player_id,
+        module=module,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
+def get_autopaint_history_summary(
+    session_id: str,
+    player_id: str,
+    *,
+    batch_size: int = 1000,
+) -> AutoPaintHistorySummary:
+    """AutoPaint 전체 snapshot history를 잘리지 않게 세션 단위로 요약한다."""
+
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    rows: list[SnapshotEvent] = []
+    cursor = 0
+
+    while True:
+        batch = get_snapshot_history(
+            session_id,
+            player_id,
+            module="autopaint",
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            break
+
+        rows.extend(batch)
+        cursor = batch[-1].sequence
+
+        if len(batch) < batch_size:
+            break
+
+    return summarize_autopaint_history(
+        rows,
+        session_id=session_id,
+        player_id=player_id,
+    )
 
 
 def get_external_access_history(
@@ -518,6 +593,46 @@ def get_godmode_history_summary(
         session_id=session_id,
         player_id=player_id,
     )
+
+
+def backfill_snapshot_history_from_writer(
+    writer,
+    *,
+    batch_size: int = 1000,
+) -> int:
+    """과거 AutoPaint snapshot을 Shared 원본에서 history로 backfill한다.
+
+    snapshot_history 도입 전에 이미 processed 된 Event도 동일 event_id 재처리
+    경로를 통해 history만 안전하게 보완한다.
+    """
+
+    if type(batch_size) is not int or not 1 <= batch_size <= 10000:
+        raise ValueError("batch_size must be between 1 and 10000")
+
+    store = _get_store()
+    cursor = 0
+
+    while True:
+        batch = writer.iter_stored(
+            after_sequence=cursor,
+            limit=batch_size,
+        )
+
+        if not batch:
+            return cursor
+
+        for record in batch:
+            if record.result["module"] in SNAPSHOT_HISTORY_MODULES:
+                store.process_event(
+                    record.result,
+                    event_id=record.event_id,
+                    sequence=record.sequence,
+                )
+
+            cursor = record.sequence
+
+        if len(batch) < batch_size:
+            return cursor
 
 
 def backfill_event_delta_history_from_writer(writer, *, batch_size: int = 1000) -> int:

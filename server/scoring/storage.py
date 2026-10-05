@@ -23,6 +23,10 @@ from shared.schema import encode_event, validate_event_id, validate_identifier
 # 다른 모듈을 임의로 이 목록에 넣으면 평가 표본까지 사건으로 잘못 기록될 수 있다.
 EVENT_DELTA_MODULES = frozenset({"godmode"})
 
+# 세션 전체 snapshot 이력이 최종 판정에 필요한 모듈만 명시적으로 등록한다.
+# snapshot 모듈 전체를 자동 등록하지 않는다.
+SNAPSHOT_HISTORY_MODULES = frozenset({"autopaint"})
+
 # external_access는 같은 module 문자열 아래 두 독립 관측 채널을 사용한다.
 # module-level latest_state와 별도로 각 채널의 최신 상태를 보존한다.
 EXTERNAL_ACCESS_SUBMODULES = (
@@ -69,6 +73,21 @@ class ModuleState:
 # 서버가 받은 순서(sequence)와 게임 시간(timestamp_ms)은 서로 다를 수 있다.
 @dataclass(frozen=True)
 class DeltaEvent:
+    event_id: str
+    sequence: int
+    session_id: str
+    player_id: str
+    module: str
+    timestamp_ms: int
+    raw_score: float
+    evidence: dict[str, Any]
+    reasons: list[str]
+
+
+@dataclass(frozen=True)
+class SnapshotEvent:
+    """세션 판정을 위해 별도로 보존하는 snapshot 원본 1건."""
+
     event_id: str
     sequence: int
     session_id: str
@@ -339,6 +358,30 @@ class ScoringStore:
                        ON event_delta_history(session_id, player_id, module, sequence)"""
                 )
 
+                # AutoPaint처럼 현재 snapshot과 별도로 세션 전체 관측 이력이
+                # 필요한 모듈의 원본 snapshot을 보존한다.
+                # 현재는 AutoPaint만 등록하며 다른 snapshot 모듈은 임의로 포함하지 않는다.
+                db.execute(
+                    """CREATE TABLE IF NOT EXISTS snapshot_history (
+                        event_id TEXT PRIMARY KEY,
+                        sequence INTEGER NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL,
+                        player_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        timestamp_ms INTEGER NOT NULL,
+                        raw_score REAL NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        FOREIGN KEY(event_id) REFERENCES processed_events(event_id)
+                    )"""
+                )
+                db.execute(
+                    """CREATE INDEX IF NOT EXISTS ix_snapshot_history_player
+                       ON snapshot_history(
+                           session_id, player_id, module, sequence
+                       )"""
+                )
+
                 # external_access는 한 scan에서 여러 양수 Event가 발생할 수 있고,
                 # module_integrity의 후속 NORMAL 0은 과거 DLL 변화의 해소를 뜻하지 않는다.
                 # scoped_latest_state와 별도로 원본 Event 흐름을 모두 보존한다.
@@ -400,6 +443,46 @@ class ScoringStore:
                 event["timestamp_ms"], float(event["raw_score"]),
                 json.dumps(event["evidence"], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 json.dumps(event["reasons"], ensure_ascii=False, separators=(",", ":")),
+            ),
+        )
+
+    @staticmethod
+    def _remember_snapshot_event(
+        db: sqlite3.Connection,
+        event: dict[str, Any],
+        event_id: str,
+        sequence: int,
+    ) -> None:
+        """세션 history가 필요한 snapshot 원본을 event_id 기준으로 한 번 보존한다."""
+
+        if event["module"] not in SNAPSHOT_HISTORY_MODULES:
+            return
+
+        db.execute(
+            """INSERT INTO snapshot_history(
+                   event_id, sequence, session_id, player_id, module,
+                   timestamp_ms, raw_score, evidence_json, reasons_json
+               ) VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(event_id) DO NOTHING""",
+            (
+                event_id,
+                sequence,
+                event["session_id"],
+                event["player_id"],
+                event["module"],
+                event["timestamp_ms"],
+                float(event["raw_score"]),
+                json.dumps(
+                    event["evidence"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    event["reasons"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             ),
         )
 
@@ -1132,6 +1215,7 @@ class ScoringStore:
                         sequence,
                     )
                     self._remember_delta_event(db, event, event_id, sequence)
+                    self._remember_snapshot_event(db, event, event_id, sequence)
                     self._remember_external_access_event(
                         db,
                         event,
@@ -1302,6 +1386,7 @@ class ScoringStore:
                 # processed_events + 최신 상태 + 새 사건 이력을 한 트랜잭션으로 묶는다.
                 # 이력 INSERT 실패 시 세 변경 사항 모두 롤백된다.
                 self._remember_delta_event(db, event, event_id, sequence)
+                self._remember_snapshot_event(db, event, event_id, sequence)
                 self._remember_external_access_event(
                     db,
                     event,
@@ -1595,6 +1680,63 @@ class ScoringStore:
             evidence=json.loads(row["evidence_json"]),
             reasons=json.loads(row["reasons_json"]),
         )
+
+    def get_snapshot_history(
+        self,
+        session_id: str,
+        player_id: str,
+        *,
+        module: str,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[SnapshotEvent]:
+        """등록된 snapshot-history 모듈의 원본 흐름을 서버 순서로 조회한다."""
+
+        validate_identifier(session_id)
+        validate_identifier(player_id)
+
+        if module not in SNAPSHOT_HISTORY_MODULES:
+            raise ValueError("module is not configured for snapshot history")
+
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("after_sequence must be a nonnegative integer")
+
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+
+        try:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    """SELECT * FROM snapshot_history
+                       WHERE session_id=? AND player_id=? AND module=?
+                         AND sequence>?
+                       ORDER BY sequence
+                       LIMIT ?""",
+                    (
+                        session_id,
+                        player_id,
+                        module,
+                        after_sequence,
+                        limit,
+                    ),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise RuntimeError("cannot read snapshot history") from exc
+
+        return [
+            SnapshotEvent(
+                event_id=row["event_id"],
+                sequence=row["sequence"],
+                session_id=row["session_id"],
+                player_id=row["player_id"],
+                module=row["module"],
+                timestamp_ms=row["timestamp_ms"],
+                raw_score=row["raw_score"],
+                evidence=json.loads(row["evidence_json"]),
+                reasons=json.loads(row["reasons_json"]),
+            )
+            for row in rows
+        ]
 
     def get_event_delta_history(
         self,
