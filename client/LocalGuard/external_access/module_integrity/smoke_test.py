@@ -26,10 +26,11 @@ from .runner import ModuleIntegrityRunner
 
 _HELPER_CODE = r"""
 import ctypes
+import os
 import sys
 
 loaded_modules = []
-print("READY", flush=True)
+print(f"READY\t{os.getpid()}", flush=True)
 for raw_command in sys.stdin:
     command, separator, argument = raw_command.rstrip("\r\n").partition("\t")
     if command == "LOAD" and separator:
@@ -79,6 +80,17 @@ def _send(helper: subprocess.Popen[str], command: str) -> None:
         raise RuntimeError("보조 프로세스 입력 파이프가 닫힘")
     helper.stdin.write(command + "\n")
     helper.stdin.flush()
+
+
+def _ready_pid(reply: str) -> int:
+    """Windows venv redirector PID가 아닌 실제 Python 실행 PID를 사용한다."""
+    marker, separator, value = reply.partition("\t")
+    if marker != "READY" or not separator or not value.isascii() or not value.isdecimal():
+        raise RuntimeError("보조 프로세스 준비 응답에 올바른 PID가 없음")
+    pid = int(value)
+    if not 0 < pid <= 0xFFFFFFFF:
+        raise RuntimeError("보조 프로세스 PID가 유효한 범위를 벗어남")
+    return pid
 
 
 def _read_reply(helper: subprocess.Popen[str], timeout_seconds: float = 10.0) -> str:
@@ -152,19 +164,20 @@ def run_smoke_test(output_path: Path | None = None) -> tuple[Path, dict[str, Any
         bufsize=1,
     )
     try:
-        if _read_reply(helper) != "READY":
-            raise RuntimeError("보조 프로세스 준비 응답이 올바르지 않음")
-
-        dll_path = _pick_unloaded_system_dll(helper.pid)
+        # venv의 python.exe는 별도 실제 interpreter를 실행할 수 있다.
+        # Popen.pid의 redirector에는 시험 DLL이 로드되지 않으므로, 우리가
+        # 실행한 helper가 stdin/stdout 파이프로 보고한 자신의 PID를 검사한다.
+        target_pid = _ready_pid(_read_reply(helper))
+        dll_path = _pick_unloaded_system_dll(target_pid)
         if output_path is None:
             stamp = time.strftime("%Y%m%d_%H%M%S")
-            output_path = Path("logs") / f"module_integrity_smoke_{stamp}_{helper.pid}.jsonl"
+            output_path = Path("logs") / f"module_integrity_smoke_{stamp}_{target_pid}.jsonl"
         output_path = Path(output_path).expanduser().resolve()
         previous_size = output_path.stat().st_size if output_path.exists() else 0
 
         runner = ModuleIntegrityRunner(
             game_executable_name=Path(sys.executable).name,
-            game_pid=helper.pid,
+            game_pid=target_pid,
             session_id="module_smoke_001",
             player_id="local_test",
             output_path=output_path,
@@ -193,7 +206,7 @@ def run_smoke_test(output_path: Path | None = None) -> tuple[Path, dict[str, Any
             and event.get("module") == "external_access"
             and event.get("evidence", {}).get("submodule") == "module_integrity"
             and event.get("evidence", {}).get("change_type") == "added"
-            and event.get("evidence", {}).get("target_pid") == helper.pid
+            and event.get("evidence", {}).get("target_pid") == target_pid
             and str(event.get("evidence", {}).get("module_name", "")).casefold()
             == dll_path.name.casefold()
         ]
@@ -213,7 +226,12 @@ def run_smoke_test(output_path: Path | None = None) -> tuple[Path, dict[str, Any
             raise RuntimeError("변화 없는 반복 스캔에서 새 JSON 이벤트가 기록됨")
         return output_path, matching_events[0]
     finally:
-        _stop_helper(helper)
+        try:
+            _stop_helper(helper)
+        finally:
+            for stream in (helper.stdin, helper.stdout):
+                if stream is not None:
+                    stream.close()
 
 
 def main() -> int:

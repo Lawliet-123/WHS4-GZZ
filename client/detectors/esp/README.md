@@ -169,6 +169,25 @@ py -3 .\run.py --headless --duration 30 --central-telemetry off `
 py -3 -m unittest discover -s tests -v
 ```
 
+## Logger 및 조회 API 종단 검증
+
+저장소 루트에서 다음 테스트를 실행한다. `server/requirements-dev.txt`의 서버 시험
+의존성이 필요하며 게임이나 운영 서버 설정·토큰은 사용하지 않는다.
+
+```powershell
+py -3 -m unittest server.scoring.tests.test_jiwan_pipeline_e2e -v
+```
+
+합성 센서 입력을 실제 ESP 판정기와 팀 Event 어댑터에 넣은 뒤, Shared SQLite outbox에서
+임시 `127.0.0.1` HTTP receiver로 전송한다. 실제 writer, scoring, Final Verdict,
+Dashboard 조회 API까지 연결하여 점수·경과 시각·개인정보 제거·중복 수신·재전송을
+검사한다. module_integrity의 NORMAL → SUSPICIOUS → ERROR → 정상 복구도 포함한다.
+오류와 정상 복구가 이전 양성 이력을 지우지 않는지 함께 확인한다.
+
+이 테스트의 센서와 게임 상태는 합성이다. 실제 게임 탐지율·새 Replay 수집·운영 서버
+배포 또는 React 화면 시험을 대신하지 않는다. ESP의 보정이 미확정인 상태에서는
+생산 Final Verdict의 `INCONCLUSIVE`를 유지하며 임의로 치트 확정값을 만들지 않는다.
+
 ## 허용목록
 
 `config.json`의 `allowlist.paths`에는 실행 파일의 정확한 전체 경로를, `allowlist.sha256`에는 64자리 SHA-256을 넣는다. 이 목록은 Sysmon 프로세스 접근과 오버레이 창 정황 양쪽에 적용된다.

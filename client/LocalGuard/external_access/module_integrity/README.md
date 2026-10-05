@@ -141,6 +141,11 @@ py -3 -m client.LocalGuard.external_access.module_integrity.smoke_test
 게임 파일은 수정하지 않는다. 성공하면 `PASS`와 탐지 DLL, 점수, JSONL 저장 경로가
 출력된다.
 
+Windows 가상환경의 `python.exe`는 실행용 부모 프로세스와 실제 Python 프로세스의
+PID가 다를 수 있다. 스모크 테스트는 보조 Python이 준비 응답으로 보고한 자신의 PID를
+검사한다. 따라서 venv로 실행해도 DLL이 로드되지 않은 부모를 검사하는 오류를 피한다.
+이 PID 처리는 테스트 보조 프로세스에만 적용하며 실제 게임 PID 탐색 정책은 바꾸지 않는다.
+
 ### 실제 게임 1: 정상 플레이 세션
 
 게임 실행 후 정확한 PID를 확인하고 정상 세션부터 수집한다. 아래 `12345`는 조회된
