@@ -24,20 +24,45 @@ UE4SS 는 Lua 모드를 돌리려고 `UFunction::ExecFunction` 을 후킹한다.
 **아무것도 봐주지 않는다.** 그 PC 는 예전처럼 UE4SS 가 그대로 잡힌다.
 
 런처 모듈을 import 하지 않는다. 런처가 고장나도 탐지기는 돌아야 한다.
+
+## 등록부 경로를 환경변수로 받지 않는다
+
+이 등록부는 **무엇을 안 잡을지** 를 정한다. 그래서 경로를 바꿀 수 있는 사람은
+탐지기를 끌 수 있는 사람이다. `GZZ_UE4SS_MANIFEST` 로 경로를 받던 때는
+자기 `ue4ss.dll` 해시를 적은 등록부를 가리키기만 하면 `filesystem`·`injection`·
+`whistle` 셋이 **동시에** 그 파일을 봐줬다. 해시로 가려 놓고 그 해시 목록을
+갈아끼울 길을 열어 둔 셈이다.
+
+런처가 자식 프로세스에 환경을 그대로 물려주므로 더 그렇다. #102 의 하네스 PID
+환경변수(은지님 지적)와 같은 종류다 — **검증 편의가 회피 경로가 되면 안 된다.**
+그래서 경로는 호출부가 **함수 인자로만** 준다. 시험이 가짜 등록부를 쓸 때도
+같은 길을 쓴다. 환경변수가 설정돼 있으면 무시하되 `attempted_env_override()` 로
+알려서 호출부가 근거에 남긴다.
 """
 
 import hashlib
 import json
 import os
 
-MANIFEST_ENV = "GZZ_UE4SS_MANIFEST"
 _CLIENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
-DEFAULT_MANIFEST = os.path.join(_CLIENT_DIR, "Launcher", "logs", "ue4ss_install.json")
+MANIFEST_PATH = os.path.join(_CLIENT_DIR, "Launcher", "logs", "ue4ss_install.json")
+
+# 전에 경로를 받던 환경변수. **이제 읽지 않는다.** 이름만 남겨 둔 이유는
+# 설정돼 있을 때 그 사실을 근거에 적기 때문이다.
+LEGACY_ENV = "GZZ_UE4SS_MANIFEST"
 
 
-def manifest_path():
-    return (os.environ.get(MANIFEST_ENV) or "").strip() or DEFAULT_MANIFEST
+def attempted_env_override():
+    """`GZZ_UE4SS_MANIFEST` 가 설정돼 있으면 그 값, 없으면 None.
+
+    판정에는 쓰지 않는다. 호출부가 `meta` 에 적기만 한다 — 등록부를 갈아끼우려는
+    시도가 있었는지는 나중에 세션을 다시 읽을 때 필요한 정보다. 점수를 붙이지
+    않는 이유는 런처·시험이 과거에 이 변수를 쓴 적이 있어서, 지금 와서 양수로
+    만들면 우리 환경이 먼저 걸린다. 사실만 남긴다.
+    """
+    v = (os.environ.get(LEGACY_ENV) or "").strip()
+    return v or None
 
 
 def _sha256(path):
@@ -51,8 +76,12 @@ def _sha256(path):
         return None
 
 
-def _load():
-    p = manifest_path()
+def load(path=None):
+    """(등록부, 상태). 경로는 **함수 인자로만** 받는다. 환경변수는 안 본다.
+
+    상태는 "none"(없음) / "broken"(있는데 못 읽음) / "ok".
+    """
+    p = path or MANIFEST_PATH
     if not os.path.isfile(p):
         return None, "none"
     try:
@@ -65,13 +94,16 @@ def _load():
         return None, "broken"
 
 
-def trusted_modules(module_paths, manifest=None):
+def trusted_modules(module_paths, manifest=None, manifest_path=None):
     """{모듈이름(소문자): 파일경로} -> (신뢰하는 모듈이름 집합, 상태)
 
     등록부에 적힌 파일이고 **지금 디스크의 해시가 적힌 값과 같을 때만** 신뢰한다.
     경로가 달라도(라이브러리 폴더가 다른 PC) 등록부의 game_root 기준 상대경로로 맞춘다.
+
+    `manifest` 는 이미 읽은 등록부, `manifest_path` 는 읽을 경로다. 둘 다
+    **호출부가 명시할 때만** 쓰인다. 기본값은 `MANIFEST_PATH` 하나뿐이다.
     """
-    m, state = (manifest, "ok") if manifest else _load()
+    m, state = (manifest, "ok") if manifest else load(manifest_path)
     if m is None:
         return set(), state
 

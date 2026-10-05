@@ -23,7 +23,6 @@
 """
 
 import hashlib
-import json
 import os
 import sys
 
@@ -32,6 +31,7 @@ import sys
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
+from core import ue4ss_trust
 from core.result import DetectorResult, Evidence
 
 # ── 런처가 깐 UE4SS 가려내기 ─────────────────────────────────────────────
@@ -44,13 +44,14 @@ from core.result import DetectorResult, Evidence
 # 이름을 쓰는 핵이 전부 통과한다. UE4SS 는 핵이 제일 많이 쓰는 로더라 더 그렇다.
 # **런처가 깔면서 적어 둔 해시와 바이트가 맞는 파일만** 봐준다.
 #
-# 등록부를 읽는 코드를 여기 따로 둔 이유: 런처 모듈을 import 하면 런처가
-# 고장났을 때 탐지기까지 같이 죽는다. 형식은 client/Launcher/ue4ss_manifest.py
-# 의 독스트링에 적혀 있다. 읽기만 하므로 표준 라이브러리로 충분하다.
-_MANIFEST_ENV = "GZZ_UE4SS_MANIFEST"
-_CLIENT_DIR = _os.path.dirname(_os.path.dirname(_os.path.dirname(
-    _os.path.dirname(_os.path.abspath(__file__)))))
-_DEFAULT_MANIFEST = _os.path.join(_CLIENT_DIR, "Launcher", "logs", "ue4ss_install.json")
+# 등록부를 읽는 경로는 `core/ue4ss_trust.py` 한 곳에 있다. 전에는 이 파일이
+# 자기 사본을 갖고 있었고 둘 다 `GZZ_UE4SS_MANIFEST` 환경변수로 경로를 받았다.
+# **그건 탐지기를 끄는 길이었다** — 자기 해시를 적은 등록부를 가리키면
+# filesystem·injection·whistle 이 동시에 눈이 멀었다. 이유는 ue4ss_trust 의
+# 독스트링에 적었다. 경로는 이제 함수 인자로만 받는다.
+#
+# 런처 모듈은 import 하지 않는다. 런처가 고장나도 탐지기는 돌아야 한다.
+# 등록부 형식은 client/Launcher/ue4ss_manifest.py 의 독스트링에 있다.
 
 
 def _sha256(path):
@@ -64,35 +65,35 @@ def _sha256(path):
         return None
 
 
-def _manifest_path():
-    return (_os.environ.get(_MANIFEST_ENV) or "").strip() or _DEFAULT_MANIFEST
-
-
-def _our_ue4ss(game_dir):
-    """(우리 파일 상대경로 집합, 우리 모드 이름 집합, 등록부 상태).
+def _our_ue4ss(game_dir, manifest_path=None):
+    """(우리 파일 상대경로 집합, 우리 모드 이름 집합, 등록부 상태, 등록부의 다른 루트).
 
     상태는 "none"(등록부 없음) / "broken"(있는데 못 읽음) / "ok" 다.
     없는 것과 깨진 것을 구분해야 한다 — 깨졌으면 조용히 예전처럼 도는 게
     아니라 그 사실이 근거에 남아야 한다.
+
+    해시는 **지금 검사하는 `game_dir` 의 파일**로 확인한다. 전에는 등록부에
+    적힌 `game_root` 쪽 파일로 확인했는데, 그러면 상대경로만 같은 다른 폴더를
+    검사할 때 **남의 파일 해시로 통과**한다 — 가짜 트리에 악성 `dwmapi.dll` 을
+    같은 상대경로로 두고 그 폴더를 검사시키면 정품 설치본의 해시가 통과시켜
+    줬다 (10/5 t_manifest_env_ignored 회귀시험에서 잡혔다). 아래에서 빼는
+    기준이 `game_dir` 상대경로이므로 해시도 같은 기준이어야 한다.
     """
-    p = _manifest_path()
-    if not os.path.isfile(p):
-        return set(), set(), "none"
-    try:
-        with open(p, encoding="utf-8") as f:
-            m = json.load(f)
-        files = m["files"]
-        if not isinstance(files, dict):
-            raise ValueError("files")
-    except (OSError, ValueError, KeyError, TypeError):
-        return set(), set(), "broken"
-    root = m.get("game_root") or game_dir
+    m, state = ue4ss_trust.load(manifest_path)
+    if m is None:
+        return set(), set(), state, None
+    files = m["files"]
+    listed_root = (m.get("game_root") or "").rstrip("\\/")
+    other_root = listed_root or None
+    if listed_root and os.path.normcase(os.path.abspath(listed_root)) == \
+            os.path.normcase(os.path.abspath(game_dir)):
+        other_root = None
     ours = set()
-    for r, want in files.items():
-        if not isinstance(r, str) or not isinstance(want, str):
+    for rel, want in files.items():
+        if not isinstance(rel, str) or not isinstance(want, str):
             continue
-        if _sha256(os.path.join(root, r.replace("/", os.sep))) == want.lower():
-            ours.add(r.lower())
+        if _sha256(os.path.join(game_dir, rel.replace("/", os.sep))) == want.lower():
+            ours.add(rel.lower())
     # 모드는 그 모드 폴더 아래 등록된 파일이 **전부** 맞을 때만 우리 것이다.
     mods = set()
     for name in (m.get("mods") or []):
@@ -102,7 +103,7 @@ def _our_ue4ss(game_dir):
         listed = [r.lower() for r in files if tag in ("/" + r.lower().replace("\\", "/"))]
         if listed and all(r in ours for r in listed):
             mods.add(name.lower())
-    return ours, mods, "ok"
+    return ours, mods, "ok", other_root
 
 # 게임 설치 폴더 자동 탐지에 쓸 후보 (Steam 기본 + 흔한 라이브러리 위치)
 _STEAM_HINTS = [
@@ -162,7 +163,7 @@ def _walk_names(root, limit=4000):
     return out
 
 
-def scan(game_dir=None):
+def scan(game_dir=None, manifest_path=None):
     r = DetectorResult("filesystem")
 
     game_dir = find_game_dir(game_dir)
@@ -178,8 +179,17 @@ def scan(game_dir=None):
     lower = {e.lower(): e for e in entries}
 
     # 런처가 깐 UE4SS 는 가려낸다. 해시가 맞는 것만. 자세한 이유는 파일 위쪽 주석.
-    ours, our_mods, manifest_state = _our_ue4ss(game_dir)
+    ours, our_mods, manifest_state, other_root = _our_ue4ss(game_dir, manifest_path)
     r.meta["ue4ss_manifest"] = manifest_state
+    env_try = ue4ss_trust.attempted_env_override()
+    if env_try:
+        # 무시했다는 사실을 남긴다. 점수는 안 붙인다(ue4ss_trust 참고).
+        r.meta["ue4ss_manifest_env_ignored"] = env_try
+    if other_root:
+        # 런처가 검증한 설치본과 지금 검사하는 폴더가 다르다. 해시는 지금
+        # 폴더로 확인하므로 틀린 제외는 안 나지만, 왜 아무것도 안 빠졌는지
+        # 읽을 때 필요한 정보다.
+        r.meta["ue4ss_manifest_other_root"] = other_root
     exempt = []
 
     def _rel(ap):
@@ -307,15 +317,16 @@ def scan(game_dir=None):
 
     # 가려낸 것은 버리지 않는다. 점수만 빼고 근거에는 남긴다 — 안 남기면
     # 나중에 "왜 이 PC 만 점수가 다르지" 를 설명할 수 없다.
+    used_manifest = manifest_path or ue4ss_trust.MANIFEST_PATH
     if exempt:
         r.meta["exempt"] = exempt
         r.evidence.append(Evidence(
-            "file", _manifest_path(),
+            "file", used_manifest,
             f"런처가 설치한 UE4SS {len(exempt)}건을 점수에서 뺐습니다 (해시 일치)"))
     if manifest_state == "broken":
         # 조용히 예전처럼 돌지 않는다. 못 읽었으면 그 사실이 보여야 한다.
         r.evidence.append(Evidence(
-            "file", _manifest_path(),
+            "file", used_manifest,
             "UE4SS 등록부를 읽지 못했습니다 — 우리 UE4SS 도 점수에 들어갑니다"))
 
     if not r.reasons:

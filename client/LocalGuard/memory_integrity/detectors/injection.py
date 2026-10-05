@@ -124,6 +124,10 @@ def scan(baseline=None):
     trusted_names, manifest_state = ue4ss_trust.trusted_modules(paths_by_name)
     trusted_ranges = ue4ss_trust.ranges_of(trusted_names, module_ranges)
     r.meta["ue4ss_manifest"] = manifest_state
+    env_try = ue4ss_trust.attempted_env_override()
+    if env_try:
+        # 등록부 경로를 환경변수로 바꾸려는 시도는 무시하되 근거에 남긴다.
+        r.meta["ue4ss_manifest_env_ignored"] = env_try
     if trusted_ranges:
         r.meta["ue4ss_trusted_modules"] = sorted(trusted_ranges)
 

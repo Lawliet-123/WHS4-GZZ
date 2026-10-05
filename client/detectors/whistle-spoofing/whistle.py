@@ -121,6 +121,10 @@ def scan():
         paths[nm.lower()] = pth
     trusted_ue4ss, manifest_state = ue4ss_trust.trusted_modules(paths)
     r.meta["ue4ss_manifest"] = manifest_state
+    env_try = ue4ss_trust.attempted_env_override()
+    if env_try:
+        # 등록부 경로를 환경변수로 바꾸려는 시도는 무시하되 근거에 남긴다.
+        r.meta["ue4ss_manifest_env_ignored"] = env_try
 
     self_hooks, ue4ss_hooks = [], []
     for x in fns:
