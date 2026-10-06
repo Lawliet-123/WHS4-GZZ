@@ -81,6 +81,9 @@ class Module:
     # 등록부에 같이 적어서 런처·워치독이 되살릴 때도 같은 값을 쓴다.
     env: Dict[str, str] = field(default_factory=dict)
     note: str = ""
+    # Release prerequisites that have not been supplied yet. Keep the module
+    # visible as SKIPPED instead of starting it with placeholder arguments.
+    disabled_reason: str = ""
 
     @staticmethod
     def _fill(a: str, ctx: Dict[str, object]) -> str:
@@ -113,7 +116,8 @@ class Module:
         """존재 여부를 확인할 파일. `-m` 실행이면 모듈 경로로 바꿔 본다."""
         if "-m" in self.argv:
             mod = self.argv[self.argv.index("-m") + 1]
-            return os.path.join(REPO, *mod.split(".")) + ".py"
+            # `python -m` resolves the package from its working directory.
+            return os.path.join(self.cwd or REPO, *mod.split(".")) + ".py"
         for a in self.argv[1:]:
             if a.endswith(".py"):
                 return a if os.path.isabs(a) else os.path.join(REPO, a)
@@ -127,6 +131,54 @@ PY = sys.executable
 # 동효님 실측: 평가 한 번에 20초~1분(9/30). 둘을 따로 바꾸면 검사 도중 강제 종료돼
 # manifest 가 running 으로 남는다. 그래서 한 곳에서 같이 정한다.
 YARA_TIMEOUT_S = 45
+
+
+def selfdefense_integrity_module() -> Module:
+    """Register Integrity without inventing a baseline for the user's PC.
+
+    These values must come from the approved release configuration. The
+    Integrity process itself validates the pinned baseline and reports scan
+    failures; Launcher only prevents an incomplete configuration from running.
+    """
+    root = os.environ.get("GZZ_INTEGRITY_ROOT", "").strip()
+    baseline = os.environ.get("GZZ_INTEGRITY_BASELINE", "").strip()
+    pin = os.environ.get("GZZ_INTEGRITY_BASELINE_SHA256", "").strip()
+    if not all((root, baseline, pin)):
+        disabled = "승인된 Integrity 배포 루트·baseline·고정 SHA-256 미설정"
+    elif not os.path.isabs(root) or not os.path.isabs(baseline):
+        disabled = "Integrity 배포 루트와 baseline은 절대 경로여야 합니다"
+    elif len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
+        disabled = "Integrity baseline SHA-256 형식 오류 (소문자 64자리)"
+    else:
+        disabled = ""
+    return Module(
+        name="selfdefense_integrity",
+        owner="4번 (성민)",
+        argv=[PY, "client/SelfDefense/integrity/main.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--telemetry", "{telemetry}",
+              "--root", root, "--baseline", baseline,
+              "--baseline-sha256", pin],
+        mode=CONTINUOUS,
+        needs_game=False,
+        restart=True,
+        stop_grace_s=30.0,
+        session_log_dir="client/SelfDefense/integrity/logs",
+        note="승인된 배포 파일 무결성 관측 (치트 점수와 별개)",
+        disabled_reason=disabled,
+    )
+
+
+def kernel_thread_options() -> List[str]:
+    """The thread-origin sensor is supported only on Windows build 19045.
+
+    Other builds can still run the remaining observer with this sensor
+    explicitly disabled; that reduced coverage must be reported as such.
+    """
+    windows_version = getattr(sys, "getwindowsversion", None)
+    return [] if windows_version and windows_version().build == 19045 else [
+        "--thread-interval", "0"
+    ]
 
 MODULES: List[Module] = [
     # ── 게임과 무관하게 먼저 뜨는 것 ────────────────────────────────────
@@ -149,13 +201,24 @@ MODULES: List[Module] = [
         session_log_dir="client/SelfDefense/watchdog/logs",
         note="워치독: registry 로 상주 모듈 생존 확인·복구, 운영 상태 보고",
     ),
+    selfdefense_integrity_module(),
     Module(
         name="kernel_watcher",
         owner="5번 (찬준)",
-        argv=[PY, "client/KernelWatcher/main.py"],
-        needs_game=False,
-        needs_admin=True,          # 드라이버를 올려야 한다
-        note="커널 프로세스·드라이버 관측. 아직 폴더가 비어 있다",
+        argv=[PY, "-m", "agent.main", "watch",
+              "--pid", "{game_pid}", "--mode", "observe",
+              "--config", "config/policy.json",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--out", "runs/{session}"] + kernel_thread_options(),
+        cwd=os.path.join(REPO, "client", "KernelSentinelValidation-github", "KernelSentinel"),
+        mode=CONTINUOUS,
+        needs_game=True,
+        needs_admin=True,
+        # The collector creates --out exclusively; same-session restart fails.
+        restart=False,
+        session_log_dir="client/KernelSentinelValidation-github/KernelSentinel/runs",
+        # --t0 and Shared server transport are not implemented in this agent.
+        note="KernelSentinel observe 로컬 수집 (승인 .sys 필요; 공통 t0·중앙 전송 미지원)",
     ),
 
     # ── 게임이 떠 있어야 하는 것 ────────────────────────────────────────

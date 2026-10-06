@@ -18,6 +18,33 @@ python client/Launcher/main.py
 
 커널 모듈을 쓰려면 **관리자 권한**으로 실행해야 한다. 아니면 그 모듈만 건너뛴다.
 
+SelfDefense Watchdog는 기존 `self_defense` 등록으로 실행한다. 별도
+`selfdefense_integrity` 항목은 파일 무결성 검사기이며 게임보다 먼저 실행한다.
+다만 승인된 배포 기준이 없는 PC에서는 `SKIPPED`로 표시하고 시작하지 않는다.
+배포 담당자가 정상 릴리스에서 확정한 아래 세 값을 런처 환경에 제공해야 한다.
+
+- `GZZ_INTEGRITY_ROOT`: 검사할 배포본의 절대 경로
+- `GZZ_INTEGRITY_BASELINE`: 승인된 기준 JSON의 절대 경로
+- `GZZ_INTEGRITY_BASELINE_SHA256`: 기준 JSON의 승인된 고정 SHA-256 (소문자 64자리)
+
+현재 사용자 PC의 파일에서 기준이나 고정 해시를 실행할 때마다 새로 만들면 안 된다.
+값이 모두 설정되면 런처가 공통 세션·플레이어·시작 시각과 함께 Integrity에 전달한다.
+Integrity의 이벤트는 운영 상태(`module=selfdefense`, `evidence.kind=file_integrity`,
+`raw_score=0`)이며 플레이어 치트 점수와 별개다. 이 환경변수만으로 값의 신뢰성이
+보장되는 것은 아니다. 실제 배포 시에는 승인된 릴리스 설정에서 공급해야 한다.
+
+현재 소스 기준 AntiDebug 진입점은 아직 저장소에 없으므로 등록·실행하지 않는다.
+`kernel_watcher`는 별도 구현인 KernelSentinel 수집기를 게임 시작 후 관리자 권한으로
+`-m agent.main watch --mode observe` 방식으로 실행한다. 이는 `KernelSentinel.sys`가
+해당 PC에 올바르게 설치·로드되어 있어야 실제로 센서에 연결된다. 런처는 드라이버를
+설치하거나 서명·OS 호환성을 해결하지 않는다. 수집기는 현재 `--t0`와 Shared 중앙
+전송을 지원하지 않아, `RUNNING`이어도 공통 시간축·서버 E2E 성공을 뜻하지 않는다.
+재시작은 같은 `--out` 폴더 충돌을 피하도록 꺼 두었다. 중앙 전송과 시간 원점,
+Ctrl+Break 종료 처리는 KernelSentinel 담당자의 후속 구현이 필요하다.
+커널 스레드 시작 주소 센서는 Windows 10 빌드 19045 전용이므로 다른 빌드에서는
+`--thread-interval 0`으로 그 센서만 끈다. 이는 나머지 센서가 해당 OS에서 실제로
+검증됐다는 뜻이 아니며, 기능별 범위는 종료 후 `feature_status.json`으로 확인한다.
+
 에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
 확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
 
@@ -102,7 +129,7 @@ optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
 | `mode=CONTINUOUS` | 자기가 알아서 계속 돈다. 런처는 살아 있는지만 본다 |
 | `mode=ONESHOT` + `every_s` | 한 번 돌고 끝난다. 런처가 그 주기로 다시 부른다 |
 | `final_run=[...]` | (주기 검사만) 세션이 끝날 때 그 인자를 붙여 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 스냅샷 검사는 넣지 않는다(게임이 꺼진 뒤 OFFLINE 이 세션 중 탐지를 덮는다). 지금은 휘파람 `["--only", "whistle_rpc"]` |
-| `needs_game=False` | 게임보다 **먼저** 뜬다 (SelfDefense·KernelWatcher) |
+| `needs_game=False` | 게임보다 **먼저** 뜬다 (SelfDefense 등) |
 | `needs_admin=True` | 관리자 권한이 없으면 건너뛴다 |
 | `telemetry_off_args=[...]` | 중앙 전송 설정이 없을 때(`{telemetry}` 가 `off`)만 argv 끝에 붙는다. 설정이 없으면 시작을 거부하는 모듈의 `--local-only` 같은 것 |
 | `env={...}` | 이 모듈에만 줄 환경변수. `PYTHONPATH` 는 기존 값 앞에 붙인다. 되살릴 때도 같은 값을 쓴다 |
@@ -150,7 +177,7 @@ signal.signal(signal.SIGBREAK, signal.default_int_handler)
 왜 Ctrl+C 가 아니라 Ctrl+Break 인가: 모듈마다 프로세스 그룹을 따로 두어야 하나씩
 골라 끌 수 있는데, 윈도는 따로 둔 그룹에는 Ctrl+C 를 보낼 수 없게 막는다.
 그 덕에 사용자가 런처 창에서 Ctrl+C 를 눌러도 모듈에 바로 가지 않는다. 런처가 받아서
-**게임 관련 모듈 먼저, SelfDefense·KernelWatcher 는 나중에** 순서대로 끈다.
+**게임 관련 모듈(커널 관측 포함) 먼저, SelfDefense는 나중에** 순서대로 끈다.
 
 끝나면 런처가 누가 어떻게 끝났는지 보여준다.
 
@@ -301,9 +328,10 @@ client/Launcher/logs/<모듈>.log
 
 ## 안 만들어진 모듈이 있어도 멈추지 않는다
 
-2026-10-01 기준 `SelfDefense`(4번), `KernelWatcher`(5번) 는 등록된 경로에 코드가 없다.
-런처는 이 모듈들을 `MISSING` 으로 보여주고 나머지를 계속 띄운다. 조용히 넘기지도
-않는다 — 아직 안 만든 것과, 만들었는데 안 붙는 것은 원인이 다르기 때문이다.
+등록된 진입점 파일이 실제로 없으면 런처는 해당 모듈을 `MISSING`으로 보여주고
+나머지를 계속 띄운다. 현재 SelfDefense Watchdog·Integrity와 KernelSentinel
+수집기 소스는 저장소에 있다. 다만 파일이 존재하는 것과 필요한 기준·드라이버가
+준비되어 실제 검사가 성립하는 것은 별개의 조건이다.
 
 ---
 
