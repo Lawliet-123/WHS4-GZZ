@@ -1,12 +1,24 @@
 """Watchdog demo responses only; never imports Launcher or manages a process."""
 
+if __package__:
+    from .launcher_adapter import Snapshot, Target, ProcessState
+else:
+    from launcher_adapter import Snapshot, Target, ProcessState
+
 
 class DemoRegistry:
     def __init__(self):
         self.index = 0
 
-    def restartable_names(self):
-        return ["demo_continuous", "selfdefense", "autopaint"]
+    def inspect(self):
+        return Snapshot(False, (
+            Target("demo_continuous", 100, "continuous", True, ProcessState("missing")),
+            Target("selfdefense", 101, "continuous", True, ProcessState("alive")),
+            Target("autopaint", 102, "continuous", False, ProcessState("alive")),
+        ))
+
+    def close(self):
+        pass
 
     def restart_if_dead(self, name, *, by):
         states = [("alive", 100), ("restarted", 101), ("backoff", None),

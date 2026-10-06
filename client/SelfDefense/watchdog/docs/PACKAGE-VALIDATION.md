@@ -1,22 +1,16 @@
-# SelfDefense Watchdog 0.2.1 배포본 검사
+# SelfDefense-Watchdog-0.3.0-testfix1 검증
 
-2026-10-01 / Windows / Python 3.14.6.
+2026-10-06, Windows x64, Python 3.14.6.
+기준 main: 31dc8332a770f51f2f50856637dcf8a1a4cee102.
 
-- ZIP 최상위 main.py 확인. 압축 내용을 client/SelfDefense/watchdog에 넣는 배포본.
-- anti_debug/integrity/공개 Launcher 코드는 배포·수정하지 않음.
-- 실제 후보 ZIP을 서로 다른 폴더에 풀어 검사.
-- ZIP 루트에서 워치독 단위 테스트 30개 통과.
-- 팀 레포 구조 client/SelfDefense/watchdog에서 같은 30개 통과. 서로 다른 60개 테스트가 아님.
-- PYTHONPATH 없이 shared·Launcher 기본 경로 탐색, 로그 위치, -m 패키지 실행 검사 포함.
-- 다른 작업 디렉터리에서 --help, --shared-root를 지정한 합성 데모 실행·종료 확인.
-- 배포본 SelfDefense + 배포된 shared 0.2.0 + 다운로드한 원본 Launcher로 프로세스 연동 10개 항목 통과.
-- Python 3.12 문법 및 문서 상대 링크 검사 통과. 3.12 런타임 검증은 아님.
-- 런처·shared 파일 무변경 확인. 기존 0.1.0/0.2.0 배포본 보존.
-- 최종 ZIP은 검사한 후보와 동일한 코드이며 검증 문서·결과 JSON만 확정함.
-- 실제 게임·Launcher.main 전체·중앙 HTTPS 서버는 테스트하지 않음.
+- 배포 후보 ZIP을 독립 폴더와 팀 레포 구조에 각각 풀어 검사했다.
+- 일반 Python과 venv Python에서 각 배치의 단위 테스트 67개를 모두 통과했다. 같은 검사를 네 번 실행한 것이며 서로 다른 268개 항목이라는 뜻은 아니다.
+- 후보 ZIP 코드의 실제 프로세스 시험 12개를 일반/venv에서 각각 통과했다.
+- venv에서도 실제 시험 worker를 실행했다. ONESHOT 0/1 완료, 2 검사 실패, 3 크래시를 확인했고 잔류 worker가 없다.
+- 운영 Python 파일은 기존 SelfDefense-Watchdog-0.3.0 ZIP과 바이트 단위로 같다. 원본 Launcher·shared와 기존 배포 ZIP은 변경하지 않았다.
+- 재현 명령과 변경 이유는 [TESTFIX](TESTFIX.md), 실측 결과는 [INTEGRATION-RESULT.json](INTEGRATION-RESULT.json)에 있다.
+- Python 3.12 문법과 문서 링크, ZIP 무결성 검사를 수행했다. 3.12 런타임 시험은 아니다.
+- 최종 ZIP은 검증 후보와 코드가 같으며 결과 JSON·검증 문서·합성 예시만 확정했다.
 
-의존 배포본: GZZ-Shared-0.2.0-repo-layout.zip
-
-SHA-256: `2f8da90127db18f7c729c8b5bc948bf72a1791e0fed4d07bf6349c8ff7300f16`
-
-결과와 런처 파일 해시는 [INTEGRATION-RESULT](INTEGRATION-RESULT.json) 참조. 로컬 사용자·임시 폴더 경로만 공유본에서 제외했다. 테스트용 프로세스 기록이므로 정상/핵 게임 표본으로 사용하지 않는다.
+전체 Launcher.main, 실제 게임·팀 탐지기 동시 실행, 중앙 HTTPS, Dashboard 화면은 미검증이다. 이 결과는 정상/핵 플레이 로그가 아니다.
+testfix1은 시험 도구·문서 보완 묶음 이름이다. 운영 버전·탐지 규칙·점수·출력 계약을 바꾸지 않았다.

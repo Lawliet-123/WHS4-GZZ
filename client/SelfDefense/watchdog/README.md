@@ -1,122 +1,121 @@
-# SelfDefense Watchdog 0.2.1
+# SelfDefense Watchdog 0.3.0
 
-상주 모듈의 생존 상태를 런처 registry로 확인하고 필요한 재시작을 그 registry에 요청한다. 프로세스 생성/종료/잠금/PID 등록/재시작 한도는 여기서 구현하지 않는다. 별도 하트비트, 안티디버깅, 자체 파일 무결성, 커널 기능도 이번 범위가 아니다.
+런처에 등록된 프로세스의 생존·종료 상태를 관찰한다. 감시 대상과 재시작 대상을 분리했다. 재시작은 허용된 대상에 한해 런처의 registry.restart_if_dead()에 요청한다. 별도 프로세스 실행·종료·재시작 정책은 구현하지 않는다.
 
-팀에서 정한 watchdog 하위 폴더 구조로 바로잡은 버전이다. 0.2.0을 그대로 하위 폴더로 옮기면 기본 shared/Launcher 탐색 경로가 달라지므로 이 버전을 사용한다. 탐지 점수·이벤트 규격·재시작 정책은 바꾸지 않았다.
+2026-10-06 재확인한 공개 main은 31dc8332a770f51f2f50856637dcf8a1a4cee102이다. 런처와 shared Python 소스는 앞서 검증한 0253fca 사본과 같다. 런처와 shared 원본은 수정하지 않는다.
 
-2026-10-01 공개 Launcher main acc9d2afe7d21e576b098f654c04643be8455b61의 원본 registry/process_manager를 사용한다. 런처 소스는 수정하지 않았다. 전체 Launcher.main·실제 게임·중앙 HTTPS 서버의 종단 검증은 남아 있다. [런처 담당자 반영 요청](docs/LAUNCHER_HANDOFF.md), [배포 검증 기록](docs/PACKAGE-VALIDATION.md)을 참고한다.
+현재 배포 묶음은 0.3.0-testfix1이다. 운영 코드와 collector_version은 0.3.0 그대로이며, 테스트·문서만 보완했다. 변경 원인과 재현 명령은 [테스트 보완 안내](docs/TESTFIX.md)에 있다.
 
-## 설치
+## 변경 내용
 
-- 이 모듈의 ZIP은 최상위에 main.py가 있다. 내용을 팀 저장소의 `client/SelfDefense/watchdog/`에 넣는다. watchdog 폴더를 한 겹 더 만들지 않는다.
-- anti_debug/와 integrity/는 이번 ZIP에 없으며 해당 폴더·파일은 변경하지 않는다. SelfDefense 전체를 덮어쓰는 배포본이 아니다.
-- 0.2.0 ZIP과 로그는 보관할 수 있지만 새 실행 경로와 동시에 실행하지 않는다. 업그레이드는 기존 실행을 정상 종료한 뒤 새 세션 ID로 진행한다. 예전 루트 파일이 이미 레포에 올라갔다면 파일 소유자를 확인하고 별도로 정리하며 폴더 전체를 삭제하지 않는다.
-- 별도 GZZ-Shared-0.2.0 묶음의 `shared/`를 팀 저장소 최상위에 둔다. 라이브러리이므로 shared에는 실행용 main.py가 필요 없다.
-- 표준 라이브러리만 사용한다. Python 3.14에서 검증했으며 팀의 Python 3.12 런타임 검증은 남아 있다.
-- 일반 배치에서 shared 경로를 찾는다. 임의 위치에 압축을 풀었다면 `--shared-root`로 shared의 부모 폴더를 명시한다. 구버전 shared가 import되지 않는지 확인한다.
+- restartable_names() 대신 registry.load()['entries'] 전체 관찰.
+- 재시작 금지 모듈과 ONESHOT도 생존·종료 기록.
+- modules.py의 실행 방식·재시작 설정을 등록부 허용 여부와 함께 확인.
+- PID와 생성 시각을 같은 Windows 핸들에서 확인. 접근 거부를 정상 생존으로 표시하지 않음.
+- ONESHOT 종료 코드로 완료·검사 실패·크래시 구분. 코드를 확인하지 못하면 unknown.
+- 최초 관찰과 상태·프로세스 식별자 변화도 Event로 전송. 매 점검은 raw 기록.
+- 기존 7필드, shared 사용 방식, 진입점, 기본 1초 주기, 치트 점수 0 유지.
 
-## 지금 가능한 합성 데모
+## LocalGuard 감시 범위
 
-팀 레포 루트에서 PowerShell로 실행한다.
+| 담당 | 런처 등록명 | 방식 | 동작 |
+| --- | --- | --- | --- |
+| 1번 | external_access | continuous | 관찰, 허용된 재시작 요청 |
+| 1번 | module_integrity | continuous | 관찰, 허용된 재시작 요청 |
+| 2번 | memory_integrity | oneshot | 관찰, 완료/실패 구분. 주기 실행은 런처 담당 |
+| 3번 | input_signature | continuous, restart=False | 관찰, 종료 보고. 재시작하지 않음 |
 
-```powershell
-py client/SelfDefense/watchdog/main.py --session-id watchdog_demo_001 --player-id player_042 --demo --telemetry off --interval 0.25 --duration 3
-```
+네 개 이름만 하드코딩한 것이 아니다. 다른 등록 항목도 관찰한다. 자기 자신, autopaint, --exclude-module 대상도 관찰하되 워치독에서 재시작하지 않는다. 워치독 자신의 복구는 런처 담당이다.
 
-ZIP만 다른 폴더에 풀었다면 그 폴더에서 아래처럼 실행한다. `C:\Team\MecchaAntiCheat`는 shared 폴더가 들어 있는 실제 경로로 바꾼다.
+modules.py에 없는 등록명은 생존만 관찰하고 재시작하지 않는다. 아직 등록되지 않은 모듈은 관찰할 수 없다. 게임 대기, --only 제외, 미구현을 임의로 사망 처리하지 않는다. 한 번 관찰한 등록 항목이 사라지면 unregistered로 보고한다.
 
-```powershell
-py main.py --shared-root "C:\Team\MecchaAntiCheat" --session-id watchdog_demo_001 --player-id player_042 --demo --telemetry off --interval 0.25 --duration 3
-```
+## 설치와 실행
 
-합성 응답으로 restarted/gave_up/복구/orphaned 처리를 보여준다. 실제 프로그램을 죽이거나 되살리는 데모가 아니다. `--demo`와 중앙 전송을 함께 지정하면 실행을 거절한다. manifest와 Event에도 synthetic=true가 기록된다. 정상/핵 게임 표본으로 제출하지 않는다.
+ZIP 내용을 client/SelfDefense/watchdog/에 넣는다. 그 안에 main.py가 바로 있어야 한다. anti_debug·integrity·shared·Launcher는 이 ZIP에 없으며 교체하지 않는다. 기존 실행을 정상 종료한 뒤 교체하고 새 테스트 세션을 사용한다. 기존 ZIP·로그는 삭제하지 않는다.
 
-## 실제 런처 없이 실행
+의존성: Windows, 표준 라이브러리, 레포 루트의 shared 0.2.0, 신뢰하는 client/Launcher/registry.py와 modules.py. Python 3.14에서 실행 검증했다. Python 3.12 문법 검사는 했으나 3.12 런타임 검증은 별도다.
 
-```powershell
-py client/SelfDefense/watchdog/main.py --session-id watchdog_local_001 --player-id player_042 --telemetry off --duration 5
-```
+최신 런처의 self_defense 등록 경로·인자는 이미 맞다. 새 항목을 추가하지 않는다. 런처가 세션을 만든 뒤 아래 인자로 실행한다.
 
-registry가 없으면 `REGISTRY_UNAVAILABLE` 운영 Event를 한 번 기록하고 계속 확인한다. 임의로 프로세스를 찾거나 재시작하지 않는다. 경로 오류를 alive로 처리하지 않는다. registry를 나중에 올바른 위치에 제공하면 다음 점검에서 다시 불러올 수 있다. 이미 불러온 코드의 변경은 워치독 재실행으로 반영한다.
+    py client/SelfDefense/watchdog/main.py --session-id SESSION_ID --player-id PLAYER_ID --t0 UNIX_SECONDS --telemetry managed
 
-## 런처 연동 계약 — acc9d2a 기준
+대문자 값은 자리표시자다. 그대로 입력하지 않는다. 운영에서는 런처가 실제 값을 전달한다. 런처 없이 실행하면 등록부 오류를 기록하며 임의 프로세스를 띄우지 않는다.
 
-- 진입점: `client/SelfDefense/watchdog/main.py`. CONTINUOUS, 기본 1초 주기. `py -m client.SelfDefense.watchdog.main`도 지원한다.
-- 레포 배치를 기준으로 `client/Launcher/registry.py`와 레포 루트의 shared를 찾는다. 임의 폴더에 푼 단독 배치에서는 --launcher-dir과 --shared-root를 지정한다.
-- `registry.restartable_names()` → 상주 모듈 이름 iterable. ONESHOT 제외는 registry 책임이다.
-- 각 대상에 `registry.restart_if_dead(name, by="watchdog")` 호출.
-- 실제 반환은 `(status, pid, Popen 또는 None)`이다. 세 번째 값은 사용/전송하지 않는다.
-- 허용 상태: alive / restarted / backoff / gave_up / stopping / orphaned / skip.
-- alive/restarted에는 양의 정수 PID가 있어야 한다. 실제 registry 계약이 다르면 launcher_adapter.py와 관련 테스트를 먼저 맞춘다.
-- SelfDefense 자기 자신은 호출 대상에서 제외한다. 기본 등록명은 self_defense이며 옛 이름 selfdefense도 제외한다. 다른 이름이면 `--self-name`을 지정한다. SelfDefense 재시작은 런처 책임이다.
-- autopaint도 기본 제외한다. `--exclude-module`로 다른 대상도 추가할 수 있다. 이 제외는 워치독에만 적용되므로 런처 자체의 AutoPaint 자동 재시작도 꺼야 한다.
-- stopping/orphaned에서 직접 되살리지 않는다. registry가 이 상태를 반환하기 전에 재시작하지 않는다는 계약이 필요하다.
-- registry 함수는 빠르게 반환해야 한다. 함수가 멈추면 현재 단일 점검 루프도 멈춘다. 강제 timeout/registry 작업 중단은 구현하지 않았다.
-- registry 파일은 신뢰하는 팀 코드여야 한다. PID 파일·경로·1초 점검만으로 변조 방지나 프로세스 신원을 보장하지 않는다.
-- 재시작 전 registry의 세션·런처 PID/생성 시각을 확인한다. 등록부 없음/읽기 불가/세션 불일치/런처 식별자 누락은 오류로 보고하고 복구를 요청하지 않는다. 런처 사망은 목록이 비어 있어도 LAUNCHER_ORPHANED로 보고한다.
-- 세션 사전 확인은 원자적 잠금이나 인증이 아니다. 동시에 다른 세션이 같은 등록부를 교체하지 않도록 런처가 관리해야 한다.
-- 실제 restartable_names는 ONESHOT뿐 아니라 restart=False 대상도 제외한다. 따라서 AutoPaint/input_signature 등 재시작 비허용 대상까지 이 워치독이 감시한다고 설명하지 않는다.
-- AC_LAUNCHER_LOG_DIR을 사용하면 런처와 SelfDefense에 같은 절대 경로를 전달한다. 기본은 Launcher/logs다.
+합성 데모는 레포 루트에서 실행한다. 실제 프로세스를 죽이거나 재시작하지 않고 서버에도 보내지 않는다.
 
-## 실행 인자
+    py client/SelfDefense/watchdog/main.py --session-id watchdog_demo_001 --player-id player_042 --demo --telemetry off --interval 0.25 --duration 3
 
-| 인자 | 의미 |
+| 인자 | 내용 |
 | --- | --- |
-| --session-id / --player-id | 필수. 공통 safe ASCII 식별자 |
-| --session-start-unix-ms | 통합 세션 시작 UTC Unix ms. 로그에는 그 후 경과시간을 기록 |
-| --t0 | 런처의 Unix 초를 ms로 변환. ms 미만 절삭. 위 ms 옵션과 동시 사용 불가 |
-| --launcher-dir | 실제 registry.py가 있는 폴더 |
-| --shared-root | shared 패키지의 부모 폴더 |
-| --output-dir | 기본: 이 모듈 폴더의 logs. 런처에서 쓰기 가능한 절대 경로 권장 |
-| --interval | 기본 1초. 양의 유한 숫자 |
-| --duration | 테스트용 실행 시간. 정상 상주 실행에서는 생략 |
-| --self-name | registry에 등록된 자기 모듈 이름. 기본 self_defense |
-| --exclude-module | 추가로 재시작 요청하지 않을 모듈. 반복 지정 가능 |
-| --telemetry | managed(기본) / external / off |
-| --demo | 합성 모드. 반드시 --telemetry off와 함께 사용 |
+| --session-id, --player-id | 필수 공통 식별자 |
+| --t0 | 세션 시작 Unix 초. 기록은 그 후 경과 ms |
+| --session-start-unix-ms | --t0 대신 Unix ms. 동시 지정 불가 |
+| --launcher-dir | registry.py와 modules.py 폴더. 기본 client/Launcher |
+| --shared-root | shared의 부모 폴더. 기본 레포 루트 |
+| --output-dir | 기본 watchdog/logs |
+| --interval | 기본 1초. 전체 점검이 끝난 뒤 대기하는 간격 |
+| --self-name | 기본 self_defense. 자기 자신 재시작 제외용 |
+| --exclude-module | 재시작 제외 추가. 감시에서는 제외하지 않음 |
+| --telemetry | managed / external / off |
+| --duration, --demo | 테스트 전용. 운영에서는 생략 |
 
-managed는 configure/send/flush/shutdown을 담당한다. external은 같은 프로세스의 기존 sender를 사용하며 종료하지 않는다. 런처가 별도 프로세스로 실행하면 managed를 사용한다. 부모 프로세스의 shared sender가 자식과 공유되는 것은 아니다.
+py -m client.SelfDefense.watchdog.main도 가능하다. 임의 위치 배치는 --launcher-dir과 --shared-root를 명시한다. AC_LAUNCHER_LOG_DIR을 사용한다면 런처와 같은 절대 경로를 전달한다. 설정 코드는 실행 중 다시 읽지 않으므로 레포 업데이트 후 워치독도 재시작한다.
 
-managed에는 `GZZ_TELEMETRY_URL`, `GZZ_TELEMETRY_TOKEN`, sender 전용 `GZZ_TELEMETRY_OUTBOX`를 설정한다. 일시 장애의 지속 재시도를 원하면 `GZZ_TELEMETRY_RETRY_MODE=persistent`를 명시한다. .env 자동 로딩은 없다. 설정/전송 실패는 화면에 알리고 워치독 점검·로컬 기록은 계속한다. 시작 설정 실패 후 자동 재초기화는 하지 않으므로 수정 후 재실행한다.
+## 판단 규칙
 
-## 로그와 시간
+| 상태 | 의미 |
+| --- | --- |
+| alive | 해당 PID+생성 시각의 프로세스가 관찰 시점에 살아 있음 |
+| completed | ONESHOT 코드 0 또는 1. 1은 의심 발견 후 검사 완료이며 정상 플레이 판정이 아님 |
+| scan_failed | ONESHOT 코드 2. 검사 성립 실패 |
+| crashed | ONESHOT의 다른 종료 코드 |
+| exited | 상주 프로세스가 더 이상 살아 있지 않음. 재시작 금지 대상에서도 보고 |
+| unknown | 종료 코드를 놓쳤거나 실행 방식이 불명확하여 완료 여부 판단 불가 |
+| unregistered | 관찰했던 항목이 등록부에서 사라짐 |
+| error | 권한·등록부·API 등 관찰 오류 |
+| restarted / backoff / gave_up | 런처 registry의 재시작 실행 / 대기 / 한도 초과 |
+| stopping / orphaned / skip | 종료 중 / 런처 부재 / 재시작 요청 제외 |
 
-`logs/<session_id>/session-clock.json`에 최초 세션 시점을 보관한다. 재실행 시 같은 값을 사용한다. player, 합성 여부, 시작 시각이 충돌하면 조용히 덮어쓰지 않고 실행 오류로 알린다. 파일을 삭제해 오류를 숨기지 말고 올바른 ID/시각을 전달한다.
+종료 코드 규칙은 현재 런처 process_manager의 ONESHOT 계약과 일치한다. 새로운 모듈이 다른 종료 코드를 사용하면 계약부터 맞춘다. 종료 코드 1을 워치독 치트 점수로 변환하지 않는다.
 
-각 실행은 `logs/<session_id>/runs/<run_id>/`에 manifest.json, events.jsonl, raw/watchdog.jsonl을 만든다. 이전 실행 기록은 보존된다. 실행 구간별 하위 폴더이므로 기존 게임용 ReplayAnalyzer가 자동으로 읽는지는 별도로 연결해야 한다.
+재시작은 continuous, modules.py의 restart=True, 등록부의 restartable=True가 모두 맞을 때만 요청한다. 세션·런처 PID/생성 시각·종료 중 여부를 먼저 확인한다. 접근 거부나 잘못된 항목이면 요청하지 않는다. 잠금, PID 등록, 5분 5회 한도, 0/2/4/8/16초 간격은 기존 registry에 맡긴다.
 
-통합 런처는 최초 실행부터 같은 --t0 또는 --session-start-unix-ms를 전달해야 한다. 생략하면 워치독이 시작한 시각을 로컬 세션 시작으로 삼고 경고한다. 이 값은 다른 모듈의 세션 시간과 같다고 간주하면 안 된다. 한 실행 안에서는 monotonic 경과시간을 사용하고 재실행 때 저장된 UTC 시점에 다시 맞춘다. PC 시계가 실행 사이에 크게 바뀌면 시간 정확도에 영향이 있다.
+## Windows 관찰
 
-- raw: 매 점검 결과.
-- events: 재시작 동작, 오류 상태의 최초 확인/변경, 복구. 점수를 계산하는 탐지기가 아니므로 매 점검 0점 Event를 전송하지 않는다.
-- module=selfdefense, raw_score=0, evidence.kind=module_health. 게임 정상 표본과 분리한다.
-- ERROR는 검사/감시 실패이고 NORMAL은 상태 조회/복구 성공이다. 플레이어가 정상이라는 판정이 아니다.
-- 성공적으로 queued됐어도 서버 도착이 확인된 것은 아니다. 로컬 기록/전송 실패를 화면에 알린다. shared enqueue에 실패한 로컬 파일의 자동 재전송은 구현하지 않았다.
+OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE) → GetProcessTimes로 생성 시각 확인 → WaitForSingleObject(..., 0)으로 생존 확인 → 종료됐다면 GetExitCodeProcess로 종료 코드 확인.
 
-SIGINT/SIGTERM/Windows SIGBREAK를 처리한다. 원본 런처의 Ctrl+Break 정상 종료와 flush/shutdown·manifest 마감을 테스트용 프로세스에서 확인했다. 콘솔 없는 pythonw/창 모드 EXE는 별도 검증이 필요하다. 강제 종료는 finally 실행을 보장하지 않으며, 이미 저장된 shared outbox는 남는다. 종료코드 0은 실행 루프 정상 종료, 2는 시작/인자 오류, 3은 예상하지 못한 실행 오류다. 0이 감시 대상의 정상 상태를 의미하지는 않는다.
+모듈별 핸들을 보관해 런처가 Popen 객체를 놓은 뒤에도 종료 코드를 읽는다. PID/생성 시각 변경, 등록 제거, 워치독 종료 때 닫는다. 현재 항목 최대 1,024개와 런처 한 개를 관찰하며 과거 등록명 기억은 4,096개로 제한한다. 게임 메모리 읽기·쓰기나 디버거 연결 권한은 요청하지 않는다.
 
-manifest에 run_status(RUNNING/STOPPED/ERROR), stop_reason, exit_code를 기록한다. 강제 종료하면 RUNNING이 남을 수 있으므로 이 값만으로 실제 생존을 판단하지 않는다.
+참고: [Windows 종료 코드](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess), [대기 상태 확인](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
 
-## 테스트와 남은 확인
+## 출력과 전송
 
-개발 프로젝트 루트: `py -m unittest discover -s tests -p test_selfdefense.py -v`
+    logs/<session_id>/session-clock.json
+    logs/<session_id>/runs/<run_id>/manifest.json
+    logs/<session_id>/runs/<run_id>/events.jsonl
+    logs/<session_id>/runs/<run_id>/raw/watchdog.jsonl
 
-SelfDefense ZIP 루트: shared의 부모를 PYTHONPATH에 둔 뒤 같은 명령 실행. 실제 프로세스 종료·재시작은 하지 않는다.
+동일 세션 재실행은 시계를 유지하고 새 run_id를 쓴다. player·시계 충돌은 시작 오류다. 강제 종료된 실행의 manifest가 RUNNING으로 남을 수 있으므로 이것만으로 생존을 판단하지 않는다.
 
-팀 레포에 설치한 뒤에는 `py -m unittest discover -s client/SelfDefense/watchdog/tests -p test_selfdefense.py -v`로 실행한다.
+raw는 매 점검 기록한다. Event는 최초 모듈 관찰, 상태·식별자·오류 변화, 재시작 실행, 오류 복구 때 기록하고 shared로 보낸다. 변화 없는 결과를 반복 전송하는 하트비트가 아니다.
 
-실제 프로세스 연동 테스트는 명시적으로 다음 명령으로 실행한다. 새 임시 폴더와 테스트용 프로세스만 사용하며 Launcher.main·게임·실제 탐지기는 실행하지 않는다. 기존 report를 덮어쓰지 않으므로 매번 새 파일명을 사용한다. 약 30초 이상의 실제 재시작 backoff를 포함한다.
+Event 최상위는 session_id, player_id, module, timestamp_ms, evidence, reasons, raw_score 7개다. module=selfdefense, evidence.kind=module_health, raw_score=0인 운영 상태로 취급한다. 치트 점수에 합산하지 않는다.
 
-```powershell
-py client/SelfDefense/watchdog/tests/launcher_integration.py --launcher-dir client/Launcher --shared-root . --report watchdog-integration-result.json
-```
+evidence에는 status, registry_status, target_module, scope, pid, error_code, mode, restart_allowed, exit_code, create_time, health_scope, functional_health_checked, collector_version, run_id, synthetic, timestamp_basis가 들어간다. create_time은 정밀도 보존용 문자열이다. 새 PID에 이전 프로세스의 생성 시각·종료 코드를 붙이지 않으며 다음 관찰에서 새 정보를 기록한다. functional_health_checked는 false다.
 
-테스트가 실제로 사용한 런처 파일 SHA-256을 결과에 남긴다. 개발 기준 커밋과 다른 파일이면 같은 버전 검증으로 간주하지 않는다. 임시 폴더에 진단 로그를 보존하며 이 자료는 게임 정상/핵 표본이 아니다.
+managed는 시작 때 configure_client(ClientConfig.from_env()), 결과마다 send_detection(), 종료 때 flush_client(3초)·shutdown_client(5초)를 호출한다. 별도 HTTP 코드는 없다. 설정 실패는 알리고 로컬 관찰을 유지한다. external은 같은 프로세스의 기존 sender를 사용하고 종료하지 않는다. 별도 프로세스 런처에서는 managed/off를 사용한다.
 
-남은 실연동 확인:
-- 실제 통합 Launcher.main 등록표에 필수 인자를 반영한 뒤 전체 게임 실행 흐름 확인.
-- 콘솔 없는 패키징의 정상 종료 전달, 재시작 비허용 대상의 감시 범위 협의.
-- receiver의 selfdefense 허용, module_health 별도 표시/집계, 실제 HTTPS 수신.
-- Python 3.12 런타임.
+설정: GZZ_TELEMETRY_URL, GZZ_TELEMETRY_TOKEN, 모듈 전용 GZZ_TELEMETRY_OUTBOX. 최신 registry.spawn의 outbox 분리를 그대로 사용한다. 지속 재시도는 GZZ_TELEMETRY_RETRY_MODE=persistent. .env 자동 로딩은 없다. queued는 대기열 등록이며 서버 수신 성공을 뜻하지 않는다.
 
-새 작업자는 launcher_adapter.py(런처 경계), monitor.py(상태 처리), reporting.py(로컬·shared), main.py(설정·실행)를 나눠 수정한다. 공유 registry 대신 새 프로세스 제어 코드를 추가하지 않는다.
+## 한계와 후속 협의
+
+- 프로세스 생존 확인이지 내부 검사 진행·스레드 정지·하트비트 검증이 아니다.
+- 관찰 전에 끝나 OS에서 사라진 짧은 검사는 종료 코드를 알 수 없다. unknown으로 남긴다.
+- 처음부터 미등록, 시작 실패, 의도적 제외, 다음 검사 예정/누락은 현재 등록부만으로 구분하지 못한다.
+- 게임 종료 직후 stopping 기록 전에 상주 모듈이 먼저 끝나면 exited로 보일 수 있다. 치트 판정이 아니며 종료 의도를 단정하지 않는다.
+- 세션 사전 확인과 재시작은 하나의 원자적 트랜잭션이 아니다. 신뢰하는 코드·등록부와 단일 세션 소유권을 전제로 한다.
+- 런처가 먼저 되살리면 새 PID의 alive를 볼 수 있다. 모든 짧은 종료를 놓치지 않는 감사 로그는 아니다.
+- registry 호출이 오래 잠기면 다음 점검도 지연된다. 1초는 탐지 지연 보장이 아니다.
+- 로그 보존 기간·자동 정리·실게임 성능 실측은 별도 운영 과제다.
+
+[런처 전달 사항](docs/LAUNCHER_HANDOFF.md), [검증 결과](docs/PACKAGE-VALIDATION.md), [실행 결과 JSON](docs/INTEGRATION-RESULT.json)을 참고한다. 전체 Launcher.main·실게임·중앙 HTTPS는 이번 검증 범위가 아니다.

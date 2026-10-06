@@ -21,6 +21,8 @@ import tempfile
 import threading
 import time
 
+from fixture_protocol import control_path, matches_process
+
 
 def wait_for(predicate, label, seconds=15):
     deadline = time.monotonic() + seconds
@@ -113,9 +115,12 @@ def main():
                         default=Path(__file__).resolve().parents[1], help="Directory containing watchdog/main.py")
     parser.add_argument("--shared-root", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--reference-commit", required=True, help="Commit identifying the supplied snapshot")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("Windows integration test only")
+    if sys.flags.optimize:
+        parser.error("assertions are required; do not use -O or PYTHONOPTIMIZE")
     if args.report.exists():
         parser.error("report exists; use a new filename")
     root = Path(tempfile.mkdtemp(prefix="gzz-selfdefense-live-"))
@@ -132,6 +137,7 @@ def main():
             shutil.copyfile(file, root / folder / file.name)
     fixture = root / "launcher_fixture.py"
     shutil.copyfile(Path(__file__).with_name("launcher_fixture.py"), fixture)
+    shutil.copyfile(Path(__file__).with_name("fixture_protocol.py"), root / "fixture_protocol.py")
     artifacts = root / "artifacts"
     artifacts.mkdir()
     print("test workspace: " + str(root), flush=True)
@@ -151,9 +157,16 @@ def main():
                       GZZ_TELEMETRY_RETRY_MAX_SECONDS="0.3")
     checks, pm, owner, orphan_entries = [], None, None, {}
     # Reference only: caller may supply another revision. Hashes identify files actually tested.
-    report = {"reference_commit": "acc9d2afe7d21e576b098f654c04643be8455b61",
-              "python": sys.version.split()[0], "workspace": str(root), "launcher_sha256": hashes,
+    report = {"reference_commit": args.reference_commit,
+              "python": sys.version.split()[0], "executable": sys.executable,
+              "is_venv": sys.prefix != sys.base_prefix, "workspace": str(root), "launcher_sha256": hashes,
               "checks": checks, "status": "RUNNING", "central_server_tested": False, "game_tested": False}
+    report["watchdog_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                 for p in args.watchdog_dir.glob("*.py")}
+    report["shared_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                               for p in (args.shared_root / "shared").glob("*.py")}
+    report["harness_sha256"] = {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                                for name in ("launcher_integration.py", "launcher_fixture.py", "fixture_protocol.py")}
     def passed(name, **details):
         checks.append({"name": name, "status": "PASS", **details})
         print("PASS " + name, flush=True)
@@ -172,7 +185,7 @@ def main():
         assert registry.kill(entry["pid"], entry["create_time"]), "fixture kill failed"
         return entry
     def new_target(old):
-        entry = registry.entry("probe")
+        entry = registry.entry("external_access")
         if entry and entry["pid"] != old["pid"] and registry.is_alive(entry["pid"], entry["create_time"]):
             return entry
     try:
@@ -182,41 +195,42 @@ def main():
                           "--session-id", "{session}", "--player-id", "{player}", "--t0", "{t0}",
                           "--telemetry", "{telemetry}", "--interval", "0.05",
                           "--output-dir", str(artifacts / "watchdog")])
-        pm = ProcessManager([wd, worker("probe"), worker("disabled_probe", restart=False),
-                             worker("once_probe", mode=ONESHOT), worker("stopping_probe")],
+        pm = ProcessManager([wd, worker("external_access"), worker("input_signature", restart=False),
+                             worker("memory_integrity", mode=ONESHOT), worker("module_integrity")],
                             "integration_001", "fixture_player", t0, say=lambda text: print(text, flush=True))
         for name in pm.states:
             assert pm.start(name), name
-        wait_for(lambda: any(x["target"] == "probe" and x["status"] == "alive" for x in raw()), "first observation")
+        wait_for(lambda: all(any(x["target"] == name and x["status"] == "alive" for x in raw())
+                             for name in pm.states), "all registered processes observed")
         wait_for(lambda: len(list((artifacts / "workers").rglob("*.json"))) == 4, "worker records")
         manifests = [read_json(p) for p in (artifacts / "watchdog").rglob("manifest.json")]
         expected_start = int(__import__("decimal").Decimal(f"{t0:.3f}") * 1000)
         assert manifests[0]["start_unix_ms"] == expected_start
         assert manifests[0]["timestamp_basis"] == "launcher_session_start"
-        assert any(x["target"] == "self_defense" and x["status"] == "skip" for x in raw())
+        assert any(x["target"] == "self_defense" and x["status"] == "alive" and not x["restart_allowed"] for x in raw())
         passed("launcher_start_identity_clock_and_self_exclusion")
 
-        old = kill_entry("probe")
+        old = kill_entry("external_access")
         revived = wait_for(lambda: new_target(old), "watchdog restart")
         assert revived["started_by"] == "watchdog" and len(revived["restarts"]) == 1
-        wait_for(lambda: len(list((artifacts / "workers/probe").glob("*.json"))) == 2,
+        wait_for(lambda: len(list((artifacts / "workers/external_access").glob("*.json"))) == 2,
                  "first replacement worker ready before next kill")
         wait_for(lambda: any(e["evidence"]["registry_status"] == "restarted" for e in events()), "local event")
         assert not sink.writer.iter_stored(), "offline fixture unexpectedly accepted event"
         sink.online = True
         wait_for(lambda: sink.writer.iter_stored(), "retry delivers to local receiver")
         pm.poll()
-        assert pm.states["probe"].adopted_pid == revived["pid"]
+        assert pm.states["external_access"].adopted_pid == revived["pid"]
         passed("watchdog_restart_launcher_adoption_and_local_receiver_retry")
 
-        old = kill_entry("probe")
+        old = kill_entry("external_access")
         def raced():
             pm.poll()
             return new_target(old)
         revived = wait_for(raced, "concurrent launcher/watchdog restart")
         assert len(revived["restarts"]) == 2
-        wait_for(lambda: len(list((artifacts / "workers/probe").glob("*.json"))) >= 3, "restart record")
-        assert len(list((artifacts / "workers/probe").glob("*.json"))) == 3
+        wait_for(lambda: len(list((artifacts / "workers/external_access").glob("*.json"))) >= 3, "restart record")
+        assert len(list((artifacts / "workers/external_access").glob("*.json"))) == 3
         passed("concurrent_restart_no_duplicate", restart_owner=revived["started_by"])
 
         first_wd_pid = pm.states["self_defense"].proc.pid
@@ -232,27 +246,70 @@ def main():
         passed("launcher_recovers_selfdefense_same_session_keeps_two_runs")
 
         for count in (3, 4, 5):
-            old = kill_entry("probe")
+            old = kill_entry("external_access")
             revived = wait_for(lambda: new_target(old), f"restart {count} with real backoff", seconds=22)
             assert len(revived["restarts"]) == count
-            wait_for(lambda: len(list((artifacts / "workers/probe").glob("*.json"))) == count + 1, "single worker record")
-        kill_entry("probe")
+            wait_for(lambda: len(list((artifacts / "workers/external_access").glob("*.json"))) == count + 1, "single worker record")
+        kill_entry("external_access")
         wait_for(lambda: any(e["evidence"]["registry_status"] == "gave_up" for e in events()), "restart limit")
-        assert len(list((artifacts / "workers/probe").glob("*.json"))) == 6
-        assert any(x["target"] == "probe" and x["status"] == "backoff" for x in raw())
+        assert len(list((artifacts / "workers/external_access").glob("*.json"))) == 6
+        assert any(x["target"] == "external_access" and x["status"] == "backoff" for x in raw())
         passed("real_five_restart_limit_and_backoff")
 
-        kill_entry("disabled_probe")
-        time.sleep(0.25)
-        assert not any(x["target"] in {"disabled_probe", "once_probe"} for x in raw())
-        assert len(list((artifacts / "workers/disabled_probe").glob("*.json"))) == 1
-        assert len(list((artifacts / "workers/once_probe").glob("*.json"))) == 1
-        passed("oneshot_and_restart_disabled_not_restarted")
+        kill_entry("input_signature")
+        wait_for(lambda: any(e["evidence"]["target_module"] == "input_signature" and
+                             e["evidence"]["registry_status"] == "exited" for e in events()), "restart=False death report")
+        assert len(list((artifacts / "workers/input_signature").glob("*.json"))) == 1
+        assert registry.entry("input_signature")["restarts"] == []
+        passed("restart_disabled_is_monitored_and_not_restarted")
+
+        observed_codes = []
+        for code, expected in ((0, "completed"), (1, "completed"), (2, "scan_failed"), (3, "crashed")):
+            started = pm.start("memory_integrity")
+            assert started
+            proc = pm.states["memory_integrity"].proc
+            created = registry.popen_create_time(proc)
+            def ready_worker():
+                records = [read_json(p) for p in (artifacts / "workers/memory_integrity").glob("*.json")]
+                candidates = [r for r in records if matches_process(r, proc.pid, created)
+                              and registry.is_alive(r["pid"], r["create_time"])]
+                assert len(candidates) <= 1, "multiple workers for one owned Popen"
+                return candidates[0] if candidates else None
+            ready = wait_for(ready_worker, "oneshot worker ready with exact process identity")
+            wait_for(lambda: any(x["target"] == "memory_integrity" and x["pid"] == proc.pid and
+                                 x["status"] == "alive" for x in raw()), "oneshot handle acquired")
+            release = control_path(root, ready["control_id"])
+            release.parent.mkdir(parents=True, exist_ok=True)
+            release.write_text(json.dumps({"exit_code": code}), encoding="utf-8")
+            assert proc.wait(5) == code
+            wait_for(lambda: not registry.is_alive(ready["pid"], ready["create_time"]), "oneshot worker exited")
+            pm.poll()  # Drops Launcher's Popen handle; watchdog must retain its own handle.
+            wait_for(lambda: any(e["evidence"]["target_module"] == "memory_integrity" and
+                                 e["evidence"]["pid"] == proc.pid and e["evidence"]["registry_status"] == expected
+                                 and e["evidence"]["exit_code"] == code for e in events()), "oneshot classification")
+            assert registry.entry("memory_integrity")["restarts"] == []
+            observed_codes.append({"exit_code": code, "watchdog": expected,
+                                   "popen_pid": proc.pid, "worker_pid": ready["pid"],
+                                   "worker_create_time": str(ready["create_time"]),
+                                   "launcher": pm.states["memory_integrity"].status})
+        assert len(list((artifacts / "workers/memory_integrity").glob("*.json"))) == 4
+        passed("oneshot_completion_findings_scan_failure_crash", observations=observed_codes)
+
+        # Same session, registered identity mismatch must not mistake another PID for alive.
+        saved = registry.entry("input_signature")
+        with registry.edit() as d:
+            d["entries"]["input_signature"]["pid"] = os.getpid()
+            d["entries"]["input_signature"]["create_time"] = registry.create_time(os.getpid()) + 1
+        wait_for(lambda: any(x["target"] == "input_signature" and x["pid"] == os.getpid()
+                             and x["status"] == "exited" for x in raw()), "stale identity not alive")
+        with registry.edit() as d:
+            d["entries"]["input_signature"] = saved
+        passed("pid_identity_mismatch_not_reported_alive")
 
         registry.set_stopping()
-        kill_entry("stopping_probe")
-        wait_for(lambda: any(x["target"] == "stopping_probe" and x["status"] == "stopping" for x in raw()), "stopping observed")
-        assert len(list((artifacts / "workers/stopping_probe").glob("*.json"))) == 1
+        kill_entry("module_integrity")
+        wait_for(lambda: any(x["target"] == "module_integrity" and x["status"] == "stopping" for x in raw()), "stopping observed")
+        assert len(list((artifacts / "workers/module_integrity").glob("*.json"))) == 1
         result = pm.stop_all()
         assert "self_defense" in result["graceful"] and "self_defense" not in result.get("defaulted", [])
         assert not result["forced"] and not result["unsignaled"], result
@@ -308,6 +365,17 @@ def main():
             for entry in registry.load().get("entries", {}).values():
                 if entry.get("cwd") == str(root):
                     registry.kill(entry["pid"], entry["create_time"])
+            workers = [read_json(p) for p in (artifacts / "workers").rglob("*.json")]
+            still_alive = [w["pid"] for w in workers if w and registry.is_alive(w["pid"], w["create_time"])]
+            report["unexpected_live_workers_before_cleanup"] = still_alive
+            if still_alive:
+                report["status"] = "FAIL"
+                # Only ready records under our private temp root, checked against creation time.
+                for worker in workers:
+                    if worker and worker["pid"] in still_alive:
+                        registry.kill(worker["pid"], worker["create_time"])
+            report["test_workers_still_alive"] = [w["pid"] for w in workers
+                if w and registry.is_alive(w["pid"], w["create_time"])]
             sink.close()
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

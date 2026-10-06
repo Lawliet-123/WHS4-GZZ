@@ -7,6 +7,9 @@ import signal
 import sys
 import threading
 import time
+import uuid
+
+from fixture_protocol import control_path
 
 
 def main():
@@ -30,13 +33,31 @@ def main():
             signal.signal(sig, request)
         record = root / "artifacts" / "workers" / args.name / (str(os.getpid()) + ".json")
         record.parent.mkdir(parents=True, exist_ok=True)
+        control_id = uuid.uuid4().hex
         value = dict(pid=os.getpid(), create_time=registry.create_time(os.getpid()),
+                     parent_pid=os.getppid(), parent_create_time=registry.create_time(os.getppid()),
+                     control_id=control_id,
                      outbox=os.environ.get("GZZ_TELEMETRY_OUTBOX"), status="RUNNING")
         record.write_text(json.dumps(value), encoding="utf-8")
-        stop.wait(0.1 if args.once else 180)
+        code = 0
+        if args.once:
+            release = control_path(root, control_id)
+            deadline = time.monotonic() + 180
+            while not stop.wait(0.02):
+                if release.exists():
+                    try:
+                        code = json.loads(release.read_text())["exit_code"]
+                        break
+                    except (ValueError, KeyError):
+                        pass
+                if time.monotonic() > deadline:
+                    code = 3
+                    break
+        else:
+            stop.wait(180)
         value.update(status="STOPPED", reason=reason)
         record.write_text(json.dumps(value), encoding="utf-8")
-        return
+        return code
 
     # A disposable parent plays the Launcher owner, using the real registry unchanged.
     registry.begin_session("orphan_test")
@@ -58,4 +79,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

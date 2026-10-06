@@ -56,7 +56,7 @@ class SessionLog:
         manifest = {**clock, "module": "selfdefense", "run_id": self.run_id,
                     "label": "SYNTHETIC" if synthetic else "UNKNOWN", "kind": "module_health",
                     "cheat_intervals": [], "run_started_unix_ms": now,
-                    "collector_version": "0.2.1", "run_status": "RUNNING"}
+                    "collector_version": "0.3.0", "run_status": "RUNNING"}
         self.manifest = manifest
         self._write_manifest()
 
@@ -86,12 +86,16 @@ class SessionLog:
         self._append(self.directory / "raw" / "watchdog.jsonl", json.dumps(value, ensure_ascii=False).encode("utf-8"))
 
     def event(self, observation, timestamp):
-        failed = observation.status in {"gave_up", "orphaned", "error"}
+        failed = observation.status in {"gave_up", "orphaned", "error", "exited", "scan_failed", "crashed", "unknown", "unregistered"}
         return {"session_id": self.session_id, "player_id": self.player_id, "module": "selfdefense",
                 "timestamp_ms": timestamp, "raw_score": 0,
                 "evidence": {"kind": "module_health", "status": "ERROR" if failed else "NORMAL",
                              "registry_status": observation.status, "target_module": observation.target,
                              "scope": observation.scope, "pid": observation.pid, "error_code": observation.error_code,
+                             "mode": observation.mode, "restart_allowed": observation.restart_allowed,
+                             "exit_code": observation.exit_code, "create_time": observation.create_time,
+                             "health_scope": "process_liveness", "functional_health_checked": False,
+                             "collector_version": "0.3.0",
                              "run_id": self.run_id, "synthetic": self.synthetic, "timestamp_basis": self.basis},
                 "reasons": [observation.error_code or "Module " + observation.status]}
 

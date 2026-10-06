@@ -1,80 +1,302 @@
 {
-  "reference_commit": "acc9d2afe7d21e576b098f654c04643be8455b61",
-  "python": "3.14.6",
-  "launcher_sha256": {
-    "game_launcher.py": "87aa77272e49946dbc4bd653bc99f8db98e086d73084510aaace3382dc577ebb",
-    "main.py": "8de8e30e9c043197de84c63ba4207d15303fb45ae1c56af9cae7009b7bb0b209",
-    "modules.py": "230edddf784deaebd4eef93e9b54539beada8c05b8056d26c401065049926efa",
-    "process_manager.py": "abd6702f58748f2575c5b5bf963ee1541c789ad2c7e09cac68ec241344a4f534",
-    "README.md": "26c8fff1c8a9e7f11c560652b2d9b8d68b7bd458ef884468441e530f9ea4b200",
-    "registry.py": "ea16447f57ee97151d5f894d49a42967c78b608221b1255e98abf25737218d57",
-    "UE4SS.md": "3ff2476e1747d3205b833e8430b6b2450554c0d227e1a4d1949123be8b302da0",
-    "ue4ss_manifest.py": "96e4ff992bce793a83fd5e044cd28d8f67ea8b01278f534a5b65bc663598f6d7",
-    "ui.py": "89b0ff890edc23ce6980da0fb4c1e5cf16e9bb71983eaef6def05e2c85cdc0cb"
-  },
-  "checks": [
-    {
-      "name": "launcher_start_identity_clock_and_self_exclusion",
-      "status": "PASS"
-    },
-    {
-      "name": "watchdog_restart_launcher_adoption_and_local_receiver_retry",
-      "status": "PASS"
-    },
-    {
-      "name": "concurrent_restart_no_duplicate",
-      "status": "PASS",
-      "restart_owner": "launcher"
-    },
-    {
-      "name": "launcher_recovers_selfdefense_same_session_keeps_two_runs",
-      "status": "PASS"
-    },
-    {
-      "name": "real_five_restart_limit_and_backoff",
-      "status": "PASS"
-    },
-    {
-      "name": "oneshot_and_restart_disabled_not_restarted",
-      "status": "PASS"
-    },
-    {
-      "name": "stopping_suppresses_restart_and_ctrl_break_flushes",
-      "status": "PASS",
-      "shutdown": {
-        "graceful": [
-          "self_defense"
-        ],
-        "forced": [],
-        "unsignaled": []
-      }
-    },
-    {
-      "name": "operational_events_received_separately_from_cheat_scores",
-      "status": "PASS",
-      "stored_events": 6
-    },
-    {
-      "name": "launcher_death_reported_without_resurrection",
-      "status": "PASS"
-    },
-    {
-      "name": "downloaded_launcher_files_unchanged",
-      "status": "PASS"
-    }
-  ],
   "status": "PASS",
-  "central_server_tested": false,
-  "game_tested": false,
-  "workspace_path_omitted": true,
-  "packaged_unit_tests": [
-    {
-      "layout": "module-root ZIP",
-      "passed": 30
+  "reference_commit": "31dc8332a770f51f2f50856637dcf8a1a4cee102",
+  "environments": {
+    "base": {
+      "python": "3.14.6",
+      "is_venv": false
     },
-    {
-      "layout": "installed team layout",
-      "passed": 30
+    "venv": {
+      "python": "3.14.6",
+      "is_venv": true
     }
-  ]
+  },
+  "results": {
+    "base": {
+      "reference_commit": "31dc8332a770f51f2f50856637dcf8a1a4cee102",
+      "python": "3.14.6",
+      "is_venv": false,
+      "launcher_sha256": {
+        "game_launcher.py": "cad5c64c3989e1980ad88497054dd9ce208c5f117eb5dc61796fdc0cbc53ccf2",
+        "launcher_heartbeat.py": "fdc26b5d09e10807bb6bb4e00ca4fabee229c644ae4fd139de33d7f1f6e65e25",
+        "main.py": "f8831f57249a5509918970d1de00e1478ef647860963150be4d6521c11801bbc",
+        "modules.py": "b522458569a3cbcf6b07d6f5bb54d185d64eb111ebdcd480c4edb28835c1b3ce",
+        "process_manager.py": "dfd7f4022f5f7ec2cf0b9aa52e71f8ccff718e89db33efbf7dd311667cc88b5a",
+        "README.md": "c9f416cb0e23ffc88f0b9f287d2f025f9ace50f5976178ab16625d48a3cf59e8",
+        "registry.py": "fdc50c61d0abf931ee4cade8bea4ed430c26edb44ef0275d322ff6ebe2dcfb8d",
+        "UE4SS.md": "d5ceebe3f1ca5391e4e178ec8e5d387cf2f8e6e88f53793bf2a5c0094ebcecd1",
+        "ue4ss_manifest.py": "afe2ee0b54a4389dd35c0fe042a074a95a5d2683b50d9905371bdc6dd4e5f0e8",
+        "ui.py": "e86cd098991c1579ad0e92973cb3b0b520d6aea3b22236d7ba4f8e2d6bddd575"
+      },
+      "checks": [
+        {
+          "name": "launcher_start_identity_clock_and_self_exclusion",
+          "status": "PASS"
+        },
+        {
+          "name": "watchdog_restart_launcher_adoption_and_local_receiver_retry",
+          "status": "PASS"
+        },
+        {
+          "name": "concurrent_restart_no_duplicate",
+          "status": "PASS",
+          "restart_owner": "watchdog"
+        },
+        {
+          "name": "launcher_recovers_selfdefense_same_session_keeps_two_runs",
+          "status": "PASS"
+        },
+        {
+          "name": "real_five_restart_limit_and_backoff",
+          "status": "PASS"
+        },
+        {
+          "name": "restart_disabled_is_monitored_and_not_restarted",
+          "status": "PASS"
+        },
+        {
+          "name": "oneshot_completion_findings_scan_failure_crash",
+          "status": "PASS",
+          "observations": [
+            {
+              "exit_code": 0,
+              "watchdog": "completed",
+              "popen_pid": 16796,
+              "worker_pid": 16796,
+              "worker_create_time": "134357158702022981",
+              "launcher": "DONE"
+            },
+            {
+              "exit_code": 1,
+              "watchdog": "completed",
+              "popen_pid": 34548,
+              "worker_pid": 34548,
+              "worker_create_time": "134357159014996244",
+              "launcher": "DONE"
+            },
+            {
+              "exit_code": 2,
+              "watchdog": "scan_failed",
+              "popen_pid": 7040,
+              "worker_pid": 7040,
+              "worker_create_time": "134357159018380473",
+              "launcher": "WARN"
+            },
+            {
+              "exit_code": 3,
+              "watchdog": "crashed",
+              "popen_pid": 23764,
+              "worker_pid": 23764,
+              "worker_create_time": "134357159022245818",
+              "launcher": "WARN"
+            }
+          ]
+        },
+        {
+          "name": "pid_identity_mismatch_not_reported_alive",
+          "status": "PASS"
+        },
+        {
+          "name": "stopping_suppresses_restart_and_ctrl_break_flushes",
+          "status": "PASS",
+          "shutdown": {
+            "graceful": [
+              "self_defense"
+            ],
+            "forced": [],
+            "unsignaled": []
+          }
+        },
+        {
+          "name": "operational_events_received_separately_from_cheat_scores",
+          "status": "PASS",
+          "stored_events": 38
+        },
+        {
+          "name": "launcher_death_reported_without_resurrection",
+          "status": "PASS"
+        },
+        {
+          "name": "downloaded_launcher_files_unchanged",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "central_server_tested": false,
+      "game_tested": false,
+      "watchdog_sha256": {
+        "demo.py": "9206e176ad619c859f209ad7083206959b8310d7182b3d59d74a83e76d649ec6",
+        "launcher_adapter.py": "01ef8872bde87bd3a692e2152a8438e65eee1e79c8cc70d687d151e7fc2236cb",
+        "main.py": "eb92d5158eaec0c0ef3feff8240cbaf375b7b37dad89ee3a669379537f7e425a",
+        "monitor.py": "533e51fb831b29f02f3bbb125e89dbe6665730556365c11b26a41ec32f50ea0a",
+        "process_probe.py": "dc039bdd114b38091580f89cc2e92323ec09434d5d7d1eb57b449beaa0e000dc",
+        "reporting.py": "0bc6a4de5461deef314fda4d10b617df6c7828b91930a268cd53cbbaea8c1049",
+        "__init__.py": "b5e50343afd79be4b7ce2b5c8e13c8d075b0b53e52cd6e3310b5cdeaf8d2dce7"
+      },
+      "shared_sha256": {
+        "client.py": "b430180283aa6aa263849fb7b7bd60b933c3322e20bfa73a228250f9bd300aa7",
+        "config.py": "392550539921d63a1513826779cbc0cc43fd4e7a1aa133e0ed607d80987640b5",
+        "errors.py": "33185c99a113dab333524b9bcc13acf81116488e9131d2fa4611e4a494357434",
+        "logger.py": "b45db40d99145d1bdfbb59fbf6344f29db7efeb0c1b8ef1b8d082eb220299cca",
+        "outbox.py": "c068426bef99f2afe0e2b59e3bc4fff4c9b956395f7803611996a5bae5bba151",
+        "schema.py": "c313c781bee24fa6d5c716cca1f1447a18bf7fba3a9eb6f9e7b99688f77d9750",
+        "storage.py": "15e5b95c1c572cfcb96070e584ccbe1f1f22ac88c3a4d06401bf702407157cdb",
+        "transport.py": "b77dd35d4fd9a908610b0e17bebaf4fd92d3ca0790d40448548248b8189fd099",
+        "_locking.py": "bd64bc6ee4161b7cdf732fb410de731ed89d845e4953a4f25ebb45316f3b2765",
+        "_sqlite.py": "46131fe1f8f7cabd168e6c9e1c76c3cbcb8c3e151cc31d5aba7d227955b734de",
+        "__init__.py": "ac03200e693f0336eb24f95fb26b40a137e8a4470a425890dc4630d6cdf01a31"
+      },
+      "harness_sha256": {
+        "launcher_integration.py": "b6278a54a6af9e9fa2efc85bc16a0feb7716045b67bd286207c52682be6ef884",
+        "launcher_fixture.py": "fc8b336a8d228875abd33dc02d57fbe6dfd98300fadf995d7c18827d4c05edb8",
+        "fixture_protocol.py": "3d7537e83a4b9b2d18457a93a19b25d883352844ee4fd9cdd80592748603bbbc"
+      },
+      "unexpected_live_workers_before_cleanup": [],
+      "test_workers_still_alive": [],
+      "local_paths_omitted": true
+    },
+    "venv": {
+      "reference_commit": "31dc8332a770f51f2f50856637dcf8a1a4cee102",
+      "python": "3.14.6",
+      "is_venv": true,
+      "launcher_sha256": {
+        "game_launcher.py": "cad5c64c3989e1980ad88497054dd9ce208c5f117eb5dc61796fdc0cbc53ccf2",
+        "launcher_heartbeat.py": "fdc26b5d09e10807bb6bb4e00ca4fabee229c644ae4fd139de33d7f1f6e65e25",
+        "main.py": "f8831f57249a5509918970d1de00e1478ef647860963150be4d6521c11801bbc",
+        "modules.py": "b522458569a3cbcf6b07d6f5bb54d185d64eb111ebdcd480c4edb28835c1b3ce",
+        "process_manager.py": "dfd7f4022f5f7ec2cf0b9aa52e71f8ccff718e89db33efbf7dd311667cc88b5a",
+        "README.md": "c9f416cb0e23ffc88f0b9f287d2f025f9ace50f5976178ab16625d48a3cf59e8",
+        "registry.py": "fdc50c61d0abf931ee4cade8bea4ed430c26edb44ef0275d322ff6ebe2dcfb8d",
+        "UE4SS.md": "d5ceebe3f1ca5391e4e178ec8e5d387cf2f8e6e88f53793bf2a5c0094ebcecd1",
+        "ue4ss_manifest.py": "afe2ee0b54a4389dd35c0fe042a074a95a5d2683b50d9905371bdc6dd4e5f0e8",
+        "ui.py": "e86cd098991c1579ad0e92973cb3b0b520d6aea3b22236d7ba4f8e2d6bddd575"
+      },
+      "checks": [
+        {
+          "name": "launcher_start_identity_clock_and_self_exclusion",
+          "status": "PASS"
+        },
+        {
+          "name": "watchdog_restart_launcher_adoption_and_local_receiver_retry",
+          "status": "PASS"
+        },
+        {
+          "name": "concurrent_restart_no_duplicate",
+          "status": "PASS",
+          "restart_owner": "watchdog"
+        },
+        {
+          "name": "launcher_recovers_selfdefense_same_session_keeps_two_runs",
+          "status": "PASS"
+        },
+        {
+          "name": "real_five_restart_limit_and_backoff",
+          "status": "PASS"
+        },
+        {
+          "name": "restart_disabled_is_monitored_and_not_restarted",
+          "status": "PASS"
+        },
+        {
+          "name": "oneshot_completion_findings_scan_failure_crash",
+          "status": "PASS",
+          "observations": [
+            {
+              "exit_code": 0,
+              "watchdog": "completed",
+              "popen_pid": 15340,
+              "worker_pid": 28140,
+              "worker_create_time": "134357159154991451",
+              "launcher": "DONE"
+            },
+            {
+              "exit_code": 1,
+              "watchdog": "completed",
+              "popen_pid": 1076,
+              "worker_pid": 26284,
+              "worker_create_time": "134357159467421312",
+              "launcher": "DONE"
+            },
+            {
+              "exit_code": 2,
+              "watchdog": "scan_failed",
+              "popen_pid": 30484,
+              "worker_pid": 2904,
+              "worker_create_time": "134357159470687203",
+              "launcher": "WARN"
+            },
+            {
+              "exit_code": 3,
+              "watchdog": "crashed",
+              "popen_pid": 16648,
+              "worker_pid": 24468,
+              "worker_create_time": "134357159474476932",
+              "launcher": "WARN"
+            }
+          ]
+        },
+        {
+          "name": "pid_identity_mismatch_not_reported_alive",
+          "status": "PASS"
+        },
+        {
+          "name": "stopping_suppresses_restart_and_ctrl_break_flushes",
+          "status": "PASS",
+          "shutdown": {
+            "graceful": [
+              "self_defense"
+            ],
+            "forced": [],
+            "unsignaled": []
+          }
+        },
+        {
+          "name": "operational_events_received_separately_from_cheat_scores",
+          "status": "PASS",
+          "stored_events": 38
+        },
+        {
+          "name": "launcher_death_reported_without_resurrection",
+          "status": "PASS"
+        },
+        {
+          "name": "downloaded_launcher_files_unchanged",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "central_server_tested": false,
+      "game_tested": false,
+      "watchdog_sha256": {
+        "demo.py": "9206e176ad619c859f209ad7083206959b8310d7182b3d59d74a83e76d649ec6",
+        "launcher_adapter.py": "01ef8872bde87bd3a692e2152a8438e65eee1e79c8cc70d687d151e7fc2236cb",
+        "main.py": "eb92d5158eaec0c0ef3feff8240cbaf375b7b37dad89ee3a669379537f7e425a",
+        "monitor.py": "533e51fb831b29f02f3bbb125e89dbe6665730556365c11b26a41ec32f50ea0a",
+        "process_probe.py": "dc039bdd114b38091580f89cc2e92323ec09434d5d7d1eb57b449beaa0e000dc",
+        "reporting.py": "0bc6a4de5461deef314fda4d10b617df6c7828b91930a268cd53cbbaea8c1049",
+        "__init__.py": "b5e50343afd79be4b7ce2b5c8e13c8d075b0b53e52cd6e3310b5cdeaf8d2dce7"
+      },
+      "shared_sha256": {
+        "client.py": "b430180283aa6aa263849fb7b7bd60b933c3322e20bfa73a228250f9bd300aa7",
+        "config.py": "392550539921d63a1513826779cbc0cc43fd4e7a1aa133e0ed607d80987640b5",
+        "errors.py": "33185c99a113dab333524b9bcc13acf81116488e9131d2fa4611e4a494357434",
+        "logger.py": "b45db40d99145d1bdfbb59fbf6344f29db7efeb0c1b8ef1b8d082eb220299cca",
+        "outbox.py": "c068426bef99f2afe0e2b59e3bc4fff4c9b956395f7803611996a5bae5bba151",
+        "schema.py": "c313c781bee24fa6d5c716cca1f1447a18bf7fba3a9eb6f9e7b99688f77d9750",
+        "storage.py": "15e5b95c1c572cfcb96070e584ccbe1f1f22ac88c3a4d06401bf702407157cdb",
+        "transport.py": "b77dd35d4fd9a908610b0e17bebaf4fd92d3ca0790d40448548248b8189fd099",
+        "_locking.py": "bd64bc6ee4161b7cdf732fb410de731ed89d845e4953a4f25ebb45316f3b2765",
+        "_sqlite.py": "46131fe1f8f7cabd168e6c9e1c76c3cbcb8c3e151cc31d5aba7d227955b734de",
+        "__init__.py": "ac03200e693f0336eb24f95fb26b40a137e8a4470a425890dc4630d6cdf01a31"
+      },
+      "harness_sha256": {
+        "launcher_integration.py": "b6278a54a6af9e9fa2efc85bc16a0feb7716045b67bd286207c52682be6ef884",
+        "launcher_fixture.py": "fc8b336a8d228875abd33dc02d57fbe6dfd98300fadf995d7c18827d4c05edb8",
+        "fixture_protocol.py": "3d7537e83a4b9b2d18457a93a19b25d883352844ee4fd9cdd80592748603bbbc"
+      },
+      "unexpected_live_workers_before_cleanup": [],
+      "test_workers_still_alive": [],
+      "local_paths_omitted": true
+    }
+  }
 }

@@ -79,7 +79,7 @@ def main(argv=None):
     except Exception as exc:
         diagnostic(f"SESSION_START_FAILED {type(exc).__name__}; check IDs, clock and writable output path")
         return 2
-    diagnostic(f"version=0.2.1 synthetic={args.demo} logs={log.directory}")
+    diagnostic(f"version=0.3.0 synthetic={args.demo} logs={log.directory}")
     if log.basis == "local_session_start":
         diagnostic("local session clock; integration must pass common --t0 or --session-start-unix-ms on FIRST run")
     reporter = Reporter(log, args.telemetry)
@@ -112,7 +112,12 @@ def main(argv=None):
             if remaining is not None and remaining <= 0:
                 stop_reason = "DURATION_ELAPSED"
                 break
-            stop.wait(args.interval if remaining is None else min(args.interval, remaining))
+            wake_at = time.monotonic() + (args.interval if remaining is None else min(args.interval, remaining))
+            while not stop.is_set():
+                wait = wake_at - time.monotonic()
+                if wait <= 0:
+                    break
+                stop.wait(min(0.2, wait))
     except KeyboardInterrupt:
         stop_reason = "KEYBOARD_INTERRUPT"
     except Exception as exc:
@@ -120,6 +125,11 @@ def main(argv=None):
         exit_code = 3
         stop_reason = "WATCHDOG_FAILED"
     finally:
+        try:
+            registry.close()
+        except Exception as exc:
+            diagnostic(f"PROBE_CLOSE_FAILED {type(exc).__name__}")
+            exit_code = 3
         try:
             reporter.close()
             log.finish(exit_code, stop_reason)
