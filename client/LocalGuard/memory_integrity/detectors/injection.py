@@ -141,6 +141,7 @@ def scan(baseline=None):
     ]
 
     failed = []
+    skipped = []
     ran = 0
     for title, fn in checks:
         try:
@@ -158,6 +159,8 @@ def scan(baseline=None):
         if title == ".text 해시" and baseline is None:
             # 기준 해시가 없으면 비교를 한 것이 아니다.
             r.meta["text_hash"] = "기준 해시 미지정 — 비교 안 함"
+            skipped.append(".text_hash")
+            ran -= 1
             continue
 
         # 제외한 것(해시가 맞는 우리 UE4SS)은 점수와 상관없이 근거에 남긴다.
@@ -173,6 +176,10 @@ def scan(baseline=None):
 
     if failed:
         r.meta["failed_checks"] = failed
+    if skipped:
+        r.meta["skipped_checks"] = skipped
+    r.meta["coverage_complete"] = not failed and not skipped
+    r.meta["measurement_valid"] = ran > 0
     r.meta["checks_run"] = ran
     r.meta["elapsed_ms"] = int((time.time() - t0) * 1000)
 
