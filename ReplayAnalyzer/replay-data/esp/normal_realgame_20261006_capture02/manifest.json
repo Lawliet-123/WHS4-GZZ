@@ -1,0 +1,43 @@
+{
+  "cheat_end_ms": null,
+  "cheat_start_ms": null,
+  "cheat_type": null,
+  "event_count": 63,
+  "label": "NORMAL",
+  "player_id": "player_042",
+  "session_id": "normal_realgame_20261006_capture02",
+  "source": {
+    "events_sha256": "16273a539603ff25bfe472116ae0eb7fbede9a5842a861f0bd691bbb9fe13377",
+    "kind": "existing_esp_capture",
+    "manifest_sha256": "0a0922a5e5b61868846c9bfa9ca5dcc3bd9427fd4862195381544f93d0518443",
+    "notes": [
+      "Existing captured results; this export is not a new test run.",
+      "Scores and timestamps were not recomputed with the current detector.",
+      "ON/OFF timing is supplied test metadata; missing timing remains null.",
+      "Evidence is privacy-filtered; original raw sensor logs are omitted.",
+      "NORMAL labels remain NORMAL even when captured scores cross a threshold."
+    ],
+    "producer": {
+      "name": "meccha-esp-localguard",
+      "revision": null,
+      "version": "0.2.0"
+    },
+    "realgame_validation": {
+      "first_read_ready_ms": null,
+      "fresh_read_heartbeat_count": 0,
+      "handle_open_observation_bounds_ms": null,
+      "kind": "no_esp_spawned",
+      "launch_precedes_on": false,
+      "maximum_heartbeat_gap_seconds": 0.0,
+      "off_basis": null,
+      "off_observation_poll_seconds": 0.1,
+      "on_basis": null,
+      "remote_player_count_at_first_ready": null,
+      "remote_rendering_claimed": false,
+      "source_requested_access": null,
+      "source_sha256": null
+    },
+    "schema_version": "meccha.telemetry-session.v1",
+    "session_status": "completed"
+  }
+}
