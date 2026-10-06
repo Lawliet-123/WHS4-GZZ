@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { aggregateLauncherState } from "./App";
 import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 import { dashboardPageHref, type DashboardPage } from "./navigation";
+import type { DashboardEvent } from "./types";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -21,6 +22,22 @@ function visitPage(page: DashboardPage) {
 function renderPage(page: DashboardPage) {
   window.history.replaceState(null, "", dashboardPageHref(page));
   return render(<App />);
+}
+
+function withDemoEvent(sequence: number, changes: Partial<DashboardEvent>, verify: () => void) {
+  const item = demoEvents.items.find((event) => event.sequence === sequence)!;
+  const saved = { ...item };
+  try {
+    Object.assign(item, changes);
+    verify();
+  } finally {
+    cleanup();
+    Object.assign(item, saved);
+  }
+}
+
+function eventRow(sequence: number): HTMLElement {
+  return screen.getByRole("button", { name: new RegExp(`이벤트 #${sequence} 상세 보기$`) }).closest("tr")!;
 }
 
 function showAdvancedFilters() {
@@ -305,7 +322,7 @@ describe("dashboard interactions", () => {
     const rows = within(recent).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(8);
     for (const row of rows) {
-      const sequence = Number(row.querySelector("td small")?.textContent?.replace("#", ""));
+      const sequence = Number(row.querySelector("td > small.mono")?.textContent?.replace("#", ""));
       expect(demoEvents.items.find((event) => event.sequence === sequence)?.event_kind).toBe("detection");
     }
     expect(within(recent).queryByText("운영")).toBeNull();
@@ -331,28 +348,165 @@ describe("dashboard interactions", () => {
     expect(rows[0]?.textContent).toContain("ESP");
   });
 
-  it("shows the SOC table fields with unprovided severity and the current pair-specific verdict", () => {
+  it("shows event-specific states and hides Severity when no event supplies one", () => {
     renderPage("events");
     const table = screen.getByRole("table", { name: "전체 이벤트" });
-    for (const name of ["경과 시간", "플레이어 / 클라이언트", "탐지기", "탐지 유형 / 근거", "Raw 점수", "Severity", "대상 판정", "상세"]) {
+    for (const name of ["시간", "플레이어 / 클라이언트", "탐지기", "탐지 유형 / 근거", "Raw 점수", "이벤트 상태", "상세"]) {
       expect(within(table).getByRole("columnheader", { name })).toBeTruthy();
     }
+    expect(within(table).queryByRole("columnheader", { name: "Severity" })).toBeNull();
+    expect(within(table).queryByRole("columnheader", { name: "대상 판정" })).toBeNull();
     for (const row of within(table).getAllByRole("row").slice(1)) {
       const cells = within(row).getAllByRole("cell");
-      const sequence = Number(cells[0]?.querySelector("small")?.textContent?.replace("#", ""));
+      const sequence = Number(cells[0]?.querySelector("small.mono")?.textContent?.replace("#", ""));
       const source = demoEvents.items.find((event) => event.sequence === sequence)!;
-      const verdict = demoOverview.assessments.find((assessment) => assessment.session_id === source.session_id && assessment.player_id === source.player_id)?.status ?? "UNKNOWN";
       expect(cells[4]?.textContent).toBe(String(source.raw_score));
-      expect(cells[5]?.textContent).toBe("미제공");
-      expect(cells[6]?.textContent).toBe(verdict);
+      expect(cells[5]?.textContent).toBe(typeof source.evidence.status === "string" ? source.evidence.status : "미제공");
     }
+    expect(within(table).queryByText("SUSPICIOUS")).toBeNull();
+  });
+
+  it("keeps a raw-zero NORMAL event separate from the same player's SUSPICIOUS assessment", () => {
+    const assessment = demoOverview.assessments.find((item) => item.session_id === "demo_esp_001" && item.player_id === "player_042")!;
+    expect(assessment.status).toBe("SUSPICIOUS");
+    withDemoEvent(4, { raw_score: 0, evidence: { synthetic: true, submodule: "module_integrity", status: "NORMAL" } }, () => {
+      renderPage("events");
+      const row = within(eventRow(4));
+      expect(row.getByText("NORMAL")).toBeTruthy();
+      expect(row.queryByText("SUSPICIOUS")).toBeNull();
+      expect(row.getAllByRole("cell")[4]!.textContent).toBe("0");
+      fireEvent.click(row.getByRole("button"));
+      const drawer = screen.getByRole("dialog", { name: "이벤트 상세" });
+      expect(within(drawer).getByRole("heading", { name: "현재 플레이어 판정" })).toBeTruthy();
+      expect(within(drawer).getByText("SUSPICIOUS")).toBeTruthy();
+    });
+    withDemoEvent(4, { raw_score: 0, evidence: { synthetic: true, submodule: "module_integrity" } }, () => {
+      renderPage("events");
+      const row = within(eventRow(4));
+      expect(row.getByText("미제공")).toBeTruthy();
+      expect(row.queryByText("NORMAL")).toBeNull();
+      expect(row.queryByText("SUSPICIOUS")).toBeNull();
+    });
+  });
+
+  it("shows an explicit session elapsed time and observation clock without inventing legacy clocks", () => {
+    withDemoEvent(4, { timestamp_ms: 84_000, time_basis: "session_relative", observed_at_utc: "2026-10-07T01:02:03Z", received_at_utc: "2026-10-07T01:02:04Z" }, () => {
+      renderPage("events");
+      const cell = within(eventRow(4)).getAllByRole("cell")[0]!;
+      expect(cell.textContent).toContain("T+01:24");
+      expect(cell.textContent).toContain("관측 2026-10-07 10:02:03 KST");
+      expect(cell.querySelector("small.mono")?.textContent).toBe("#4");
+    });
+    withDemoEvent(4, { timestamp_ms: 84_000, time_basis: "unknown", observed_at_utc: undefined, received_at_utc: undefined }, () => {
+      renderPage("events");
+      const cell = within(eventRow(4)).getAllByRole("cell")[0]!;
+      expect(cell.textContent).toContain("timestamp 84000 ms");
+      expect(cell.textContent).toContain("실제 시각 미제공");
+      expect(cell.textContent).not.toContain("T+");
+      expect(cell.textContent).not.toContain("KST");
+    });
+  });
+
+  it("exposes explicit mixed Severity and falls back when a scoped dataset no longer supplies it", () => {
+    const high = demoEvents.items.find((event) => event.sequence === 4)!;
+    const critical = demoEvents.items.find((event) => event.sequence === 3)!;
+    const savedHigh = high.evidence;
+    const savedCritical = critical.evidence;
+    try {
+      high.evidence = { ...savedHigh, severity: "High" };
+      critical.evidence = { ...savedCritical, severity: "Critical" };
+      renderPage("events");
+      const table = screen.getByRole("table", { name: "전체 이벤트" });
+      expect(within(table).getByRole("columnheader", { name: "Severity" })).toBeTruthy();
+      expect(within(eventRow(4)).getByText("High")).toBeTruthy();
+      expect(within(eventRow(3)).getByText("Critical")).toBeTruthy();
+      expect(eventRow(6).querySelector(".severity-badge")?.textContent).toBe("미제공");
+      fireEvent.change(screen.getByLabelText("전체 이벤트 Severity"), { target: { value: "High" } });
+      expect(within(table).getAllByRole("row").slice(1)).toHaveLength(1);
+      fireEvent.change(screen.getByLabelText("전체 이벤트 정렬"), { target: { value: "severity:desc" } });
+      showAdvancedFilters();
+      fireEvent.change(screen.getByLabelText("모듈"), { target: { value: "esp" } });
+      const scoped = screen.getByRole("table", { name: "전체 이벤트" });
+      expect(within(scoped).queryByRole("columnheader", { name: "Severity" })).toBeNull();
+      expect(screen.queryByLabelText("전체 이벤트 Severity")).toBeNull();
+      expect((screen.getByLabelText("전체 이벤트 정렬") as HTMLSelectElement).value).toBe("sequence:desc");
+      expect(eventRow(6)).toBeTruthy();
+      expect(screen.queryByText("조건에 맞는 이벤트 없음")).toBeNull();
+    } finally {
+      cleanup();
+      high.evidence = savedHigh;
+      critical.evidence = savedCritical;
+    }
+  });
+
+  it("shows verdict policy metrics instead of unprovided player score and confidence", () => {
+    renderPage("players");
+    fireEvent.click(screen.getByRole("button", { name: /player_042.*demo_esp_001/ }));
+    const verdict = within(document.querySelector(".verdict-view") as HTMLElement);
+    for (const label of ["독립 위험 근거", "활성 모듈", "중복 보정", "평가 상태"]) expect(verdict.getAllByText(label).length).toBeGreaterThan(0);
+    for (const label of ["점수", "신뢰도", "최종 점수", "Score", "Confidence"]) expect(verdict.queryByText(label)).toBeNull();
+    expect(document.querySelector(".verdict-metrics")?.textContent).not.toContain("미제공");
+    expect(verdict.getByRole("region", { name: "플레이어 판정 근거" })).toBeTruthy();
+  });
+
+  it("opens the affected Launcher modules and routes their exact subject to player detail", () => {
+    const status = demoOverview.launcher_statuses.find((item) => item.session_id === "demo_esp_001" && item.player_id === "player_042")!;
+    const savedSource = status.source;
+    const savedState = status.state;
+    try {
+      status.state = "degraded";
+      status.source = { ...savedSource!, components: savedSource!.components.map((component) => {
+        const raw = component.id === "esp" ? "FAILED" : component.id === "kernel_watcher" ? "WARN" : component.id === "hide_anywhere" ? "SKIPPED" : null;
+        if (!raw) return component;
+        const state = raw === "FAILED" ? "failed" as const : raw === "WARN" ? "degraded" as const : "stopped" as const;
+        return { ...component, state, reported_status: state, required: raw !== "SKIPPED", details: { ...component.details, launcher_status: raw } };
+      }) };
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: /Launcher .*문제 대상 확인/ }));
+      expect(window.location.hash).toBe("#/system");
+      expect(screen.getByRole("button", { name: "점검 대상만" }).getAttribute("aria-pressed")).toBe("true");
+      const issues = screen.getByRole("region", { name: "Launcher 점검 대상" });
+      const rows = within(issues).getAllByRole("row").slice(1);
+      const affected = rows.filter((row) => row.textContent?.includes("demo_esp_001") && row.textContent?.includes("player_042"));
+      expect(affected).toHaveLength(3);
+      for (const raw of ["FAILED", "WARN", "SKIPPED"]) expect(affected.some((row) => row.textContent?.includes(raw))).toBe(true);
+      expect(affected.every((row) => row.textContent?.includes(savedSource!.client_id))).toBe(true);
+      fireEvent.click(within(issues).getAllByRole("button", { name: "demo_esp_001 player_042 상세 보기" })[0]!);
+      expect(window.location.hash).toBe("#/players");
+      expect((screen.getByLabelText("세션") as HTMLSelectElement).value).toBe("demo_esp_001");
+      expect((screen.getByLabelText("플레이어") as HTMLSelectElement).value).toBe("player_042");
+      expect(screen.getByRole("heading", { name: "player_042" })).toBeTruthy();
+    } finally {
+      cleanup();
+      status.source = savedSource;
+      status.state = savedState;
+    }
+  });
+
+  it("clears earlier subject and query filters when opening detector observations from overview", () => {
+    renderPage("events");
+    showAdvancedFilters();
+    fireEvent.change(screen.getByLabelText("세션"), { target: { value: "demo_noclip_001" } });
+    fireEvent.change(screen.getByLabelText("플레이어"), { target: { value: "player_013" } });
+    fireEvent.change(screen.getByLabelText("검색"), { target: { value: "Collision" } });
+    fireEvent.change(screen.getByLabelText("판정"), { target: { value: "SUSPICIOUS" } });
+    visitPage("overview");
+    fireEvent.click(screen.getByRole("button", { name: "ESP 관측 1건 보기" }));
+    expect(window.location.hash).toBe("#/events");
+    expect((screen.getByLabelText("세션") as HTMLSelectElement).value).toBe("ALL");
+    expect((screen.getByLabelText("플레이어") as HTMLSelectElement).value).toBe("ALL");
+    expect((screen.getByLabelText("검색") as HTMLInputElement).value).toBe("");
+    showAdvancedFilters();
+    expect((screen.getByLabelText("모듈") as HTMLSelectElement).value).toBe("esp");
+    expect((screen.getByLabelText("판정") as HTMLSelectElement).value).toBe("ALL");
+    expect(eventRow(6)).toBeTruthy();
   });
 
   it("sorts the Event table and filters only explicitly supplied Severity", () => {
     renderPage("events");
     const sort = screen.getByLabelText("전체 이벤트 정렬");
     const sequences = () => within(screen.getByRole("table", { name: "전체 이벤트" })).getAllByRole("row").slice(1)
-      .map((row) => Number(row.querySelector("td small")?.textContent?.replace("#", "")));
+      .map((row) => Number(row.querySelector("td > small.mono")?.textContent?.replace("#", "")));
     expect(sequences()[0]).toBe(Math.max(...demoEvents.items.map((event) => event.sequence)));
     fireEvent.change(sort, { target: { value: "sequence:asc" } });
     expect(sequences()[0]).toBe(Math.min(...demoEvents.items.map((event) => event.sequence)));
@@ -360,20 +514,19 @@ describe("dashboard interactions", () => {
     const rawScores = [...document.querySelectorAll(".detection-table .raw-chip")].map((cell) => Number(cell.textContent));
     expect(rawScores[0]).toBe(Math.max(...demoEvents.items.map((event) => event.raw_score)));
     expect(rawScores).toEqual([...rawScores].sort((a, b) => b - a));
-    fireEvent.change(screen.getByLabelText("전체 이벤트 Severity"), { target: { value: "High" } });
-    expect(screen.getByText("조건에 맞는 이벤트 없음")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("전체 이벤트 Severity"), { target: { value: "unknown" } });
+    expect(screen.queryByLabelText("전체 이벤트 Severity")).toBeNull();
     expect(sequences().length).toBeGreaterThan(0);
-    expect(document.querySelector(".detection-table .severity-badge")?.textContent).toBe("미제공");
+    expect(document.querySelector(".detection-table .severity-badge")).toBeNull();
   });
 
   it("connects Event investigation details to the authoritative player verdict without inventing score or confidence", () => {
     renderPage("events");
     fireEvent.click(screen.getByRole("button", { name: /player_042 .* 이벤트 #5 상세 보기/ }));
     const detail = screen.getByRole("dialog", { name: "이벤트 상세" });
-    expect(within(detail).getByRole("heading", { name: "대상 판정" })).toBeTruthy();
+    expect(within(detail).getByRole("heading", { name: "현재 플레이어 판정" })).toBeTruthy();
     expect(within(detail).getByText("SUSPICIOUS")).toBeTruthy();
-    expect(within(detail).getByText("미제공 / 미제공")).toBeTruthy();
+    expect(within(detail).queryByText("미제공 / 미제공")).toBeNull();
+    expect(within(detail).queryByText(/점수 \/ 신뢰도/)).toBeNull();
     expect(within(detail).getByText("CALIBRATED_ACTIVE_EVIDENCE, ASSESSMENT_INCOMPLETE")).toBeTruthy();
     fireEvent.click(within(detail).getByRole("button", { name: "플레이어 판정 확인" }));
     expect(window.location.hash).toBe("#/players");
@@ -411,7 +564,10 @@ describe("dashboard interactions", () => {
       const verdict = within(document.querySelector(".verdict-view") as HTMLElement);
       expect(verdict.getByText("INCONCLUSIVE")).toBeTruthy();
       expect(verdict.getByText("미완료")).toBeTruthy();
-      expect(verdict.getAllByText("미제공")).toHaveLength(2);
+      expect(verdict.queryByText("점수")).toBeNull();
+      expect(verdict.queryByText("신뢰도")).toBeNull();
+      expect(verdict.getByText("독립 위험 근거")).toBeTruthy();
+      expect(verdict.getByText("중복 보정")).toBeTruthy();
       expect(verdict.queryByText("NO_ACTIVE_EVIDENCE")).toBeNull();
       expect(verdict.queryByText("SUSPICIOUS")).toBeNull();
     } finally {
@@ -445,17 +601,45 @@ describe("dashboard interactions", () => {
     renderPage("players");
     fireEvent.click(screen.getByRole("button", { name: /player_042.*demo_esp_001/ }));
     expect(screen.getByRole("tab", { name: "판정" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getAllByText("미제공").length).toBeGreaterThanOrEqual(2);
-    expect(document.querySelectorAll(".module-state-card")).toHaveLength(0);
+    expect(screen.queryByText("신뢰도")).toBeNull();
+    expect(document.querySelectorAll(".module-signals-table tbody tr")).toHaveLength(0);
     fireEvent.click(screen.getByRole("tab", { name: "모듈 신호" }));
     expect(screen.getByRole("tab", { name: "모듈 신호" }).getAttribute("aria-selected")).toBe("true");
-    expect(document.querySelectorAll(".module-state-card").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".module-signals-table tbody tr").length).toBeGreaterThan(0);
     expect(screen.queryByText("근거 단위")).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "사건 이력" }));
+    fireEvent.click(screen.getByRole("tab", { name: "GodMode 이력" }));
     expect(screen.getByRole("heading", { name: "GodMode 사건 이력" })).toBeTruthy();
-    expect(document.querySelectorAll(".module-state-card")).toHaveLength(0);
+    expect(document.querySelectorAll(".module-signals-table tbody tr")).toHaveLength(0);
     fireEvent.click(screen.getByRole("tab", { name: "판정" }));
     expect(screen.getByRole("heading", { name: "player_042" })).toBeTruthy();
+  });
+
+  it("sorts module signals by latest or loaded-history highest raw without replacing the current signal", () => {
+    const template = demoEvents.items.find((event) => event.sequence === 6)!;
+    const oldHigh: DashboardEvent = {
+      ...template, id: "00000000-0000-4000-8000-000000009990", sequence: 0,
+      raw_score: 20, timestamp_ms: 50_000, evidence: { synthetic: true }, reasons: ["OLDER HIGH RAW OBSERVATION"],
+    };
+    demoEvents.items.push(oldHigh);
+    try {
+      renderPage("players");
+      fireEvent.click(screen.getByRole("button", { name: /player_042.*demo_esp_001/ }));
+      fireEvent.click(screen.getByRole("tab", { name: "모듈 신호" }));
+      const rows = () => [...document.querySelectorAll<HTMLTableRowElement>(".module-signals-table tbody tr")];
+      expect(rows()[0]!.textContent).toContain("외부 프로세스");
+      expect(within(rows()[0]!).getAllByRole("cell")[2]!.textContent).toBe("7");
+      fireEvent.change(screen.getByLabelText("모듈 신호 정렬"), { target: { value: "highest" } });
+      expect(rows()[0]!.textContent).toContain("ESP 접근 감시");
+      expect(within(rows()[0]!).getAllByRole("cell")[2]!.textContent).toBe("1");
+      expect(rows()[0]!.textContent).toContain("raw 20");
+      expect(rows()[0]!.textContent).not.toContain("OLDER HIGH RAW OBSERVATION");
+      fireEvent.click(within(rows()[0]!).getByRole("button", { name: "ESP 접근 감시 이력 최고 관측 상세" }));
+      const detail = screen.getByRole("dialog", { name: "이벤트 상세" });
+      expect(within(detail).getByText("OLDER HIGH RAW OBSERVATION")).toBeTruthy();
+    } finally {
+      cleanup();
+      demoEvents.items.splice(demoEvents.items.indexOf(oldHigh), 1);
+    }
   });
 
   it("moves selection and keyboard focus together through the player detail tabs", () => {
@@ -474,9 +658,9 @@ describe("dashboard interactions", () => {
     fireEvent.keyDown(verdict, { key: "ArrowRight" });
     fireEvent.keyDown(assertSelected("타임라인"), { key: "ArrowLeft" });
     fireEvent.keyDown(assertSelected("판정"), { key: "ArrowLeft" });
-    fireEvent.keyDown(assertSelected("사건 이력"), { key: "ArrowRight" });
+    fireEvent.keyDown(assertSelected("GodMode 이력"), { key: "ArrowRight" });
     fireEvent.keyDown(assertSelected("판정"), { key: "End" });
-    fireEvent.keyDown(assertSelected("사건 이력"), { key: "Home" });
+    fireEvent.keyDown(assertSelected("GodMode 이력"), { key: "Home" });
     assertSelected("판정");
   });
 
@@ -548,7 +732,7 @@ describe("dashboard interactions", () => {
       await waitFor(() => expect(screen.getByRole("heading", { name: "player_042" })).toBeTruthy());
       fireEvent.click(screen.getByRole("tab", { name: "모듈 신호" }));
       await waitFor(() => {
-        const moduleCards = [...document.querySelectorAll(".module-state-card")];
+        const moduleCards = [...document.querySelectorAll(".module-signals-table tbody tr")];
         expect(moduleCards.some((card) => card.textContent?.includes("ESP 접근 감시"))).toBe(true);
       });
 
@@ -563,9 +747,9 @@ describe("dashboard interactions", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      const moduleCards = [...document.querySelectorAll(".module-state-card")];
+      const moduleCards = [...document.querySelectorAll(".module-signals-table tbody tr")];
       expect(moduleCards.some((card) => card.textContent?.includes("입력 행동"))).toBe(false);
-      fireEvent.click(screen.getByRole("tab", { name: "사건 이력" }));
+      fireEvent.click(screen.getByRole("tab", { name: "GodMode 이력" }));
       expect(screen.queryByText("OLD SUBJECT HISTORY")).toBeNull();
       fireEvent.click(screen.getByRole("tab", { name: "판정" }));
       expect(screen.getByRole("heading", { name: "player_042" })).toBeTruthy();
@@ -614,16 +798,16 @@ describe("dashboard interactions", () => {
 
       await waitFor(() => expect(screen.getByText("LIVE")).toBeTruthy());
       fireEvent.click(screen.getByRole("tab", { name: "모듈 신호" }));
-      await waitFor(() => expect(document.querySelectorAll(".module-state-card").length).toBeGreaterThan(0));
-      fireEvent.click(screen.getByRole("tab", { name: "사건 이력" }));
+      await waitFor(() => expect(document.querySelectorAll(".module-signals-table tbody tr").length).toBeGreaterThan(0));
+      fireEvent.click(screen.getByRole("tab", { name: "GodMode 이력" }));
       await waitFor(() => expect(screen.getByText("Dashboard 데이터 저장소를 현재 사용할 수 없습니다.")).toBeTruthy());
       fireEvent.click(screen.getByRole("tab", { name: "모듈 신호" }));
-      const detailBeforeFailure = [...document.querySelectorAll(".module-state-card")].map((card) => card.textContent).join(" ");
+      const detailBeforeFailure = [...document.querySelectorAll(".module-signals-table tbody tr")].map((card) => card.textContent).join(" ");
 
       failRefresh = true;
       fireEvent.click(screen.getByRole("button", { name: "새로고침" }));
       await waitFor(() => expect(screen.getByText("LIVE · 지연")).toBeTruthy());
-      const detailAfterFailure = [...document.querySelectorAll(".module-state-card")].map((card) => card.textContent).join(" ");
+      const detailAfterFailure = [...document.querySelectorAll(".module-signals-table tbody tr")].map((card) => card.textContent).join(" ");
       expect(detailAfterFailure).toBe(detailBeforeFailure);
     } finally {
       vi.unstubAllGlobals();

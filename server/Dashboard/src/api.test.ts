@@ -127,6 +127,20 @@ describe("subject detail API", () => {
 });
 
 describe("Dashboard response contracts", () => {
+  it("accepts additive receipt metadata while keeping missing legacy fields optional", async () => {
+    const item = { ...demoEventItems[0]!, received_at_utc: "2026-10-06T15:00:00Z", observed_at_utc: null };
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(item))));
+    await expect(fetchEventDetail(connection, item.id)).resolves.toEqual(item);
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(demoEventItems[0]!))));
+    await expect(fetchEventDetail(connection, item.id)).resolves.toEqual(demoEventItems[0]!);
+  });
+
+  it("rejects numeric receipt metadata instead of coercing it to a date", async () => {
+    const item = { ...demoEventItems[0]!, received_at_utc: 1791292800000 };
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(item))));
+    await expect(fetchEventDetail(connection, item.id)).rejects.toMatchObject({ name: "DashboardApiError" });
+  });
+
   it("accepts the current backend-v2 shaped demo responses", async () => {
     const demoSnapshot = Object.values(demoSnapshots)[0]!;
     const demoStatus = Object.values(demoStatuses)[0]!;

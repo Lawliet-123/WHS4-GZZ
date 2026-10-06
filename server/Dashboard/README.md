@@ -102,7 +102,7 @@ Launcher는 본체 상태 외에 아래 13개 보호·탐지 컴포넌트를 보
 
 `overview.counts.sessions`와 `players`는 `scope=indexed_events` 범위다. 종합 현황의 `탐지 기록`은 적재된 관측 이벤트 수로 0점 정상 sample도 포함한다. `연결 클라이언트`는 조회 범위의 최신 Launcher에서 healthy/online이며 connected인 고유 client_id 수다. client_id가 없으면 미제공으로 표시하며 전체 활성 PC 수로 해석하지 않는다. 표의 클라이언트는 최신 Heartbeat 소스이며 Event 발신자 보증이 아니다.
 
-2026-10-06 화면은 dark SOC 콘솔로 개편했다. 180px 사이드바, 작은 요약 strip, 8열 탐지 표, 오른쪽 조사 패널을 사용한다. 원점수나 판정으로 severity를 추정하지 않는다. 선택적 `evidence.severity`가 4개 표준 문자열로 제공될 때만 색을 표시하고 현재 계약에서 빠진 값은 `미제공`이다. Critical 요약도 전체 관측의 명시적 severity가 없으면 미제공으로 유지한다. 실제 사건 Assign/Resolve·제재 API가 없으므로 이런 조작 버튼은 제공하지 않는다. 상세 설계는 [DESIGN.md](./DESIGN.md)를 참고한다.
+2026-10-06 화면은 dark SOC 콘솔로 개편했다. 180px 사이드바, 작은 요약 strip, 탐지 표, 오른쪽 조사 패널을 사용한다. 원점수나 판정으로 severity를 추정하지 않는다. 선택적 `evidence.severity`가 4개 표준 문자열로 제공될 때만 색을 표시하고, 조회 범위 전체에 값이 없으면 열·필터·정렬 선택지를 숨긴다. 일부만 제공됐을 때 빠진 값은 `미제공`이다. Critical 요약도 전체 관측의 명시적 severity가 없으면 미제공으로 유지한다. 실제 사건 Assign/Resolve·제재 API가 없으므로 이런 조작 버튼은 제공하지 않는다. 상세 설계는 [DESIGN.md](./DESIGN.md)를 참고한다.
 
 ## 판정 표시 원칙
 
@@ -110,7 +110,7 @@ Launcher는 본체 상태 외에 아래 13개 보호·탐지 컴포넌트를 보
 - `UNKNOWN`과 `INCONCLUSIVE`를 정상으로 바꾸지 않는다.
 - `NO_ACTIVE_EVIDENCE`는 현재 평가 범위에 활성 근거가 없다는 뜻이며 전체 PC의 정상 보증이 아니다.
 - 모듈마다 `raw_score` 생성식과 threshold가 다르므로 서로 합산하거나 같은 색 기준으로 비교하지 않는다.
-- `score`와 `confidence`가 `null`이면 임의의 숫자 위험도나 확률을 만들지 않고 화면에 `미제공`으로 표시한다.
+- 플레이어 점수·신뢰도는 현재 판정 정책에서 제공하지 않으므로 표시하지 않는다. 대신 최종 판정·독립 위험 근거 수·활성 모듈 수·중복 보정 수·평가 완료 여부를 사용한다. API의 nullable 원본은 그대로 보존한다.
 - `event_kind=operational`은 실행·보호 상태 기록이며 탐지 Event와 구분한다.
 - `time_basis=unknown`이면 정밀한 공통 시간축으로 단정하지 않고 서버 `sequence`를 기본 순서로 사용한다.
 
@@ -135,6 +135,19 @@ Authorization: Bearer <GZZ_DASHBOARD_TOKEN>
 `overview.events`는 의도적으로 빈 배열이며 Event는 `/events`에서 읽는다. Event cursor는 첫 응답의 `through_sequence`에 고정해 끝까지 읽고, 이후 polling은 마지막 `sequence`를 `after_sequence`로 전달한다. 실서버 오류를 합성 데이터로 자동 대체하지 않는다.
 
 대상을 선택하면 snapshot, 실행 상태, GodMode 사건 이력을 서로 독립적으로 조회한다. 한 조회가 실패해도 성공한 다른 정보는 유지하며, GodMode 이력 항목을 누르면 해당 `event_id`로 원본 Event 상세를 다시 조회한다.
+
+## 2026-10-07 피드백 반영
+
+- 이벤트 표의 `이벤트 상태`는 해당 Event의 명시적 `evidence.status`만 사용한다. raw 0이나 양수로 상태를 만들지 않는다. 현재 플레이어 Final Verdict는 플레이어 페이지와 조사 패널의 별도 `현재 플레이어 판정`에서 확인한다.
+- 플레이어 판정에서 활성 모듈 이름, 대표 reasons, 최신 raw·서버 임계값·세션 보존 사건을 표시한다. `snapshot.policy.module_evidence`를 사용하며 프론트에서 raw 합산·threshold 추정·최종 판정 생성을 하지 않는다. DLL 최신 raw 0과 이전 유효 사건 raw 2가 동시에 유지되는 경우를 분리해 보여준다.
+- `모듈 신호`는 최신 raw 높은 순 / 불러온 이력 최고 raw 높은 순 정렬을 제공한다. 최고 raw는 화면에 적재한 Event 범위의 관측값이며 서버 전체 이력 최고점이나 현재 활성 위험도라고 부르지 않는다.
+- `GodMode 이력` 탭은 GodMode 전용 이력이다. 모든 탐지기의 공통 이력으로 표시하지 않는다.
+- Launcher 연결 요약을 누르면 `시스템 → 점검 대상만`으로 이동한다. 세션·플레이어·클라이언트와 실패/WARN/SKIPPED·지연·미보고·전송 오류를 확인하고 해당 플레이어 실행 상태로 이동할 수 있다. 정상 종료와 실패, 현재 상태와 마지막 Launcher 보고를 구분한다.
+- 시간은 확인된 `time_basis=session_relative`에만 `T+`를 붙인다. 새 Event의 최초 writer 저장 시각은 `received_at_utc`로 전달하고 화면에서 `수신 … KST`로 표시한다. 이는 관측 시각이 아니며 다른 Event·Heartbeat·갱신 시각에서 세션 시작점을 추측하지 않는다. 기존 Event에 시각이 없으면 `실제 시각 미제공`이다.
+
+실제 관측 시각은 명시적 `unix_epoch_ms` 또는 선택적 `observed_at_utc`가 있을 때만 표시할 수 있다. 현재 backend는 `observed_at_utc`를 생성하지 않는다. 기존 탐지기의 `timestamp_ms` 기준이 선언되지 않은 자료에 T+와 실제 관측 시각을 모두 제공하려면 생산자 쪽 시간 계약을 추가로 맞춰야 한다.
+
+최종 판정의 출처는 여전히 최상위 `final_verdict`다. 정책 설명이 있어도 Final Verdict 공급자가 없으면 `UNKNOWN`을 유지한다. Scoring snapshot·이력·판정 조회는 하나의 원자적 watermark가 아니므로 수신 중에는 시점 차이가 생길 수 있다. 정책 설명만으로 최종 판정을 덮어쓰지 않으며 다음 polling에서 갱신한다.
 
 각 endpoint 응답은 화면이 사용하는 필수 필드와 중첩 자료형을 런타임에 검증한다. 계약이 달라진 응답은 부분 렌더링하지 않고 연결·갱신 오류로 표시하며, 응답 본문이나 토큰은 오류 메시지에 포함하지 않는다.
 

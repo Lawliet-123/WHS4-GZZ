@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from server.scoring.player_snapshot import build_player_policy_snapshot
 from shared.schema import validate_identifier
 from .central_client import CentralQueryError
+from .evidence_projection import build_evidence_projection
 from .index import DashboardIndex
 
 
@@ -127,7 +128,8 @@ class DashboardService:
     def snapshot(self, session_id, player_id):
         states = self.scoring.get_player_snapshot(session_id, player_id)
         policy = build_player_policy_snapshot(states, session_id=session_id, player_id=player_id)
-        return {"session_id": session_id, "player_id": player_id, **self.assessment(session_id, player_id), "modules": [asdict(state) for state in states], "policy": asdict(policy)}
+        explanation = build_evidence_projection(self.scoring, policy)
+        return {"session_id": session_id, "player_id": player_id, **self.assessment(session_id, player_id), "modules": [asdict(state) for state in states], "policy": {**asdict(policy), **explanation}}
 
     def assessment(self, session_id, player_id):
         empty = {"status": "UNKNOWN", "score": None, "confidence": None, "assessment_available": False, "final_verdict": None, "reason_codes": [], "data_state": "not_connected"}

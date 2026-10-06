@@ -14,6 +14,19 @@ const severityValues: Record<string, DetectionSeverity> = {
 };
 const severityRank: Record<DetectionSeverity, number> = { Critical: 4, High: 3, Medium: 2, Low: 1 };
 
+/** This event's reported state only. A raw score is not a state or verdict. */
+export function eventReportedStatus(event: DashboardEvent): { label: string; tone: string } {
+  const value = optionalEvidenceText(event, "status")?.toUpperCase();
+  const tones: Record<string, string> = {
+    NORMAL: "success", SUSPICIOUS: "warning", ERROR: "danger", FAILED: "danger",
+    WARN: "warning", WARNING: "warning", INSUFFICIENT: "warning", SKIPPED: "neutral",
+    RUNNING: "success", STOPPED: "neutral", STARTING: "info", UNKNOWN: "neutral",
+  };
+  return value && Object.hasOwn(tones, value)
+    ? { label: value, tone: tones[value]! }
+    : { label: "미제공", tone: "neutral" };
+}
+
 /** Optional server evidence is sanitized in the same way as the detail drawer. */
 export function optionalEvidenceText(event: DashboardEvent, key: string): string | null {
   const safe = sanitizeEvidence(event.evidence).evidence;

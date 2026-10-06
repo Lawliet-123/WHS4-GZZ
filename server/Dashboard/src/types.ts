@@ -73,6 +73,10 @@ export interface DashboardEvent {
   raw_score: number;
   event_kind: DashboardEventKind;
   time_basis: "unknown" | string;
+  /** Actual durable Receiver receipt metadata, never inferred from refresh time. */
+  received_at_utc?: string | null;
+  /** Reserved for an explicit producer/Server observation-time contract. */
+  observed_at_utc?: string | null;
   evidence_image: string | null;
   log_excerpt: string | null;
 }
