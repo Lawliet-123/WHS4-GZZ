@@ -253,6 +253,7 @@ signal.signal(signal.SIGBREAK, signal.default_int_handler)
 | 런처가 강제 종료되면 그 세션 모듈이 영영 남는다 | 다음 런처가 시작할 때 지난 세션 모듈을 끄고 시작한다 |
 | 등록부를 그 순간 못 읽어 살아 있는 모듈을 버린다 | 읽기를 다시 시도하고, 한 번 못 봤다고 포기하지 않는다 (5회) |
 | 자기 보호를 거는 모듈을 죽은 줄 안다 | 핸들을 못 여는 이유가 **권한 없음이면 살아 있는 것으로 본다** |
+| venv 파이썬으로 돌리면 등록부 pid 가 중간 실행기다 (검사 코드는 그 자식에서 돈다) | 중간 실행기를 건너뛰고 실제 파이썬을 바로 띄운다. 표준 `multiprocessing` 과 같은 방법이고 등록부 모양은 그대로다 |
 
 잠금을 쥔 프로세스가 죽으면 OS 가 잠금을 풀어준다(msvcrt 바이트 잠금).
 
@@ -323,6 +324,10 @@ client/Launcher/logs/<모듈>.log
 
 `modules` 는 예전 형식 그대로다(살아 있는 것만). 새로 쓰는 쪽은 `entries` 의
 `create_time` 까지 보면 PID 재사용을 가려낼 수 있다. 전체 모양은 `registry.py` 맨 위.
+
+적히는 pid 는 **실제로 검사 코드가 도는 프로세스**다. 런처를 venv 파이썬으로 돌려도 같다
+(2026-10-06 성민님 #124 확인 요청으로 고침. 전에는 venv 의 중간 실행기 pid 가 적혀서
+AntiDebug 가 실제 검사 프로세스를 못 봤다. 시험: `tests/test_venv_worker_pid.py`).
 
 **왜 필요한가.** `memory_integrity`·`whistle` 은 pymem 으로 게임 메모리를 읽는다.
 처음엔 pymem 기본값대로 전체 권한(`0x001F3FFF`)으로 열어서 밖에서 보면 Cheat Engine 과
