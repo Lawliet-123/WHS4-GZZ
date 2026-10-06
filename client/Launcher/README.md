@@ -33,7 +33,15 @@ Integrity의 이벤트는 운영 상태(`module=selfdefense`, `evidence.kind=fil
 `raw_score=0`)이며 플레이어 치트 점수와 별개다. 이 환경변수만으로 값의 신뢰성이
 보장되는 것은 아니다. 실제 배포 시에는 승인된 릴리스 설정에서 공급해야 한다.
 
-현재 소스 기준 AntiDebug 진입점은 아직 저장소에 없으므로 등록·실행하지 않는다.
+SelfDefense AntiDebug는 `selfdefense_anti_debug`로 게임보다 먼저 상주 실행한다.
+런처가 공통 세션·플레이어·시작 시각을 전달하고, 중앙 전송 설정이 없으면 로컬
+기록만 한다. 런처 등록부에 기록된 안티치트 프로세스의 네이티브 디버거 연결을
+관측하며 차단·프로세스 종료·자동 제재는 하지 않는다. 결과는
+`module=selfdefense`, `evidence.kind=debugger_presence`, `raw_score=0`의 운영
+상태로 기록되므로 치트 점수와 구분해야 한다. `RUNNING`은 검사기 프로세스의
+생존만 뜻하며 등록부 읽기·개별 대상 검사·중앙 전송 성공은 각 로그와 Event로
+별도 확인한다.
+
 `kernel_watcher`는 별도 구현인 KernelSentinel 수집기를 게임 시작 후 관리자 권한으로
 `-m agent.main watch --mode observe` 방식으로 실행한다. 이는 `KernelSentinel.sys`가
 해당 PC에 올바르게 설치·로드되어 있어야 실제로 센서에 연결된다. 런처는 드라이버를
