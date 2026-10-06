@@ -1,0 +1,15 @@
+# Certificate preparation only. Never submit real tokens over HTTP.
+server {
+    listen 80;
+    server_name __DOMAIN__;
+    access_log /var/log/nginx/whs4-dashboard.access.log whs4_dashboard;
+    error_log /var/log/nginx/whs4-dashboard.error.log warn;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        try_files $uri =404;
+    }
+    location / {
+        default_type text/plain;
+        return 503 "HTTPS setup pending\n";
+    }
+}

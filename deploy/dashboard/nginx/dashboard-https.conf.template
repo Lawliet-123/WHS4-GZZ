@@ -1,0 +1,24 @@
+server {
+    listen 80;
+    server_name __DOMAIN__;
+    access_log /var/log/nginx/whs4-dashboard.access.log whs4_dashboard;
+    error_log /var/log/nginx/whs4-dashboard.error.log warn;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        try_files $uri =404;
+    }
+    location / { return 308 https://__DOMAIN__$request_uri; }
+}
+server {
+    listen 443 ssl;
+    server_name __DOMAIN__;
+    ssl_certificate /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    root /var/www/whs4-dashboard/current;
+    index index.html;
+    client_max_body_size 1m;
+    access_log /var/log/nginx/whs4-dashboard.access.log whs4_dashboard;
+    error_log /var/log/nginx/whs4-dashboard.error.log warn;
+    include /etc/nginx/snippets/whs4-dashboard-locations.conf;
+}
