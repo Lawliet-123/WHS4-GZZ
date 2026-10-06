@@ -6,12 +6,16 @@ base_url="${1:-http://127.0.0.1:8000}"
 request_code() {
   local method="$1"
   local path="$2"
-  curl --silent --show-error --output /dev/null \
-    --write-out '%{http_code}' \
-    --request "$method" \
-    --header 'Content-Type: application/json' \
-    --data '{}' \
-    "${base_url}${path}"
+  shift 2
+  local args=(
+    --silent --show-error --output /dev/null
+    --write-out '%{http_code}'
+    --request "$method"
+  )
+  if [[ "$method" != "GET" ]]; then
+    args+=(--header 'Content-Type: application/json' --data '{}')
+  fi
+  curl "${args[@]}" "$@" "${base_url}${path}"
 }
 
 health_body="$(curl --fail --silent --show-error "${base_url}/health")"
@@ -20,7 +24,9 @@ if [[ "$health_body" != *'"status":"ok"'* && "$health_body" != *'"status": "ok"'
   exit 1
 fi
 
-detection_code="$(request_code POST /api/detection)"
+detection_code="$(request_code POST /api/detection \
+  --header 'X-GZZ-Protocol-Version: 1' \
+  --header 'Idempotency-Key: 00000000-0000-4000-8000-000000000001')"
 heartbeat_code="$(request_code POST /api/heartbeat)"
 dashboard_code="$(request_code GET /api/dashboard/overview)"
 
