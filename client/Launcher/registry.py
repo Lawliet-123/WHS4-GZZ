@@ -378,6 +378,36 @@ def end_session() -> None:
 
 # ── 띄우기·등록 ─────────────────────────────────────────────────────────
 
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _direct_python(argv: List[str], env: Dict[str, str]) -> List[str]:
+    """venv 파이썬이면 중간 실행기를 건너뛰고 실제 파이썬을 바로 띄운다.
+
+    Windows venv 의 Scripts\\python.exe 는 진짜 파이썬을 자식으로 한 번 더 띄우는
+    중간 실행기다. 그대로 띄우면 등록부 pid(=Popen.pid)는 중간 실행기이고, 검사 코드는
+    그 자식 PID 에서 돈다(10/6 실측: 등록 20268 / 실제 24388). 등록부로 "우리 프로세스" 를
+    알아보는 쪽(4번 AntiDebug·1번·커널)이 실제 검사 프로세스를 못 본다. 시스템 파이썬으로
+    런처를 돌리면 둘이 같아서 지금까지 안 드러났다.
+
+    표준 라이브러리 multiprocessing 이 Windows venv 에서 쓰는 방법과 같다. 실제 파이썬
+    (sys._base_executable)을 띄우고 __PYVENV_LAUNCHER__ 로 어느 venv 인지 알려 준다.
+    자식의 sys.executable·sys.prefix·venv 패키지는 지금과 같고, 파이썬이 시작하면서 이
+    변수를 지우므로 손자에게 새지 않는다(10/6 실측). 등록부 모양은 그대로다 — 적히는
+    pid 만 실제 검사 프로세스로 바뀐다.
+    """
+    if os.name != "nt" or not argv or sys.prefix == sys.base_prefix:
+        return argv                    # venv 가 아니면 중간 실행기도 없다
+    base = getattr(sys, "_base_executable", "") or ""
+    if not base or _same_path(base, sys.executable) or not os.path.isfile(base):
+        return argv                    # 실제 파이썬을 못 찾으면 지금처럼 띄운다
+    if not _same_path(argv[0], sys.executable):
+        return argv                    # 우리 파이썬이 아닌 것(게임 등)은 그대로 띄운다
+    env["__PYVENV_LAUNCHER__"] = sys.executable
+    return [base] + list(argv[1:])
+
+
 def spawn(argv: List[str], cwd: str, log: str, note: str = "",
           env_extra: Optional[Dict[str, str]] = None) -> subprocess.Popen:
     """모듈을 띄운다. 출력은 모듈 로그 파일에 이어 쓴다.
@@ -414,13 +444,18 @@ def spawn(argv: List[str], cwd: str, log: str, note: str = "",
         if k == "PYTHONPATH" and env.get(k):
             v = v + os.pathsep + env[k]
         env[k] = v
+    # venv 면 중간 실행기 없이 띄운다. 그래야 Popen.pid(=등록부 pid)가 실제 검사 프로세스다.
+    # 등록부에는 원래 argv 를 적는다(register). 되살릴 때 이 함수를 다시 거치며 또 바꾼다.
+    run_argv = _direct_python(argv, env)
+    venv_note = (f"[venv] 중간 실행기 없이 실제 파이썬으로 띄움 ({sys.executable})\n"
+                 if run_argv is not argv else "")
     with open(log, "a", encoding="utf-8") as f:
         f.write(f"\n{'=' * 70}\n[{note or 'start'}] {time.strftime('%H:%M:%S')}\n"
-                f"[cmd] {' '.join(argv)}\n{'=' * 70}\n")
+                f"[cmd] {' '.join(run_argv)}\n{venv_note}{'=' * 70}\n")
         f.flush()
         # 자식이 핸들을 물려받으므로 여기서 닫아도 자식 출력은 계속 파일로 간다.
         return subprocess.Popen(
-            argv,
+            run_argv,
             cwd=cwd,
             stdout=f,
             stderr=subprocess.STDOUT,
