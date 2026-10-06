@@ -1,0 +1,41 @@
+[Unit]
+Description=MECCHA CHAMELEON central anti-cheat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meccha
+Group=meccha
+WorkingDirectory=/opt/meccha-anticheat
+EnvironmentFile=/etc/meccha-anticheat/server.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/opt/meccha-anticheat/.venv/bin/python /opt/meccha-anticheat/deploy/server/validate_environment.py
+ExecStart=/opt/meccha-anticheat/.venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGINT
+UMask=0027
+
+# systemd creates /var/lib/meccha-anticheat for the service user and keeps it
+# writable while the rest of the operating system remains read-only.
+StateDirectory=meccha-anticheat
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/meccha-anticheat
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
