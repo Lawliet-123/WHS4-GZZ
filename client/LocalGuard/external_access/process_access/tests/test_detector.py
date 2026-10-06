@@ -52,6 +52,34 @@ class ProcessAccessDetectorTests(unittest.TestCase):
         )
         self.assertIsNone(self.detector.evaluate(observation, self.context))
 
+    def test_selfdefense_query_handles_are_not_scored_as_external_access(self):
+        """Watchdog/AntiDebug의 정상 조회 권한은 공격 권한으로 취급하지 않는다."""
+        process_query_information = 0x0400
+        process_query_limited_information = 0x1000
+        synchronize = 0x00100000
+
+        for source_name, granted_access in (
+            (
+                "selfdefense_watchdog",
+                process_query_limited_information | synchronize,
+            ),
+            (
+                "selfdefense_anti_debug",
+                process_query_information | synchronize,
+            ),
+        ):
+            with self.subTest(source_name=source_name):
+                observation = ExternalHandleObservation(
+                    source_pid=4321,
+                    source_name=source_name,
+                    source_path=None,
+                    granted_access=granted_access,
+                )
+
+                self.assertIsNone(
+                    self.detector.evaluate(observation, self.context)
+                )
+
     def test_multiple_risky_rights_preserve_all_evidence(self):
         rights = PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION
         self.assertEqual(
