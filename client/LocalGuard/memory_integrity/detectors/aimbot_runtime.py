@@ -223,6 +223,10 @@ def scan():
                         is not None
                         else None
                     ),
+                    "diagnostic_evaluations": rules.diagnostic_evaluations,
+                    "pattern_match_samples": rules.pattern_match_samples,
+                    "max_pattern_duration_sec": rules.max_pattern_duration,
+                    "failed_condition_counts": dict(rules.failed_condition_counts),
                 },
             }
 

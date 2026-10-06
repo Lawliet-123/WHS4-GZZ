@@ -87,6 +87,10 @@ class AimbotMemoryRules:
         self.last_pattern_matches = False
         self.last_pattern_duration = 0.0
         self.last_failed_conditions = []
+        self.diagnostic_evaluations = 0
+        self.pattern_match_samples = 0
+        self.max_pattern_duration = 0.0
+        self.failed_condition_counts = {}
 
     def reset(self):
         self.__init__()
@@ -546,5 +550,19 @@ class AimbotMemoryRules:
                 ):
                     self.episode_reported = False
                     self.clear_start = None
+
+        # Aggregate diagnostics across the full scan. Detection behavior is unchanged.
+        self.diagnostic_evaluations += 1
+
+        if pattern_matches:
+            self.pattern_match_samples += 1
+
+        if self.last_pattern_duration > self.max_pattern_duration:
+            self.max_pattern_duration = self.last_pattern_duration
+
+        for condition in self.last_failed_conditions:
+            self.failed_condition_counts[condition] = (
+                self.failed_condition_counts.get(condition, 0) + 1
+            )
 
         return evidence
