@@ -168,6 +168,50 @@ class SelfDefenseOperationalExclusionTests(unittest.TestCase):
                     verdict.active_modules,
                 )
 
+    def test_persisted_selfdefense_state_stays_excluded_after_restart(self):
+        """재시작 전 DB에 저장된 운영 상태도 치트 판정에는 들어가지 않는다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "scoring.sqlite3"
+            with patch.object(scoring_main, "_store", None):
+                scoring_main.configure_scoring(database)
+                scoring_main.process(
+                    selfdefense_event(
+                        kind="module_health",
+                        status="DETECTED",
+                        timestamp_ms=1000,
+                    ),
+                    event_id=str(uuid.uuid4()),
+                    sequence=1,
+                )
+                scoring_main.process(
+                    godmode_event(2, 2000),
+                    event_id=str(uuid.uuid4()),
+                    sequence=2,
+                )
+
+                # 새 서버 프로세스가 같은 SQLite DB를 다시 여는 상황을 재현한다.
+                scoring_main._store = None
+                scoring_main.configure_scoring(database)
+
+                snapshot = scoring_main.get_player_snapshot(
+                    "session_sd",
+                    "player_sd",
+                )
+                self.assertEqual(
+                    tuple(item.module for item in snapshot),
+                    ("godmode", "selfdefense"),
+                )
+
+                verdict = scoring_main.get_player_final_verdict(
+                    "session_sd",
+                    "player_sd",
+                )
+                self.assertEqual(verdict.status, "SUSPICIOUS")
+                self.assertEqual(verdict.active_modules, ("godmode",))
+                self.assertEqual(verdict.evidence_unit_count, 1)
+                self.assertNotIn("selfdefense", verdict.active_modules)
+                self.assertNotIn("selfdefense", verdict.unresolved_modules)
+
     def test_other_unknown_modules_remain_unresolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(scoring_main, "_store", None):
