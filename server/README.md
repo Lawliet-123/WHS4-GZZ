@@ -38,6 +38,14 @@
 
 Production deployment and live-game E2E testing remain pending.
 
+## Production Runtime
+
+The Ubuntu runtime contract, persistent paths, secret setup, `systemd` unit,
+health checks, update procedure, and backup procedure are documented in
+[`deploy/server/README.md`](../deploy/server/README.md). Infrastructure owners
+still need to provision the VM and connect Nginx/HTTPS before that runbook can
+be applied to the public server.
+
 ## Scoring Integration Notes
 
 - Dashboard verdict returns HTTP 404 when no scoring snapshot exists for the requested session/player.
