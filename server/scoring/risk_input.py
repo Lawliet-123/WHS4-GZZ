@@ -81,6 +81,8 @@ class PlayerRiskInput:
     event_history_modules: tuple[str, ...]
     entity_scoped_modules: tuple[str, ...]
     correlation_candidates: tuple[CorrelationCandidate, ...]
+    missing_modules: tuple[str, ...] = ()
+    stale_modules: tuple[str, ...] = ()
 
 
 def _is_unresolved(
@@ -251,4 +253,6 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
             for candidate in snapshot.correlation_candidates
             if not _OPERATIONAL_ONLY_MODULES.intersection(candidate.modules)
         ),
+        missing_modules=snapshot.missing_modules,
+        stale_modules=snapshot.stale_modules,
     )

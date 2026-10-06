@@ -35,6 +35,7 @@ AggregateSignalStatus = Literal[
     "DEFERRED",
     "UNRESOLVED",
     "UNAVAILABLE",
+    "STALE",
 ]
 
 
@@ -75,11 +76,17 @@ class AggregateEvidence:
     correlation_candidates: tuple[CorrelationCandidate, ...]
     overlap_groups: tuple[OverlapGroup, ...]
 
+    missing_modules: tuple[str, ...] = ()
+    stale_modules: tuple[str, ...] = ()
+
 
 def _classify(
     signal: RiskSignalInput,
     risk_input: PlayerRiskInput,
 ) -> AggregateSignalStatus:
+    if signal.module in risk_input.stale_modules:
+        return "STALE"
+
     if not signal.measurement_available:
         return "UNAVAILABLE"
 
@@ -209,6 +216,7 @@ def build_aggregate_evidence(
     deferred: list[str] = []
     unresolved: list[str] = []
     unavailable: list[str] = []
+    stale: list[str] = []
 
     buckets = {
         "ACTIVE": active,
@@ -217,6 +225,7 @@ def build_aggregate_evidence(
         "DEFERRED": deferred,
         "UNRESOLVED": unresolved,
         "UNAVAILABLE": unavailable,
+        "STALE": stale,
     }
 
     for signal in risk_input.signals:
@@ -326,4 +335,6 @@ def build_aggregate_evidence(
         unavailable_modules=tuple(unavailable),
         correlation_candidates=risk_input.correlation_candidates,
         overlap_groups=overlap_groups,
+        missing_modules=risk_input.missing_modules,
+        stale_modules=risk_input.stale_modules,
     )

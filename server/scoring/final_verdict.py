@@ -62,6 +62,8 @@ class FinalVerdict:
 
     # C/Dashboard가 판정 이유를 문자열 파싱 없이 볼 수 있는 안정적인 코드.
     reason_codes: tuple[str, ...]
+    missing_modules: tuple[str, ...] = ()
+    stale_modules: tuple[str, ...] = ()
 
 
 def build_final_verdict(
@@ -94,6 +96,12 @@ def build_final_verdict(
     if risk.advisory_modules:
         reasons.append("ADVISORY_EVIDENCE_PRESENT")
 
+    if risk.missing_modules:
+        reasons.append("MISSING_MEASUREMENT")
+
+    if risk.stale_modules:
+        reasons.append("STALE_MEASUREMENT")
+
     return FinalVerdict(
         version=FINAL_VERDICT_VERSION,
         session_id=risk.session_id,
@@ -109,4 +117,6 @@ def build_final_verdict(
         deferred_modules=risk.deferred_modules,
         unavailable_modules=risk.unavailable_modules,
         reason_codes=tuple(reasons),
+        missing_modules=risk.missing_modules,
+        stale_modules=risk.stale_modules,
     )
