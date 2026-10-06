@@ -2,6 +2,23 @@
 
 이 문서는 8-A 화면이 종합 안티치트 관제 역할을 하기 위해 현재 연결할 수 있는 범위와, 8-B·Receiver·Scoring·Launcher 쪽에서 추가로 확정해야 하는 범위를 구분한다. 화면에 보인다는 이유만으로 아직 없는 서버 기능을 구현된 것처럼 표시하지 않는다.
 
+## 2026-10-06 필수 체크리스트 기준
+
+팀 Notion의 `진행도 → 필수 사항`에 적힌 기본 요건을 기준으로 노지완 항목을 확인했다. 노지완 행만 4/4로 체크하고, 본인 진행 요약에 아래 완료 범위와 별도 남은 작업을 함께 기록했다.
+
+- [x] Logger 연동: 실제 `shared.logger.send_detection`과 HTTP ACK, 재시도·중복 억제 검증.
+- [x] Detector 업로드: ESP와 DLL 무결성 코드가 팀 main에 반영됨.
+- [x] Replay 세션 추가: 기존 실제 정상 캡처 `normal_001`의 132개 Event를 추가 내보내어 팀 main에 반영함. 유효 ESP 자료는 CHEAT 1개·NORMAL 2개이며 `esp_only_001`은 ESP 자료로 세지 않음.
+- [x] E2E: 통제된 Windows 보조 프로세스에서 실제 DLL·VM_READ 핸들을 관측하고 Shared → Receiver → Scoring → 조회 API를 확인함. 실제 `server.main` → React LIVE 연결도 확인함. 이번 보강 코드는 [검토 중인 변경](https://github.com/Lawliet-123/WHS4-GZZ/pull/126)으로 올림.
+
+**4/4는 위 기본 요건의 완료이지 실게임·운영 검증 전체 완료가 아니다.** 다음 항목은 계속 미완료로 남긴다.
+
+- [ ] 최신 수집기로 추가 CHEAT 2개·NORMAL 1개를 독립된 실제 게임 세션에서 수집하고 ON/OFF 기록하기.
+- [ ] 실제 Launcher·Sysmon·게임을 함께 실행해 등록 PID/생성 시각을 포함한 전체 종단 시험하기.
+- [ ] 운영 인증을 확정하고 공개 `/GZZ/`와 실제 운영 API를 연결·검증하기.
+
+추가한 `normal_001`은 보관 캡처의 내보내기이며 최신 수정의 실게임 탐지율 증명이 아니다. 합성 E2E 결과는 CHEAT Replay로 제출하지 않는다.
+
 ## 2026-10-06 Windows 센서부터 화면까지 E2E 재확인
 
 GitHub 최신 main `2ac2bed`에는 기존 LocalGuard·ESP E2E와 React 프론트가 모두 머지되어 있었다. 이를 받은 뒤 다시 실행했고, 테스트용 앱만 쓰던 검증에 실제 `server.main`과 React 화면 확인을 추가했다.
