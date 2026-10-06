@@ -1,0 +1,46 @@
+{
+  "cheat_end_ms": 77984,
+  "cheat_start_ms": 5189,
+  "cheat_type": "ESP",
+  "event_count": 67,
+  "label": "CHEAT",
+  "player_id": "player_042",
+  "session_id": "esp_realgame_20261006_capture02",
+  "source": {
+    "events_sha256": "82440f94893cf09614ac871047fe97ce1a40a823ec6c86f92e5b96a4d7c523a3",
+    "kind": "existing_esp_capture",
+    "manifest_sha256": "e8a8ed87e3fbf89929145030962d32138e81f1c14db493f5eaadc0df71e64786",
+    "notes": [
+      "Existing captured results; this export is not a new test run.",
+      "Scores and timestamps were not recomputed with the current detector.",
+      "ON/OFF timing is supplied test metadata; missing timing remains null.",
+      "Evidence is privacy-filtered; original raw sensor logs are omitted.",
+      "NORMAL labels remain NORMAL even when captured scores cross a threshold."
+    ],
+    "producer": {
+      "name": "meccha-esp-localguard",
+      "revision": null,
+      "version": "0.2.0"
+    },
+    "realgame_validation": {
+      "first_read_ready_ms": 17655,
+      "fresh_read_heartbeat_count": 121,
+      "handle_open_observation_bounds_ms": [
+        5187,
+        5189
+      ],
+      "kind": "observed_original_esp_lifecycle",
+      "launch_precedes_on": true,
+      "maximum_heartbeat_gap_seconds": 0.5129795074462891,
+      "off_basis": "observed exact child process exit",
+      "off_observation_poll_seconds": 0.1,
+      "on_basis": "successful pinned game handle opening, observed immediately after API return",
+      "remote_player_count_at_first_ready": 0,
+      "remote_rendering_claimed": false,
+      "source_requested_access": "PROCESS_ALL_ACCESS (0x1f0fff), SeDebugPrivilege attempted",
+      "source_sha256": "897dd9da21b39e738306c79b8225a8b9bd35de8a52d038c83ce4d829f39da973"
+    },
+    "schema_version": "meccha.telemetry-session.v1",
+    "session_status": "completed"
+  }
+}

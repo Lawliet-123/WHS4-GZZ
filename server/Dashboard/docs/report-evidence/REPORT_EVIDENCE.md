@@ -87,6 +87,21 @@ API 취소·지연 응답 방지, 실패 시 마지막 성공 자료 유지, nul
 
 Noclip `blocked_path=1`이 파일 경로 필터에 잘못 걸리는 오류를 이 시험에서 확인했다. Noclip의 최상위 숫자 0/1·boolean만 남기도록 수정했고 문자열 경로·다른 민감 키의 제거와 JSON 복사 회귀를 검증했다.
 
+## dashboard-native-dll-e2e.png / dashboard-native-dll-evidence.png
+
+2026-10-06 main `2ac2bed` 기준, 테스트가 직접 만든 Windows Python 보조 프로세스에서 실제 `winhttp.dll`을 로드한 결과다. 합성 DLL 추가 Event를 직접 넣은 화면이 아니라 실제 LocalGuard 센서·detector·durable Shared sender → 실제 `server.main` Receiver·Scoring → React LIVE 연결을 사용했다. 게임이나 핵, Launcher를 실행한 시험은 아니다.
+
+- 정상 기준선 0점 → 실제 DLL 추가 1점 → 변화 없는 반복 스캔 0점, 총 3건.
+- 로컬 JSONL·Shared HTTP ACK·Receiver 목록/상세·B 이력이 동일함을 확인했다.
+- 같은 DLL 추가는 1회만 기록됐고 이후 polling에서도 3건으로 유지됐다.
+- 상세에서 DLL 이름·추가 변화·정상 서명·해시가 표시되고 전체 경로 1개는 숨겨졌다.
+- 1점은 현재 사건 threshold 2 미만이며 외부 프로세스 접근은 관측하지 않았다. 따라서 INCONCLUSIVE·평가 미완료·근거 0개·점수/신뢰도 미제공이 올바른 결과다.
+- Launcher 자료를 조작하지 않았으며 상태 확인 불가·클라이언트 미제공으로 표시됐다. 서버 자연 종료 후 마지막 LIVE 자료와 지연·조회 오류가 유지됐고 자동 DEMO 전환은 없었다.
+
+재현은 [README](../../README.md)의 실제 Windows 센서 E2E 절을 참고한다. 저장한 캡처에는 운영 인증값·실제 사용자 로그가 없으며 Event ID·PID는 이번 시험이 만든 보조 프로세스의 값이다. 시험 후 소유 서버와 임시 저장소가 정리됐다.
+
+기존 Jiwan 센서 E2E는 6개, 신규 서버 fixture·안전성 테스트는 7개 모두 통과했다. Windows 전용 테스트도 실제로 실행됐다. 별도 합성 unsigned DLL 회귀는 뒤 NORMAL 0점에도 임계 충족 이력과 SUSPICIOUS·근거 1개가 유지되는지 검증했다. 실게임 핵 ON/OFF와 추가 CHEAT Replay 수집은 이 결과에 포함하지 않는다.
+
 ## localguard-module-stable.png
 
 실제 게임에서 `module_integrity`가 136개 DLL을 반복 관찰하는 동안 추가·변경·전송 Event가 0건으로 유지된 정상 관찰 화면이다. 첫 성공 스냅샷 이후 기준선이 안정적으로 유지되는지 확인한 자료이며, 전체 정상 플레이 판정을 대신하지 않는다.
