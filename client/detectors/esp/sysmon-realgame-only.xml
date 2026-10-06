@@ -1,0 +1,34 @@
+<Sysmon schemaversion="4.91">
+  <!-- New, consented lab installation only. Do not replace an existing policy. -->
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+    <!-- Empty include rules suppress unrelated capture and blocking actions. -->
+    <ProcessCreate onmatch="include" />
+    <FileCreateTime onmatch="include" />
+    <NetworkConnect onmatch="include" />
+    <ProcessTerminate onmatch="include" />
+    <DriverLoad onmatch="include" />
+    <ImageLoad onmatch="include" />
+    <CreateRemoteThread onmatch="include" />
+    <RawAccessRead onmatch="include" />
+    <RuleGroup name="GZZ approved game access test" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="end with">\PenguinHotel-Win64-Shipping.exe</TargetImage>
+      </ProcessAccess>
+    </RuleGroup>
+    <FileCreate onmatch="include" />
+    <RegistryEvent onmatch="include" />
+    <FileCreateStreamHash onmatch="include" />
+    <PipeEvent onmatch="include" />
+    <WmiEvent onmatch="include" />
+    <DnsQuery onmatch="include" />
+    <FileDelete onmatch="include" />
+    <ClipboardChange onmatch="include" />
+    <ProcessTampering onmatch="include" />
+    <FileDeleteDetected onmatch="include" />
+    <FileBlockExecutable onmatch="include" />
+    <FileBlockShredding onmatch="include" />
+    <FileExecutableDetected onmatch="include" />
+  </EventFiltering>
+  <!-- Sysmon service/configuration/error events (4, 16, 255) are not filtered. -->
+</Sysmon>

@@ -312,3 +312,45 @@ Microsoft도 Sysmon 이벤트를 단독 경보가 아니라 조사에 쓰는 저
 - `anti_esp/store.py` — SQLite 보관과 JSONL 내보내기
 - `anti_esp/dashboard.py` — 실시간 대시보드
 - `sysmon-config.xml` — 게임 프로세스 대상 Event ID 10 필터
+## 승인된 비공개 방에서 실제 Replay 캡처
+
+이 절차는 실제 게임이 이미 실행 중이고, 참가자와 합의한 비공개 테스트방에서만 사용합니다.
+웹 화면 테스트나 정상 게임 파일 변경, DLL 주입, Sysmon 설치를 자동으로 수행하지 않습니다.
+`modules/esp/esp.py`는 원본 해시를 확인하고 사용합니다. 원본 프로그램은 읽기 기능에
+`PROCESS_ALL_ACCESS` 핸들과 `SeDebugPrivilege`를 요청하므로, 그 접근 자체도 관측 대상입니다.
+
+관리자 PowerShell에서 저장소 최상단으로 이동한 뒤 게임 PID를 확인합니다.
+
+```powershell
+Get-Process -Name PenguinHotel-Win64-Shipping | Select-Object Id
+python -I -B client/detectors/esp/scripts/realgame_replay.py --approved-private-test-room --scenario normal --game-pid <PID> --duration 120
+python -I -B client/detectors/esp/scripts/realgame_replay.py --approved-private-test-room --scenario esp --game-pid <PID> --duration 120 --esp-seconds 60
+```
+
+Sysmon과 활성화된 Operational 채널이 필요합니다. 먼저 별도 미검증 세션으로 센서를
+준비하고, 그 로그를 보존한 채 새 세션에서 모든 필수 센서의 실제 관측을 검증합니다.
+ESP는 게임 PID뿐 아니라 생성 시각도 확인합니다. 첫 실제 메모리 핸들 열기를 ON,
+해당 ESP 프로세스의 종료 관측을 OFF로 기록하며, 카메라·로컬 캐릭터·오버레이의
+실제 읽기 성공과 지속성을 별도로 검증합니다. 관전/메뉴 상태, 센서 누락, 강제 종료,
+게임 재시작, 실제 ESP에 연결되는 탐지 이벤트 부재는 성공으로 처리하지 않습니다.
+
+원본 로그와 실패 기록은 gitignore 대상 `data/realgame_capture/`에만 남습니다.
+성공한 캡처는 기존 privacy exporter를 통해 `ReplayAnalyzer/replay-data/esp/<session>/`에
+내보냅니다. 공통 Event 7필드와 실제 점수·시각을 유지하며 raw 로그는 업로드하지 않습니다.
+NORMAL은 실험 조건의 라벨이며, 오탐 점수가 있어도 그 점수를 삭제하거나 0으로 바꾸지 않습니다.
+
+선택적으로 Windows 내장 Sysmon 기능을 잠시 사용할 때는 다음 소유권 추적 도구를
+사용할 수 있습니다. 관리자 권한과 64비트 Python이 필요하며 재부팅하지 않습니다.
+기존 설치가 있거나 기능이 이미 켜져 있으면 변경하지 않습니다.
+
+```powershell
+./client/detectors/esp/scripts/realgame_builtin_sysmon.ps1 -Action Install -StateDirectory "$PWD/logs/owned-sysmon-test"
+# 테스트 후 반드시 동일한 소유권 상태 파일로 복원
+./client/detectors/esp/scripts/realgame_builtin_sysmon.ps1 -Action Cleanup -StateDirectory "$PWD/logs/owned-sysmon-test"
+```
+
+`sysmon-realgame-only.xml`은 해당 게임 대상 ProcessAccess(Event 10)만 수집합니다.
+ImageLoad/Event 7 및 CreateRemoteThread/Event 8 검증을 포함하지 않으므로, 이 제한된
+정책으로 다른 탐지기 전체나 UE4SS 예외 처리를 검증했다고 보고하면 안 됩니다.
+Cleanup은 이 도구가 켠 기능과 서비스를 원래 Disabled 상태로 돌리고 이벤트 로그는
+지우지 않습니다. 재부팅 필요/복원 지연 상태는 성공으로 숨기지 않습니다.

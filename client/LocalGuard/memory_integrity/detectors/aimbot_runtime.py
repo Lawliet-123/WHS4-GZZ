@@ -207,6 +207,27 @@ def scan():
                 "valid_samples": (
                     valid_sample_count
                 ),
+                "rule_diagnostics": {
+                    "pattern_matches": (
+                        rules.last_pattern_matches
+                    ),
+                    "pattern_duration_sec": (
+                        rules.last_pattern_duration
+                    ),
+                    "failed_conditions": list(
+                        rules.last_failed_conditions
+                    ),
+                    "metrics": (
+                        dict(rules.last_metrics)
+                        if rules.last_metrics
+                        is not None
+                        else None
+                    ),
+                    "diagnostic_evaluations": rules.diagnostic_evaluations,
+                    "pattern_match_samples": rules.pattern_match_samples,
+                    "max_pattern_duration_sec": rules.max_pattern_duration,
+                    "failed_condition_counts": dict(rules.failed_condition_counts),
+                },
             }
 
             if (

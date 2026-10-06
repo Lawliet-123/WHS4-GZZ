@@ -82,6 +82,16 @@ class AimbotMemoryRules:
 
         self.episode_reported = False
 
+        # Diagnostic-only state. These fields do not affect detection.
+        self.last_metrics = None
+        self.last_pattern_matches = False
+        self.last_pattern_duration = 0.0
+        self.last_failed_conditions = []
+        self.diagnostic_evaluations = 0
+        self.pattern_match_samples = 0
+        self.max_pattern_duration = 0.0
+        self.failed_condition_counts = {}
+
     def reset(self):
         self.__init__()
 
@@ -357,6 +367,48 @@ class AimbotMemoryRules:
                 metrics
             )
 
+        self.last_metrics = (
+            dict(metrics)
+            if metrics is not None
+            else None
+        )
+        self.last_pattern_matches = pattern_matches
+        self.last_pattern_duration = 0.0
+
+        failed_conditions = []
+
+        if metrics is None:
+            if len(self.samples) < self.MIN_WINDOW_SAMPLES:
+                failed_conditions.append(
+                    "insufficient_window_samples"
+                )
+            else:
+                failed_conditions.append(
+                    "insufficient_moving_samples"
+                )
+        else:
+            if metrics["median_delta"] > self.MAX_MEDIAN_DELTA:
+                failed_conditions.append(
+                    "median_delta_above_max"
+                )
+
+            if metrics["p95_delta"] > self.MAX_P95_DELTA:
+                failed_conditions.append(
+                    "p95_delta_above_max"
+                )
+
+            if metrics["small_step_ratio"] < self.MIN_SMALL_STEP_RATIO:
+                failed_conditions.append(
+                    "small_step_ratio_below_min"
+                )
+
+            if metrics["p95_speed"] > self.MAX_P95_SPEED:
+                failed_conditions.append(
+                    "p95_speed_above_max"
+                )
+
+        self.last_failed_conditions = failed_conditions
+
         if pattern_matches:
             self.clear_start = None
 
@@ -367,6 +419,18 @@ class AimbotMemoryRules:
                 timestamp
                 - self.pattern_start
             )
+
+            self.last_pattern_duration = (
+                pattern_duration
+            )
+
+            if (
+                pattern_duration
+                < self.PATTERN_PERSISTENCE_SECONDS
+            ):
+                self.last_failed_conditions = [
+                    "persistence_not_met"
+                ]
 
             if (
                 pattern_duration
@@ -486,5 +550,19 @@ class AimbotMemoryRules:
                 ):
                     self.episode_reported = False
                     self.clear_start = None
+
+        # Aggregate diagnostics across the full scan. Detection behavior is unchanged.
+        self.diagnostic_evaluations += 1
+
+        if pattern_matches:
+            self.pattern_match_samples += 1
+
+        if self.last_pattern_duration > self.max_pattern_duration:
+            self.max_pattern_duration = self.last_pattern_duration
+
+        for condition in self.last_failed_conditions:
+            self.failed_condition_counts[condition] = (
+                self.failed_condition_counts.get(condition, 0) + 1
+            )
 
         return evidence

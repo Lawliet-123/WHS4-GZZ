@@ -1,0 +1,191 @@
+{
+  "status": "PASS",
+  "reference_commit": "8cded03366399bc0527b177e1780d4ad25a64c34",
+  "registry_sha256": "550740a16f31dee41e7f11e64ec4f768134eea44e97f1f520b20618791fe0678",
+  "python_version": "3.14.6",
+  "operating_system": "Windows x64",
+  "production_code_changed": false,
+  "launcher_code_changed": false,
+  "test_harness_fix_required": true,
+  "test_harness_fix": "Atomic ready JSON publication and complete owned PID validation; timeout unchanged",
+  "tests": [
+    {
+      "name": "base-environment",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "name": "watchdog-base-unit",
+      "status": "PASS",
+      "tests": 67,
+      "exit_code": 0
+    },
+    {
+      "name": "anti_debug-base-unit",
+      "status": "PASS",
+      "tests": 59,
+      "exit_code": 0
+    },
+    {
+      "name": "launcher-venv-pid-base",
+      "status": "PASS",
+      "tests": 9,
+      "exit_code": 0
+    },
+    {
+      "name": "watchdog-base-native",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "name": "anti_debug-base-native",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "name": "venv-environment",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "name": "watchdog-venv-unit",
+      "status": "PASS",
+      "tests": 67,
+      "exit_code": 0
+    },
+    {
+      "name": "anti_debug-venv-unit",
+      "status": "PASS",
+      "tests": 59,
+      "exit_code": 0
+    },
+    {
+      "name": "launcher-venv-pid-venv",
+      "status": "PASS",
+      "tests": 9,
+      "exit_code": 0
+    },
+    {
+      "name": "watchdog-venv-native",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "name": "anti_debug-venv-native",
+      "status": "PASS",
+      "exit_code": 0
+    }
+  ],
+  "repeated_native_runs": [
+    {
+      "environment": "base",
+      "repeat": 1,
+      "status": "PASS",
+      "cases": 5,
+      "owned_child_stopped": true
+    },
+    {
+      "environment": "base",
+      "repeat": 2,
+      "status": "PASS",
+      "cases": 5,
+      "owned_child_stopped": true
+    },
+    {
+      "environment": "base",
+      "repeat": 3,
+      "status": "PASS",
+      "cases": 5,
+      "owned_child_stopped": true
+    },
+    {
+      "environment": "venv",
+      "repeat": 1,
+      "status": "PASS",
+      "cases": 5,
+      "owned_child_stopped": true
+    },
+    {
+      "environment": "venv",
+      "repeat": 2,
+      "status": "PASS",
+      "cases": 5,
+      "owned_child_stopped": true
+    },
+    {
+      "environment": "venv",
+      "repeat": 3,
+      "status": "PASS",
+      "cases": 5,
+      "owned_child_stopped": true
+    }
+  ],
+  "identity_checks": [
+    {
+      "environment": "base",
+      "status": "PASS",
+      "observations": [
+        {
+          "phase": "launcher_spawn",
+          "popen_pid": 26364,
+          "registered_pid": 26364,
+          "worker_pid": 26364,
+          "anti_debug_reader_pid": 26364,
+          "native_probe_state": "CLEAR",
+          "worker_is_venv": false,
+          "marker_absent": true
+        },
+        {
+          "phase": "watchdog_restart",
+          "popen_pid": 376,
+          "registered_pid": 376,
+          "worker_pid": 376,
+          "anti_debug_reader_pid": 376,
+          "native_probe_state": "CLEAR",
+          "worker_is_venv": false,
+          "marker_absent": true
+        }
+      ]
+    },
+    {
+      "environment": "venv",
+      "status": "PASS",
+      "observations": [
+        {
+          "phase": "launcher_spawn",
+          "popen_pid": 24256,
+          "registered_pid": 24256,
+          "worker_pid": 24256,
+          "anti_debug_reader_pid": 24256,
+          "native_probe_state": "CLEAR",
+          "worker_is_venv": true,
+          "marker_absent": true
+        },
+        {
+          "phase": "watchdog_restart",
+          "popen_pid": 29036,
+          "registered_pid": 29036,
+          "worker_pid": 29036,
+          "anti_debug_reader_pid": 29036,
+          "native_probe_state": "CLEAR",
+          "worker_is_venv": true,
+          "marker_absent": true
+        }
+      ]
+    }
+  ],
+  "pr124_compared_commit": "f4e5e08d8a97ca384ca3f9aaabd6291a4e6cd8e0",
+  "full_launcher_main_tested": false,
+  "real_game_tested": false,
+  "central_https_tested": false,
+  "python_3_13_1_tested": false,
+  "initial_failures_preserved": [
+    "01: sandbox temp write PermissionError",
+    "02: old native ready-file JSONDecodeError"
+  ],
+  "changed_test_file_sha256": {
+    "tests/native_integration.py": "c683f60152c3f7179f52cd81574bfd75478e3d303eef3ae9e1287fd144147735",
+    "tests/test_native_fixture_ready.py": "ee7d6c1bd87a7ebbac862d47ff4a894d464f4e50ebe164bf060cf1127a91a1e3"
+  },
+  "initial_pr_python_files_identical": 23
+}

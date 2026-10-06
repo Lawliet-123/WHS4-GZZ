@@ -185,7 +185,7 @@ MODULES: List[Module] = [
     Module(
         name="self_defense",
         owner="4번 (성민)",
-        # 성민님 #68 (watchdog 0.2.1, docs/LAUNCHER_HANDOFF.md). 등록명 self_defense 는
+        # Watchdog 0.3.0. 등록명 self_defense 는
         # 유지한다 — 이 이름으로 재시작 한도를 세고, 워치독이 자기 자신을 감시 목록에서 뺀다.
         # 이벤트 module 값은 selfdefense(운영 상태, raw_score 0)다.
         argv=[PY, "client/SelfDefense/watchdog/main.py",
@@ -202,6 +202,19 @@ MODULES: List[Module] = [
         note="워치독: registry 로 상주 모듈 생존 확인·복구, 운영 상태 보고",
     ),
     selfdefense_integrity_module(),
+    Module(
+        name="selfdefense_anti_debug",
+        owner="4번 (성민)",
+        argv=[PY, "client/SelfDefense/anti_debug/main.py",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--telemetry", "{telemetry}"],
+        mode=CONTINUOUS,
+        needs_game=False,
+        restart=True,
+        stop_grace_s=30.0,
+        session_log_dir="client/SelfDefense/anti_debug/logs",
+        note="등록된 안티치트 프로세스의 네이티브 디버거 연결 관측 (차단 없음)",
+    ),
     Module(
         name="kernel_watcher",
         owner="5번 (찬준)",

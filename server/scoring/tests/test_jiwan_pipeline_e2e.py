@@ -27,7 +27,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -62,7 +62,8 @@ from client.LocalGuard.external_access.module_integrity.smoke_test import (
     _send,
     _stop_helper,
 )
-from client.LocalGuard.external_access.common.models import TargetProcess
+from client.LocalGuard.external_access.common.artifact_cache import ArtifactCache
+from client.LocalGuard.external_access.common.models import ArtifactInfo, TargetProcess
 from client.LocalGuard.external_access.module_integrity.models import (
     LoadedModule,
     ModuleSnapshot,
@@ -78,6 +79,7 @@ from server.dashboard_backend import DashboardService, create_dashboard_router
 from server.receiver import create_router
 from server.receiver.router import bearer_token_verifier
 from server.scoring.external_access_summary import summarize_external_access_history
+from server.scoring.calibration import get_external_access_calibration
 from server.scoring import main as scoring_queries
 from server.scoring.storage import ScoringStore
 from shared import logger
@@ -589,6 +591,107 @@ class JiwanPipelineE2ETests(unittest.TestCase):
         self.assertEqual(len(final_events), 4)
         self.assertEqual([event["evidence"] for event in final_events],
                          [event["evidence"] for event in local])
+
+    def test_qualified_synthetic_dll_history_survives_same_submodule_normal_zero(self):
+        """A mocked unsigned mapping tests B's contract, not a real CHEAT DLL."""
+        dll_path = "C:/SyntheticFixture/unsigned-extra.dll"
+        game_module = LoadedModule("synthetic-game.exe", None, 0x1000, 4096)
+        added_module = LoadedModule("unsigned-extra.dll", dll_path, 0x2000, 4096)
+        captures = (
+            ModuleSnapshot(500, 101, (game_module,)),
+            ModuleSnapshot(500, 102, (game_module, added_module)),
+            ModuleSnapshot(500, 103, (game_module, added_module)),
+        )
+        # Never create, execute, stat, or inspect this nonexistent fixture DLL.
+        # Only acquisition/trust inputs are substituted; runner/detector score,
+        # local delivery ledger, Shared HTTP, Receiver, B, and API stay real.
+        artifact_cache = Mock(spec=ArtifactCache)
+        artifact_cache.inspect.return_value = ArtifactInfo(
+            path=Path(dll_path), sha256="a" * 64,
+            signature_status="unsigned", publisher=None,
+        )
+        calibration = get_external_access_calibration("module_integrity")
+        self.assertEqual(calibration.mode, "event_threshold")
+        self.assertEqual(calibration.threshold, 2)
+        wall_time = [101.0]
+        local_path = self.root / "qualified-synthetic-dll.jsonl"
+        runner = ModuleIntegrityRunner(
+            game_executable_name="synthetic-game.exe", session_id=SESSION,
+            player_id=PLAYER, output_path=local_path,
+            locator=_SyntheticLocator(), sensor=_SyntheticModuleSensor(captures),
+            artifact_cache=artifact_cache, audit_initial_snapshot=False,
+            writer=_write_local_and_send, wall_clock=lambda: wall_time[0],
+            session_t0=100, emit_status_events=True,
+        )
+
+        baseline = runner.scan_once()
+        self.assertIsNone(baseline.error)
+        self.assertTrue(baseline.baseline_created)
+        self.flush()
+        self.assertEqual(self.dashboard_snapshot()["status"], "INCONCLUSIVE")
+
+        wall_time[0] = 102.0
+        observed = runner.scan_once()
+        self.assertIsNone(observed.error)
+        self.assertEqual(observed.emitted_detections, 1)
+        self.flush()
+        artifact_cache.inspect.assert_called_once_with(Path(dll_path))
+        positive = self.dashboard_events(
+            module="external_access", submodule="module_integrity"
+        )[-1]
+        self.assertEqual(positive["raw_score"], 2)
+        self.assertEqual(positive["evidence"]["signature_status"], "unsigned")
+        self.assertEqual(positive["evidence"]["change_type"], "added")
+        self.assertEqual(positive["evidence"]["sha256"], "a" * 64)
+        self.assertEqual(self.dashboard_snapshot()["status"], "SUSPICIOUS")
+
+        wall_time[0] = 103.0
+        unchanged = runner.scan_once()
+        self.assertIsNone(unchanged.error)
+        self.assertEqual(unchanged.emitted_detections, 0)
+        self.flush()
+        scoped = self.scoring.get_scoped_module_state(
+            SESSION, PLAYER, "external_access", "module_integrity"
+        )
+        self.assertEqual(scoped.raw_score, 0)
+        self.assertEqual(scoped.evidence["status"], "NORMAL")
+        self.assertEqual(scoped.timestamp_ms, 3000)
+        history = self.scoring.get_external_access_history(
+            SESSION, PLAYER, "module_integrity"
+        )
+        self.assertEqual([event.raw_score for event in history], [0, 2, 0])
+        self.assertEqual(history[1].event_id, positive["id"])
+        summary = summarize_external_access_history(
+            history, session_id=SESSION, player_id=PLAYER,
+            submodule="module_integrity",
+        )
+        self.assertEqual(summary.positive_events, 1)
+        self.assertEqual(summary.max_positive_raw_score, 2)
+        self.assertTrue(summary.latest_is_normal_zero)
+        self.assertTrue(calibration.meets_threshold(summary.max_positive_raw_score))
+
+        snapshot = self.dashboard_snapshot()
+        self.assertEqual(snapshot["modules"][0]["raw_score"], 0)
+        self.assertEqual(snapshot["status"], "SUSPICIOUS")
+        self.assertIsNone(snapshot["score"])
+        self.assertIsNone(snapshot["confidence"])
+        verdict = snapshot["final_verdict"]
+        self.assertEqual(verdict["status"], "SUSPICIOUS")
+        self.assertEqual(verdict["evidence_unit_count"], 1)
+        self.assertEqual(verdict["active_module_count"], 1)
+        self.assertEqual(verdict["active_modules"], ["external_access"])
+        self.assertIn("CALIBRATED_ACTIVE_EVIDENCE", verdict["reason_codes"])
+        events = self.dashboard_events(
+            module="external_access", submodule="module_integrity"
+        )
+        self.assertEqual([event["raw_score"] for event in events], [0, 2, 0])
+        self.assertEqual(len({event["id"] for event in events}), 3)
+        self.assertEqual([status for _, status in self.receipts], ["stored"] * 3)
+        self.assertEqual([receipt.status for receipt in self.scoring_receipts],
+                         ["processed"] * 3)
+        local = [json.loads(line) for line in local_path.read_text("utf-8").splitlines()]
+        self.assertEqual([set(event) for event in local], [set(EVENT_FIELDS)] * 3)
+        self.assertEqual([item.result for item in self.writer.iter_stored()], local)
 
 
 if __name__ == "__main__":

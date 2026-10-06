@@ -54,6 +54,17 @@ class DebugEvent(ctypes.Structure):
     _fields_ = [("code", w.DWORD), ("pid", w.DWORD), ("tid", w.DWORD), ("details", Details)]
 
 
+def fixture_is_ready(path, expected_pid):
+    """File existence alone does not mean the child finished publishing JSON."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
+        return False
+    if type(value) is not dict or type(value.get("pid")) is not int or value["pid"] != expected_pid:
+        raise RuntimeError("debuggee is not the expected direct owned Python process")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--launcher-dir", type=Path, required=True)
@@ -120,7 +131,9 @@ def main():
     debuggee_python = getattr(sys, "_base_executable", sys.executable)
     worker = subprocess.Popen([debuggee_python, "-c",
         "import os,sys,time,json; from pathlib import Path; "
-        "Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid()})); time.sleep(45)", str(ready)],
+        "p=Path(sys.argv[1]); pending=p.with_name(p.name+'.tmp'); "
+        "pending.write_text(json.dumps({'pid':os.getpid()}),encoding='utf-8'); "
+        "pending.replace(p); time.sleep(45)", str(ready)],
         creationflags=0x00000002, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # DEBUG_ONLY_THIS_PROCESS
     attached, cases, events = True, [], []
     t0 = time.time_ns() // 1_000_000
@@ -128,12 +141,10 @@ def main():
         if not k32.DebugSetProcessKillOnExit(True):
             raise OSError(ctypes.get_last_error(), "fixture cleanup guard failed")
         deadline = time.monotonic() + 10
-        while not ready.exists() and time.monotonic() < deadline:
+        while not fixture_is_ready(ready, worker.pid) and time.monotonic() < deadline:
             pump()
-        if not ready.exists():
+        if not fixture_is_ready(ready, worker.pid):
             raise RuntimeError("fixture child did not become ready")
-        if json.loads(ready.read_text())["pid"] != worker.pid:
-            raise RuntimeError("debuggee is a redirector, not a direct owned Python process")
         registry.register("fixture_probe", worker, by="launcher", restartable=False,
                           argv=["fixture", "NOT_FOR_TELEMETRY"], cwd=str(base), log=str(base / "unused.log"))
         created = registry.entry("fixture_probe")["create_time"]
