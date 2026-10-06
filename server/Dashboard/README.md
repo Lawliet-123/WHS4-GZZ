@@ -182,3 +182,39 @@ py -3.11 -m venv .venv-dashboard-integration
 새 Noclip 관측 1개와 heartbeat를 실제 Receiver에 전송한다. 화면은 자동 polling으로 6→7건과 해당 대상의 SUSPICIOUS 판정 전환을 반영해야 한다. fixture 종료 후에는 기존 자료를 유지하면서 LIVE 지연·서버 오류를 표시해야 한다. `add`는 해당 run의 합성 대상이 있는 loopback fixture를 확인한 뒤에만 전송한다. 부모 fixture 프로세스를 강제 종료하지 말고 Ctrl+C 또는 자연 종료를 사용한다.
 
 공개 `build:gzz`는 이 시험에 사용하지 않는다. CSP로 API 요청을 막는 오프라인 DEMO이다. 운영 브라우저 로그인·인증 프록시와 실게임 E2E는 아직 별도의 공동 작업이다.
+
+## 실제 Windows 센서 E2E
+
+팀 main에 들어간 `server.scoring.tests.test_jiwan_pipeline_e2e`는 탐지기의 실제 전송 코드, Shared HTTP, Receiver, Scoring, Dashboard 조회를 함께 검사한다. 레포 루트에서 실행한다.
+
+```powershell
+.\.venv-dashboard-integration\Scripts\python.exe -m unittest server.scoring.tests.test_jiwan_pipeline_e2e -v
+```
+
+64비트 Windows에서는 테스트가 직접 만든 Python 보조 프로세스에 정상 시스템 DLL을 로드하고, 다른 보조 프로세스가 그 대상을 읽기 전용 핸들로 여는 두 항목도 실제 실행한다. 게임에 DLL을 주입하거나 메모리를 읽고 쓰지 않는다. 나머지 항목은 합성 센서 입력으로 전송·재시도·실패·복구를 검사한다. 임시 저장소와 loopback HTTP만 사용하며 종료 후 정리한다.
+
+`OK`만 확인하지 말고 Windows 항목이 `skipped`인지도 확인한다. 정상 서명 DLL의 양수 관측과 ESP의 `raw_score=2`를 핵 판정 성공으로 해석하지 않는다. 최종 판정은 현재 B 정책을 그대로 따른다. 이 테스트에는 React 화면, 실제 Launcher 전체 실행, Sysmon, 실게임 핵 ON/OFF, CHEAT Replay 수집이 포함되지 않는다.
+
+LocalGuard 전체 테스트를 따로 실행할 때는 패키지 상대 import를 유지하도록 `-t .`를 지정한다.
+
+```powershell
+.\.venv-dashboard-integration\Scripts\python.exe -m unittest discover -s client/LocalGuard/external_access/module_integrity/tests -t . -v
+```
+
+### 실제 서버 앱과 React 화면까지 확인
+
+위 테스트는 Receiver·Dashboard router를 조합한 테스트 앱을 사용한다. 실제 `server.main`의 초기화·기존 C API까지 포함한 DLL 시험은 다음 명령으로 실행한다. 64비트 Windows 전용이며 모든 자료를 새 임시 폴더에 만든다.
+
+```powershell
+.\.venv-dashboard-integration\Scripts\python.exe -m server.dashboard_backend.module_integrity_e2e check
+```
+
+브라우저 확인이 필요하면 8002 포트를 비워 두고 아래 명령을 실행한다.
+
+```powershell
+.\.venv-dashboard-integration\Scripts\python.exe -m server.dashboard_backend.module_integrity_e2e serve --port 8002 --duration 300
+```
+
+다른 터미널에서 일반 `npm run dev`를 실행하고 `연결`에 `/dashboard-api`와 출력된 일회성 테스트 토큰을 입력한다. 이벤트 목록 → DLL 추가 상세 → 플레이어 판정·타임라인 순서로 확인한다. fixture는 새 보조 프로세스만 검사하며, 정상 서명 DLL의 `raw_score=1`을 핵 판정으로 바꾸지 않는다. 외부 프로세스 채널이 미관측이므로 현재 B 판정은 INCONCLUSIVE다. Launcher heartbeat는 만들지 않아 확인 불가로 표시되는 것이 맞다.
+
+지정 시간이 지나거나 Ctrl+C를 누르면 소유 서버·sender·임시 자료가 정리된다. 종료 후 화면은 마지막 LIVE 자료와 갱신 오류를 유지해야 한다. 부모 fixture를 강제 종료하거나 기존 8002 서버를 종료하지 않는다. 명령의 PASS·READY는 실게임 또는 운영 배포 성공을 의미하지 않는다.

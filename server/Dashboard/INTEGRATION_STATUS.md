@@ -2,6 +2,22 @@
 
 이 문서는 8-A 화면이 종합 안티치트 관제 역할을 하기 위해 현재 연결할 수 있는 범위와, 8-B·Receiver·Scoring·Launcher 쪽에서 추가로 확정해야 하는 범위를 구분한다. 화면에 보인다는 이유만으로 아직 없는 서버 기능을 구현된 것처럼 표시하지 않는다.
 
+## 2026-10-06 Windows 센서부터 화면까지 E2E 재확인
+
+GitHub 최신 main `2ac2bed`에는 기존 LocalGuard·ESP E2E와 React 프론트가 모두 머지되어 있었다. 이를 받은 뒤 다시 실행했고, 테스트용 앱만 쓰던 검증에 실제 `server.main`과 React 화면 확인을 추가했다.
+
+- 기존 Jiwan E2E에 회귀 1개를 추가해 총 6개 통과. 실제 Windows DLL 로드·VM_READ 핸들 항목도 실행됐으며 skip은 없었다. Shared HTTP ACK, Receiver 저장, Scoring, Dashboard 조회가 이어지는지 확인했다.
+- 같은 핸들이 유지되는 동안 이벤트가 반복되지 않고, 닫은 뒤 다시 열면 새 이벤트가 생성됐다. 전송 오류 후 재시도와 sender 재시작에서도 같은 Event ID로 중앙 기록이 한 번만 남았다.
+- 합성 unsigned DLL 관측은 실제 detector가 `raw_score=2`로 계산했다. 이후 같은 `module_integrity`의 NORMAL 0점이 와도 이력 `[0, 2, 0]`, 최종 SUSPICIOUS, 근거 1개가 유지됐다. 합성 입력이며 실제 핵 DLL을 사용한 테스트는 아니다.
+- 새 `server.dashboard_backend.module_integrity_e2e`는 정상 시스템 DLL을 실제로 로드해 운영 진입점 `server.main`의 loopback HTTP에 전송한다. 이번 실행은 `winhttp.dll` 추가 1건과 NORMAL 2건으로, 로컬 JSONL·Shared ACK·Receiver·B 이력이 모두 3건으로 일치했다. 새 fixture·안전성 테스트 7개도 skip 없이 통과했다.
+- 일반 React LIVE에서 실제 DLL 이벤트 목록·상세·별도 snapshot·타임라인을 확인했다. `change_type=added`, 정상 서명, 원점수 1과 파일 해시가 표시됐고 경로 필드는 숨겨졌다. 반복 polling에서도 목록은 3건으로 유지됐다.
+- 서명된 DLL의 점수 1은 사건 threshold 2 미만이다. DLL만 검사하고 `external_process`는 관측하지 않은 시험이므로 최종 INCONCLUSIVE·평가 미완료·근거 0개·null 점수/신뢰도 미제공이 맞았다. Launcher를 실행하거나 가짜 heartbeat를 넣지 않았고, 연결 상태는 확인 불가·클라이언트 미제공으로 구분했다.
+- 임시 서버 자연 종료 후에는 마지막 LIVE 자료를 유지하고 지연·조회 오류를 표시했다. DEMO로 자동 전환하지 않았다. 소유 서버의 listener 종료와 임시 저장소 정리도 테스트했다.
+
+최신 회귀 결과: 프론트 166개 및 일반 build, Dashboard backend 54개, Scoring 402개, Receiver 30개, Shared 48개, LocalGuard module integrity 37개 통과. Jiwan 6개는 Scoring 402개에, fixture 7개는 Dashboard 54개에 포함된 수다. ESP 182개도 기본 외부 수집 경계를 빈 fixture로 격리한 단위 테스트에서 통과했으며, 해당 클래스의 명시적 fixture 검증은 유지했다. 이는 실센서 182종 검증이라는 뜻이 아니다.
+
+**완료 범위는 통제된 Windows 보조 프로세스와 실제 로컬 HTTP·React 화면이다.** 실게임 핵 ON/OFF, Sysmon, 실제 Launcher 전체 실행·등록 PID/생성 시각 종단 연동, 운영 배포 인증, 추가 CHEAT Replay 수집은 아직 완료로 표시하지 않는다. 공개 `/GZZ/`도 계속 프론트 단독 DEMO다. 캡처와 명령은 [보고 근거](./docs/report-evidence/REPORT_EVIDENCE.md)와 [README](./README.md)에 남겼다.
+
 ## 2026-10-06 실제 HTTP·브라우저 확인
 
 최신 main `31dc833`을 기준으로 backend v2와 이후 Launcher 수정을 유지한 상태에서 확인했다. 전달받은 이전 v2 ZIP으로 현재 서버·Scoring을 덮어쓰지 않았다.
