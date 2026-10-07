@@ -8,6 +8,7 @@ import { OverviewAnalytics, SessionObservationChart } from "./components/Analyti
 import { EventTimeLabel } from "./components/EventTimeLabel";
 import { ModuleSignals, VerdictEvidence } from "./components/PolicyEvidence";
 import { LauncherIssues } from "./components/LauncherIssues";
+import { SelfDefenseStates, selfDefenseEvent } from "./components/SelfDefenseStates";
 import {
   connectionMeta,
   defaultFilters,
@@ -727,6 +728,12 @@ export default function App() {
     if (!evidenceFiltersActive) return subjectMatchesSelection(item.session_id, item.player_id);
     return visibleSubjectKeys.has(subjectKey(item.session_id, item.player_id));
   }), [evidenceFiltersActive, filtersActive, overview.launcher_statuses, subjectMatchesSelection, visibleSubjectKeys]);
+  const filteredSelfDefenseStatuses = useMemo(() => {
+    if (overview.selfdefense_statuses === undefined) return undefined;
+    const records = overview.selfdefense_statuses.map((item) => selfDefenseEvent(item, events));
+    const visibleIds = new Set(filterEvents(records, overview.assessments, filters).map((event) => event.id));
+    return overview.selfdefense_statuses.filter((item) => visibleIds.has(item.event_id));
+  }, [overview.selfdefense_statuses, overview.assessments, events, filters]);
   const visibleSessionIds = useMemo(() => {
     if (!filtersActive) return new Set(overview.sessions.map((session) => session.id));
     return new Set([
@@ -1022,7 +1029,7 @@ export default function App() {
                     {playerTab === "verdict" && <VerdictView assessment={selectedAssessment} snapshot={visibleSnapshot} events={assessmentEvents} onSelect={(event) => void openEvent(event)} loading={snapshotLoading} error={snapshotError} />}
                     {playerTab === "timeline" && <Timeline events={subjectEvents} onSelect={(event) => void openEvent(event)} />}
                     {playerTab === "signals" && <><DetailNotice loading={snapshotLoading} error={snapshotError} /><ModuleSignals snapshot={visibleSnapshot} events={assessmentEvents} onSelect={(event) => void openEvent(event)} /></>}
-                    {playerTab === "status" && <SubjectSystemStatus status={visibleSubjectStatus} loading={statusLoading} error={statusError} />}
+                    {playerTab === "status" && <><SubjectSystemStatus status={visibleSubjectStatus} loading={statusLoading} error={statusError} /><SelfDefenseStates items={filteredSelfDefenseStatuses?.filter((item) => item.session_id === selectedAssessment.session_id && item.player_id === selectedAssessment.player_id)} events={assessmentEvents} onSelect={(event) => void openEvent(event)} /></>}
                     {playerTab === "history" && <GodModeHistoryPanel history={visibleGodModeHistory} events={assessmentEvents} connection={mode === "live" ? connection : null} loading={historyLoading} error={historyError} onSelect={openHistoryEvent} />}
                   </div>
                 </> : <VerdictView assessment={null} snapshot={null} events={[]} onSelect={() => undefined} loading={false} error={null} />}
@@ -1034,6 +1041,7 @@ export default function App() {
               <ConnectionStrip overview={overview} transportStale={transportStale} onLauncherIssues={openLauncherIssues} />
               <div className="system-view-tools" role="group" aria-label="시스템 표시 범위"><button type="button" aria-pressed={!systemIssuesOnly} onClick={() => setSystemIssuesOnly(false)}>전체 상태</button><button type="button" aria-pressed={systemIssuesOnly} onClick={() => setSystemIssuesOnly(true)}>점검 대상만</button></div>
               {systemIssuesOnly ? <Panel><LauncherIssues launcherStatuses={filteredLauncherStatuses} moduleStatuses={moduleScopeStatuses} onSubject={investigateLauncherSubject} /></Panel> : <SystemOverview overview={overview} launcherStatuses={filteredLauncherStatuses} operationalEventCount={operationalEventCount} />}
+              <Panel><SelfDefenseStates items={filteredSelfDefenseStatuses} events={events} onSelect={(event) => void openEvent(event)} issuesOnly={systemIssuesOnly} /></Panel>
             </>}
           </div>
         </div>

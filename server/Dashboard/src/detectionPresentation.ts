@@ -18,9 +18,9 @@ const severityRank: Record<DetectionSeverity, number> = { Critical: 4, High: 3, 
 export function eventReportedStatus(event: DashboardEvent): { label: string; tone: string } {
   const value = optionalEvidenceText(event, "status")?.toUpperCase();
   const tones: Record<string, string> = {
-    NORMAL: "success", SUSPICIOUS: "warning", ERROR: "danger", FAILED: "danger",
+    NORMAL: "success", CLEAN: "success", DETECTED: "danger", SUSPICIOUS: "warning", ERROR: "danger", FAILED: "danger",
     WARN: "warning", WARNING: "warning", INSUFFICIENT: "warning", SKIPPED: "neutral",
-    RUNNING: "success", STOPPED: "neutral", STARTING: "info", UNKNOWN: "neutral",
+    RUNNING: "success", STOPPED: "neutral", STARTING: "info", UNKNOWN: "neutral", OFFLINE: "warning", INCOMPLETE: "warning",
   };
   return value && Object.hasOwn(tones, value)
     ? { label: value, tone: tones[value]! }

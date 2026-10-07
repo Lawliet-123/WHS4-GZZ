@@ -22,8 +22,8 @@ export const protectionModuleCatalog = [
     id: "self_defense",
     label: "Self Defense",
     group: "protection",
-    description: "워치독으로 안티치트 프로세스의 생존 상태를 감시",
-    componentIds: ["self_defense"],
+    description: "워치독·파일 무결성·디버거 연결 상태를 감시",
+    componentIds: ["self_defense", "selfdefense_integrity", "selfdefense_anti_debug"],
     eventAliases: [{ module: "selfdefense" }],
   },
   {

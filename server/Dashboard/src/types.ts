@@ -315,6 +315,24 @@ export interface LauncherOverviewStatus extends LauncherStatus {
   player_id: string;
 }
 
+/** Latest operational result per SelfDefense function/Watchdog target, not cheat risk. */
+export interface SelfDefenseStatus {
+  session_id: string;
+  player_id: string;
+  kind: string;
+  component: string | null;
+  target_module: string | null;
+  status: string | null;
+  scan_complete: boolean | null;
+  scope: string | null;
+  timestamp_ms: number;
+  sequence: number;
+  event_id: string;
+  raw_score: number;
+  reasons: string[];
+  evidence: Record<string, unknown>;
+}
+
 export interface OverviewResponse {
   schema_version: "dashboard-v0" | string;
   generated_at_utc: string;
@@ -335,6 +353,8 @@ export interface OverviewResponse {
   events: DashboardEvent[];
   module_statuses: ModuleStatus[];
   launcher_statuses: LauncherOverviewStatus[];
+  /** Optional only for older Dashboard APIs that predate operational status reads. */
+  selfdefense_statuses?: SelfDefenseStatus[];
   events_endpoint: string;
   index: EventIndexState;
 }

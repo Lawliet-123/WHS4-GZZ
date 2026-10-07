@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { aggregateLauncherState } from "./App";
 import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 import { dashboardPageHref, type DashboardPage } from "./navigation";
-import type { DashboardEvent, GodModeHistoryResponse } from "./types";
+import type { DashboardEvent, GodModeHistoryResponse, SelfDefenseStatus } from "./types";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -122,6 +122,42 @@ async function connectLiveHistory() {
 }
 
 describe("dashboard interactions", () => {
+  it("shows independent SelfDefense checks and respects system subject/type filters", () => {
+    const original = demoOverview.selfdefense_statuses;
+    const first = demoOverview.assessments[0]!, second = demoOverview.assessments[1]!;
+    const row = (subject: typeof first, changes: Partial<SelfDefenseStatus>): SelfDefenseStatus => ({
+      session_id: subject.session_id, player_id: subject.player_id, kind: "file_integrity", component: "integrity",
+      target_module: null, status: "ERROR", scan_complete: false, scope: "approved_release", timestamp_ms: 100,
+      sequence: 90, event_id: "selfdefense-error", raw_score: 0, reasons: ["BASELINE_UNAVAILABLE"], evidence: { status: "ERROR" }, ...changes,
+    });
+    try {
+      demoOverview.selfdefense_statuses = [row(first, {}), row(second, { kind: "debugger_presence", status: "DETECTED", sequence: 91, event_id: "selfdefense-debugger" })];
+      renderPage("system");
+      let table = screen.getByRole("table", { name: "SelfDefense 기능별 상태" });
+      expect(within(table).getByText("ERROR")).toBeTruthy();
+      expect(within(table).getByText("DETECTED")).toBeTruthy();
+      fireEvent.change(screen.getByLabelText("세션"), { target: { value: first.session_id } });
+      table = screen.getByRole("table", { name: "SelfDefense 기능별 상태" });
+      expect(within(table).getByText("ERROR")).toBeTruthy();
+      expect(within(table).queryByText("DETECTED")).toBeNull();
+      showAdvancedFilters();
+      fireEvent.change(screen.getByLabelText("이벤트 유형"), { target: { value: "detection" } });
+      expect(screen.queryByRole("table", { name: "SelfDefense 기능별 상태" })).toBeNull();
+    } finally { demoOverview.selfdefense_statuses = original; }
+  });
+
+  it("exposes missing and stale measurement reasons without replacing the supplied final verdict", () => {
+    const subject = demoOverview.assessments[0]!, key = `${subject.session_id}::${subject.player_id}`;
+    const original = demoSnapshots[key]!;
+    try {
+      demoSnapshots[key] = { ...original, status: "INCONCLUSIVE", reason_codes: ["MISSING_MEASUREMENT", "STALE_MEASUREMENT"],
+        final_verdict: original.final_verdict ? { ...original.final_verdict, status: "INCONCLUSIVE", assessment_complete: false, active_modules: [], active_module_count: 0, evidence_unit_count: 0 } : null };
+      renderPage("players");
+      expect(screen.getByText("필수 관측 미수신")).toBeTruthy();
+      expect(screen.getByText("필수 관측 유효기간 초과")).toBeTruthy();
+      expect(screen.getByText("INCONCLUSIVE")).toBeTruthy();
+    } finally { demoSnapshots[key] = original; }
+  });
   it("keeps the frontend-only build on local data without connection or token controls", () => {
     vi.stubEnv("MODE", "frontend");
     const fetchMock = vi.fn();
