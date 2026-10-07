@@ -16,6 +16,7 @@ from . import (
     godmode,
     hide_anywhere,
     localguard,
+    kernel_sentinel,
     noclip,
     whistle,
 )
@@ -43,6 +44,7 @@ def build_default_registry() -> PolicyRegistry:
     registry.register("whistle_rpc", whistle.evaluate)
     registry.register("hide_anywhere", hide_anywhere.evaluate)
     registry.register("esp", esp.evaluate)
+    registry.register("kernel_sentinel", kernel_sentinel.evaluate)
 
     return registry
 

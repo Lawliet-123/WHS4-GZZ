@@ -186,6 +186,7 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
             signal.module,
             raw_score=signal.raw_score,
             evidence=state.evidence,
+            reasons=state.reasons,
         )
 
         threshold_met = _threshold_result(

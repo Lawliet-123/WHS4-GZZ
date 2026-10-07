@@ -53,6 +53,8 @@ class SignalPreview:
 # - per_entity_snapshot: PID/scope 등 엔터티별 정상 0과 양수 상태를 모두 전송한다.
 # - pending: 규격이 아직 없는 모듈.
 _PROFILE_ITEMS = (
+    DetectorProfile("kernel_sentinel", "client/kernel_sentinel/agent/main.py", "snapshot", 4,
+                    False, "Source-audited provisional policy: cycles use max; no accumulation or cheat probability."),
     DetectorProfile("noclip", "client/detectors/noclip/main.py", "snapshot", 5,
                     True, "Shared 0.2.0: every scored sample, including NORMAL 0, is sent; ERROR is explicit."),
     DetectorProfile("aimbot", "client/detectors/aimbot/detector/aimbot_detector.py", "snapshot", 8,
