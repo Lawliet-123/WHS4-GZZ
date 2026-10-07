@@ -253,6 +253,14 @@ def build_player_risk_input(snapshot: PlayerPolicySnapshot) -> PlayerRiskInput:
             for candidate in snapshot.correlation_candidates
             if not _OPERATIONAL_ONLY_MODULES.intersection(candidate.modules)
         ),
-        missing_modules=snapshot.missing_modules,
-        stale_modules=snapshot.stale_modules,
+        missing_modules=tuple(
+            module
+            for module in snapshot.missing_modules
+            if module not in _OPERATIONAL_ONLY_MODULES
+        ),
+        stale_modules=tuple(
+            module
+            for module in snapshot.stale_modules
+            if module not in _OPERATIONAL_ONLY_MODULES
+        ),
     )

@@ -114,7 +114,7 @@ def _measurement_state_kwargs(
     observed_at_ms: int | None,
     max_age_ms: int | None,
 ) -> dict[str, Any]:
-    """??? measurement-state ??? ?? Scoring ??? ????."""
+    """Forward only explicitly provided measurement-state options."""
     kwargs: dict[str, Any] = {}
 
     if expected_modules is not None:

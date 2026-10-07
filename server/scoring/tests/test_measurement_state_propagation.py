@@ -111,5 +111,21 @@ class MeasurementStatePropagationTests(unittest.TestCase):
         self.assertEqual(verdict.status, "INCONCLUSIVE")
 
 
+    def test_selfdefense_measurement_state_is_excluded_from_cheat_risk(self):
+        snapshot = PlayerPolicySnapshot(
+            session_id="s",
+            player_id="p",
+            modules=(),
+            correlation_candidates=(),
+            missing_modules=("selfdefense", "noclip_runtime"),
+            stale_modules=("selfdefense", "noclip"),
+        )
+
+        risk_input = build_player_risk_input(snapshot)
+
+        self.assertEqual(risk_input.missing_modules, ("noclip_runtime",))
+        self.assertEqual(risk_input.stale_modules, ("noclip",))
+
+
 if __name__ == "__main__":
     unittest.main()

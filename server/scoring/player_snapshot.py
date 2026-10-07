@@ -122,7 +122,10 @@ def build_player_policy_snapshot(
         stale_modules = tuple(sorted({
             state.module
             for state in ordered_states
-            if observed_at_ms - state.timestamp_ms > max_age_ms
+            if (
+                state.module in expected
+                and observed_at_ms - state.timestamp_ms > max_age_ms
+            )
         }))
 
     for state in ordered_states:

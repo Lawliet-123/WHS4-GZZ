@@ -82,5 +82,22 @@ class MeasurementStateSemanticsTests(unittest.TestCase):
         self.assertEqual(result.stale_modules, ())
 
 
+    def test_stale_only_applies_to_expected_modules(self):
+        result = build_player_policy_snapshot(
+            [
+                state("noclip", timestamp_ms=4000),
+                state("godmode", timestamp_ms=1000),
+            ],
+            session_id="s",
+            player_id="p",
+            expected_modules=("noclip",),
+            observed_at_ms=5000,
+            max_age_ms=2000,
+        )
+
+        self.assertEqual(result.missing_modules, ())
+        self.assertEqual(result.stale_modules, ())
+
+
 if __name__ == "__main__":
     unittest.main()
