@@ -37,5 +37,11 @@ describe("explicit synthetic Scoring explanations", () => {
   it("labels synthetic clock metadata explicitly rather than deriving it at render time", () => {
     expect(demoEvents.items.every((event) => event.time_basis === "session_relative")).toBe(true);
     expect(demoEvents.items.every((event) => event.received_at_utc === "2026-10-05T03:20:00+00:00")).toBe(true);
+    for (const event of demoEvents.items) {
+      expect(event.evidence.timestamp_basis).toBe("launcher_session_start");
+      expect(event.observed_at_utc).toBe(new Date(
+        Number(event.evidence.session_start_unix_ms) + event.timestamp_ms,
+      ).toISOString());
+    }
   });
 });

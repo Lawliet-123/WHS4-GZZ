@@ -2,6 +2,15 @@
 
 이 폴더의 이미지는 종합 Dashboard와 LocalGuard 연동 결과를 설명하기 위한 캡처다. 실제 구현 범위를 넘어선 탐지 성공으로 해석하지 않는다.
 
+## dashboard-time-contract-demo.jpg
+
+2026-10-07 Dashboard-A 시간 계약 반영 후 로컬 정적 DEMO에서 촬영했다. 운영 서버 데이터나 Light 실게임 세션의 검증 화면은 아니다.
+
+- 이벤트 목록·상세에서 동일한 경과·관측·최초 수신 시각을 밀리초까지 표시한다. 세 시계와 서버 저장 순서는 서로 다른 정보다.
+- unknown·충돌·기준시각 미제공을 추정으로 채우지 않는다. 이력은 기존 원본 상세 API로 확인하며 Scoring 파생 상태의 ID를 원본 시계로 재사용하지 않는다.
+- 합성 Event에 고정된 가상 세션 시작 선언을 넣어 화면을 확인했다. 실제 저장 로그·환경 파일·인증 정보는 포함하지 않았다.
+- 프론트 253개 테스트와 일반·공개 빌드, backend 80개 및 Shared 최초 수신 시각 테스트 4개를 통과했다. 운영 배포 SHA 및 지정된 Light 세션의 저장 자료 확인은 별도 검증 범위다.
+
 ## dashboard-feedback-deployed.jpg / dashboard-feedback-verdict-deployed.jpg
 
 2026-10-07 공개 [kkinomalo.com/GZZ/](https://kkinomalo.com/GZZ/)에서 촬영한 피드백 반영 화면이다. 소스 `6fb1f15`의 프론트 단독 DEMO 빌드이며 실제 중앙 서버·게임 결과가 아니다.

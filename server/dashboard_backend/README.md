@@ -107,14 +107,14 @@ heartbeat = central.heartbeat(session_id, client_id)
 
 events의 첫 응답은 items/next_cursor/has_more/through_sequence/index입니다. 같은 필터로 cursor 페이지를 끝까지 읽습니다. 순회 동안 through_sequence를 고정하므로 새 이벤트가 페이지에 섞이지 않습니다. 완료 후 다음 polling에 이전 through_sequence를 after_sequence로 전달합니다. cursor와 after_sequence는 동시에 사용하지 않습니다. 필터 변경 시 둘 다 초기화합니다.
 
-정렬은 서버 저장 sequence 순서입니다. 원본 timestamp_ms는 보존하고 evidence.time_basis가 명시적으로 session_relative 또는 unix_epoch_ms인 경우에만 해당 기준을 전달합니다. 그 외 자료는 time_basis=unknown입니다. 서로 다른 세션의 경과시간을 절대 날짜순으로 비교하지 않습니다.
+정렬은 서버 저장 sequence 순서입니다. 원본 timestamp_ms는 보존하며 evidence.timestamp_basis=launcher_session_start를 session_relative로 연결하고, 명시적 evidence.time_basis=session_relative|unix_epoch_ms도 지원합니다. 선언이 충돌하거나 잘못되면 time_basis=unknown입니다. 서로 다른 세션의 경과시간을 절대 날짜순으로 비교하지 않습니다. 세부 규칙은 [Dashboard-A 시간 표시 계약](docs/launcher-event-time.md)을 따릅니다.
 
 ## 2026-10-07 시간·판정 근거 추가 필드
 
 Shared Event의 7필드, ACK, 중복 처리, Scoring 점수·정책은 변경하지 않습니다. 아래 항목은 저장·조회용 추가 메타데이터입니다.
 
 - `DetectionWriter.iter_stored()`의 `StoredDetection.received_at_utc`: 해당 writer의 최초 저장 시각(UTC). 기존 ledger는 nullable 열을 추가하고 과거 시각은 채우지 않습니다. 재전송·복구·재시작은 최초 값을 유지합니다.
-- `/events` 목록·상세의 `received_at_utc`: 위 시각을 그대로 전달합니다. 관측 시각이 아니며 UI에서 `수신 … KST`로 구분합니다. 기존 index도 nullable migration을 적용합니다. `observed_at_utc`는 현재 backend에서 생성하지 않습니다.
+- `/events` 목록·상세의 `received_at_utc`: 위 시각을 그대로 전달합니다. 관측 시각이 아니며 UI에서 `수신 … KST`로 구분합니다. 기존 index도 nullable migration을 적용합니다. `observed_at_utc`는 유효한 session_relative 선언, session_start_unix_ms와 timestamp_ms를 확인한 경우 합산한 생산자 관측 시각(UTC 밀리초)입니다. 기준이 불명확하거나 수치·합산·날짜 범위를 벗어나면 null이며 수신 시각으로 대체하지 않습니다.
 - `/snapshot`의 `policy.aggregate_evidence`, `policy.aggregate_risk`, `policy.module_evidence`: 주입된 Scoring reader와 기존 B 정책 함수로 읽기 전용 설명을 구성합니다. 전역 Scoring 설정을 바꾸거나 새로운 최종 판정을 발행하지 않습니다.
 - `module_evidence`는 `module`, `submodule`, `signal`, `latest_event`, `retained_incident_event`로 구성합니다. `signal`에서 현재 상태와 실제 calibration threshold/mode를 읽고, 사건 보존형 정책은 최신 raw 0과 이전 유효 사건을 구분합니다. 사건 ID는 원본 `event_id`입니다.
 - 이력 reader가 없는 호환 구현에서는 보존 사건을 정상 종료로 해석하지 않습니다. DLL 채널은 미확정, AutoPaint·GodMode는 이력 필요 상태로 남깁니다.

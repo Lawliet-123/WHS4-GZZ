@@ -75,7 +75,7 @@ export interface DashboardEvent {
   time_basis: "unknown" | string;
   /** Actual durable Receiver receipt metadata, never inferred from refresh time. */
   received_at_utc?: string | null;
-  /** Reserved for an explicit producer/Server observation-time contract. */
+  /** Server-projected producer clock, not a Server clock verification or receipt. */
   observed_at_utc?: string | null;
   evidence_image: string | null;
   log_excerpt: string | null;

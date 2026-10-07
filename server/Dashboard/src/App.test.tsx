@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { aggregateLauncherState } from "./App";
 import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 import { dashboardPageHref, type DashboardPage } from "./navigation";
-import type { DashboardEvent } from "./types";
+import type { DashboardEvent, GodModeHistoryResponse } from "./types";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -65,6 +65,61 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
+
+function historyFixtures(count = 1) {
+  const subject = demoOverview.assessments[0]!;
+  const originals = Array.from({ length: count }, (_, index): DashboardEvent => ({
+    ...demoEvents.items[0]!, id: `history-original-${index}`, sequence: 1000 + index,
+    session_id: subject.session_id, player_id: subject.player_id, module: "godmode",
+    timestamp_ms: 246771, raw_score: 3, event_kind: "detection",
+    evidence: { timestamp_basis: "launcher_session_start", time_basis: "session_relative", session_start_unix_ms: 1791367718186 },
+    reasons: [`History-only event ${index}`], time_basis: "session_relative",
+    observed_at_utc: "2026-10-07T10:12:44.957Z", received_at_utc: "2026-10-07T10:12:46.123Z",
+    evidence_image: null, log_excerpt: null,
+  }));
+  const history: GodModeHistoryResponse = {
+    items: originals.map(({ id, sequence, session_id, player_id, timestamp_ms, raw_score, evidence, reasons }) => ({
+      event_id: id, sequence, session_id, player_id, module: "godmode", timestamp_ms, raw_score, evidence, reasons,
+    })), has_more: false, next_after_sequence: null, final_assessment: false,
+  };
+  return { subject, originals, history };
+}
+
+function mockLiveHistory(history: GodModeHistoryResponse, detail: (id: string) => unknown) {
+  vi.useRealTimers();
+  const originalShowModal = HTMLDialogElement.prototype.showModal;
+  const originalClose = HTMLDialogElement.prototype.close;
+  HTMLDialogElement.prototype.showModal = function showModal() { this.setAttribute("open", ""); };
+  HTMLDialogElement.prototype.close = function close() { this.removeAttribute("open"); };
+  const response = (body: unknown): Response => ({ ok: true, status: 200, headers: new Headers({ "content-type": "application/json" }), json: async () => body } as Response);
+  const subject = demoOverview.assessments[0]!;
+  const key = `${subject.session_id}::${subject.player_id}`;
+  const fetchMock = vi.fn((request: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(request);
+    if (url.includes("/api/dashboard/overview")) return Promise.resolve(response(demoOverview));
+    if (url.includes("/api/dashboard/events?")) return Promise.resolve(response(demoEvents));
+    if (url.includes("/snapshot")) return Promise.resolve(response(demoSnapshots[key]));
+    if (url.includes("/status")) return Promise.resolve(response(demoStatuses[key]));
+    if (url.includes("/history?")) return Promise.resolve(response(history));
+    if (url.includes("/api/dashboard/events/")) return Promise.resolve(response(detail(decodeURIComponent(url.split("/").at(-1)!))));
+    return Promise.reject(new Error(`Unexpected request: ${url}`));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return { fetchMock, restore: () => {
+    HTMLDialogElement.prototype.showModal = originalShowModal;
+    HTMLDialogElement.prototype.close = originalClose;
+  } };
+}
+
+async function connectLiveHistory() {
+  renderPage("players");
+  fireEvent.click(screen.getByRole("button", { name: "연결" }));
+  const dialog = screen.getByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Dashboard 토큰"), { target: { value: "test-token" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "연결" }));
+  await waitFor(() => expect(screen.getByText("LIVE")).toBeTruthy());
+  fireEvent.click(screen.getByRole("tab", { name: "GodMode 이력" }));
+}
 
 describe("dashboard interactions", () => {
   it("keeps the frontend-only build on local data without connection or token controls", () => {
@@ -393,18 +448,101 @@ describe("dashboard interactions", () => {
     withDemoEvent(4, { timestamp_ms: 84_000, time_basis: "session_relative", observed_at_utc: "2026-10-07T01:02:03Z", received_at_utc: "2026-10-07T01:02:04Z" }, () => {
       renderPage("events");
       const cell = within(eventRow(4)).getAllByRole("cell")[0]!;
-      expect(cell.textContent).toContain("T+01:24");
-      expect(cell.textContent).toContain("관측 2026-10-07 10:02:03 KST");
+      expect(cell.textContent).toContain("경과 01:24.000");
+      expect(cell.textContent).toContain("관측 2026-10-07 10:02:03.000 KST");
+      expect(cell.textContent).toContain("수신 2026-10-07 10:02:04.000 KST");
       expect(cell.querySelector("small.mono")?.textContent).toBe("#4");
     });
     withDemoEvent(4, { timestamp_ms: 84_000, time_basis: "unknown", observed_at_utc: undefined, received_at_utc: undefined }, () => {
       renderPage("events");
       const cell = within(eventRow(4)).getAllByRole("cell")[0]!;
       expect(cell.textContent).toContain("timestamp 84000 ms");
-      expect(cell.textContent).toContain("실제 시각 미제공");
-      expect(cell.textContent).not.toContain("T+");
+      expect(cell.textContent).toContain("관측 시각 미제공");
+      expect(cell.textContent).not.toContain("경과 ");
       expect(cell.textContent).not.toContain("KST");
     });
+  });
+
+  it.each(["session_relative", "unknown"] as const)("reads bounded history-row times from canonical detail and preserves %s", async (basis) => {
+    const { originals, history } = historyFixtures(9);
+    for (const original of originals) {
+      original.time_basis = basis;
+      if (basis === "unknown") {
+        original.observed_at_utc = null;
+        // A conflicting raw declaration must not override Server unknown.
+        original.evidence.time_basis = "unix_epoch_ms";
+      }
+    }
+    const { fetchMock, restore } = mockLiveHistory(history, (id) => originals.find((event) => event.id === id));
+    try {
+      await connectLiveHistory();
+      const row = await screen.findByRole("button", { name: "GodMode 사건 #1008 상세 보기" });
+      await waitFor(() => {
+        expect(row.textContent).toContain("수신 2026-10-07 19:12:46.123 KST");
+        expect(row.textContent).toContain(basis === "session_relative" ? "경과 04:06.771" : "timestamp 246771 ms");
+      });
+      expect(document.querySelectorAll(".history-list li")).toHaveLength(8);
+      const originalReads = fetchMock.mock.calls.map(([request]) => String(request)).filter((url) => url.includes("/api/dashboard/events/"));
+      expect(originalReads).toHaveLength(8);
+      expect(originalReads.some((url) => url.endsWith("history-original-0"))).toBe(false);
+      if (basis === "session_relative") expect(row.textContent).toContain("관측 2026-10-07 19:12:44.957 KST");
+      else {
+        expect(row.textContent).toContain("관측 시각 미제공");
+        expect(row.textContent).not.toContain("경과 ");
+      }
+      fireEvent.click(row);
+      const drawer = screen.getByRole("dialog", { name: "이벤트 상세" });
+      await waitFor(() => expect(within(drawer).getByText("수신 2026-10-07 19:12:46.123 KST")).toBeTruthy());
+      expect(within(drawer).getAllByText(basis === "session_relative" ? "경과 04:06.771" : "timestamp 246771 ms").length).toBeGreaterThan(0);
+      // Detail reads do not append history-only rows to the Event feed/counts.
+      fireEvent.click(within(drawer).getByRole("button", { name: "상세 패널 닫기" }));
+      visitPage("events");
+      expect(screen.queryByText("History-only event 8")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it("leaves mismatched history detail clocks unknown and allows a canonical retry", async () => {
+    const { originals, history } = historyFixtures();
+    let valid = false;
+    const { restore } = mockLiveHistory(history, () => valid ? originals[0] : { ...originals[0], player_id: "wrong-player" });
+    try {
+      await connectLiveHistory();
+      await waitFor(() => expect(screen.getByText("일부 이력의 원본 시간 정보를 불러오지 못했습니다.")).toBeTruthy());
+      const row = screen.getByRole("button", { name: "GodMode 사건 #1000 상세 보기" });
+      expect(row.textContent).toContain("timestamp 246771 ms");
+      expect(row.textContent).toContain("관측 시각 미제공");
+      expect(row.textContent).not.toContain("경과 ");
+      expect(row.textContent).not.toContain("수신 ");
+      valid = true;
+      fireEvent.click(screen.getByRole("button", { name: "이력 시각 다시 확인" }));
+      await waitFor(() => expect(row.textContent).toContain("관측 2026-10-07 19:12:44.957 KST"));
+      expect(screen.queryByText("일부 이력의 원본 시간 정보를 불러오지 못했습니다.")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it("aborts pending original-history reads when leaving the history tab and does not extend the feed", async () => {
+    const { originals, history } = historyFixtures();
+    let resolveDetail: ((event: DashboardEvent) => void) | undefined;
+    const delayed = new Promise<DashboardEvent>((resolve) => { resolveDetail = resolve; });
+    const { fetchMock, restore } = mockLiveHistory(history, () => delayed);
+    try {
+      await connectLiveHistory();
+      await waitFor(() => expect(fetchMock.mock.calls.some(([request]) => String(request).includes("/api/dashboard/events/history-original-0"))).toBe(true));
+      const pendingRead = fetchMock.mock.calls.find(([request]) => String(request).includes("/api/dashboard/events/history-original-0"))!;
+      expect(pendingRead[1]?.signal?.aborted).toBe(false);
+      expect(screen.getByRole("button", { name: "GodMode 사건 #1000 상세 보기" }).textContent).toContain("관측 시각 미제공");
+      visitPage("events");
+      expect(pendingRead[1]?.signal?.aborted).toBe(true);
+      await act(async () => { resolveDetail?.(originals[0]!); await delayed; });
+      expect(screen.queryByText("History-only event 0")).toBeNull();
+      expect(screen.queryByText("관측 2026-10-07 19:12:44.957 KST")).toBeNull();
+    } finally {
+      restore();
+    }
   });
 
   it("exposes explicit mixed Severity and falls back when a scoped dataset no longer supplies it", () => {

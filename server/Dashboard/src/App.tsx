@@ -323,39 +323,77 @@ function Timeline({ events, onSelect }: { events: DashboardEvent[]; onSelect: (e
   );
 }
 
-function historyEvent(item: GodModeHistoryItem, events: readonly DashboardEvent[]): DashboardEvent {
-  const indexed = events.find((event) => event.id === item.event_id
+function matchesHistoryEvent(item: GodModeHistoryItem, event: DashboardEvent): boolean {
+  return event.id === item.event_id
     && event.session_id === item.session_id && event.player_id === item.player_id
-    && event.module === item.module);
+    && event.module === item.module && event.sequence === item.sequence
+    && event.timestamp_ms === item.timestamp_ms && event.raw_score === item.raw_score;
+}
+
+function historyEvent(item: GodModeHistoryItem, events: readonly DashboardEvent[]): DashboardEvent {
+  const indexed = events.find((event) => matchesHistoryEvent(item, event));
   if (indexed) return indexed;
-  const basis = item.evidence.time_basis;
   return {
     id: item.event_id, sequence: item.sequence,
     session_id: item.session_id, player_id: item.player_id, module: item.module,
     timestamp_ms: item.timestamp_ms, evidence: item.evidence,
     reasons: item.reasons, raw_score: item.raw_score,
     event_kind: "detection",
-    time_basis: basis === "session_relative" || basis === "unix_epoch_ms" ? basis : "unknown",
+    // History has no Dashboard time-metadata contract. A declaration inside
+    // its raw evidence cannot stand in for the original Event projection.
+    time_basis: "unknown", received_at_utc: null, observed_at_utc: null,
     evidence_image: null, log_excerpt: null,
   };
 }
 
-function GodModeHistoryPanel({ history, events, loading, error, onSelect }: {
+function GodModeHistoryPanel({ history, events, connection, loading, error, onSelect }: {
   history: GodModeHistoryResponse | null;
   events: readonly DashboardEvent[];
+  connection: LiveConnectionInput | null;
   loading: boolean;
   error: string | null;
   onSelect: (item: GodModeHistoryItem) => void;
 }) {
-  const items = [...(history?.items ?? [])].sort((left, right) => right.sequence - left.sequence).slice(0, 8);
+  const items = useMemo(() => [...(history?.items ?? [])].sort((left, right) => right.sequence - left.sequence).slice(0, 8), [history]);
+  const [metadata, setMetadata] = useState<{ history: GodModeHistoryResponse; events: DashboardEvent[] } | null>(null);
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [metadataAttempt, setMetadataAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setMetadataError(null);
+    setMetadata(null);
+    const missing = items.filter((item) => !events.some((event) => matchesHistoryEvent(item, event)));
+    if (!connection || !history || !missing.length) {
+      setMetadataLoading(false);
+      return () => controller.abort();
+    }
+    setMetadataLoading(true);
+    // Fetch only the bounded, displayed history rows. These details are not
+    // appended to the Event feed or used to manufacture counts/Scoring state.
+    void Promise.allSettled(missing.map(async (item) => {
+      const detail = await loadEventDetail(connection, item.event_id, controller.signal);
+      if (!matchesHistoryEvent(item, detail)) throw new DashboardApiError("GodMode 이력과 원본 이벤트가 일치하지 않습니다.");
+      return detail;
+    })).then((results) => {
+      if (controller.signal.aborted) return;
+      setMetadata({ history, events: results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []) });
+      if (results.some((result) => result.status === "rejected")) setMetadataError("일부 이력의 원본 시간 정보를 불러오지 못했습니다.");
+      setMetadataLoading(false);
+    });
+    return () => controller.abort();
+  }, [connection, events, history, items, metadataAttempt]);
+  const originalEvents = metadata?.history === history ? [...events, ...metadata.events] : events;
   return (
     <Panel className="godmode-history-panel">
       <SectionHeader title="GodMode 사건 이력" count={history?.items.length ?? 0} />
       <DetailNotice loading={loading} error={error} />
+      <DetailNotice loading={metadataLoading} error={metadataError} />
+      {metadataError && <button type="button" className="text-button" onClick={() => setMetadataAttempt((attempt) => attempt + 1)}>이력 시각 다시 확인</button>}
       {items.length ? <ol className="history-list">{items.map((item) => (
         <li key={item.event_id}>
           <button type="button" onClick={() => onSelect(item)} aria-label={`GodMode 사건 #${item.sequence} 상세 보기`}>
-            <EventTimeLabel event={historyEvent(item, events)} />
+            <EventTimeLabel event={historyEvent(item, originalEvents)} />
             <span><strong>사건 #{item.sequence}</strong><small>{item.reasons[0] ? redactSensitiveText(item.reasons[0]) : "기록된 사유 없음"}</small></span>
             <span className="raw-chip">raw {item.raw_score}</span>
             <Icon name="chevron" size={15} />
@@ -700,7 +738,7 @@ export default function App() {
   const selectedAssessment = filteredAssessments.find((item) => item.id === selectedKey) ?? filteredAssessments[0] ?? null;
   const subjectEvents = selectedAssessment ? filteredEvents.filter((event) => event.session_id === selectedAssessment.session_id && event.player_id === selectedAssessment.player_id) : [];
   // Current verdict evidence must not disappear when the Event search is narrowed.
-  const assessmentEvents = selectedAssessment ? events.filter((event) => event.session_id === selectedAssessment.session_id && event.player_id === selectedAssessment.player_id) : [];
+  const assessmentEvents = useMemo(() => selectedAssessment ? events.filter((event) => event.session_id === selectedAssessment.session_id && event.player_id === selectedAssessment.player_id) : [], [events, selectedAssessment?.session_id, selectedAssessment?.player_id]);
   const selectedSubjectKey = selectedAssessment ? subjectKey(selectedAssessment.session_id, selectedAssessment.player_id) : "";
   const visibleSnapshot = snapshot && subjectKey(snapshot.session_id, snapshot.player_id) === selectedSubjectKey ? snapshot : null;
   const visibleSubjectStatus = subjectStatus && subjectKey(subjectStatus.session_id, subjectStatus.player_id) === selectedSubjectKey ? subjectStatus : null;
@@ -906,7 +944,13 @@ export default function App() {
     setEventLoading(true);
     try {
       const detail = await loadEventDetail(connection, event.id, controller.signal);
-      if (!controller.signal.aborted && requestId === eventRequestRef.current && detail.id === event.id) setSelectedEvent(detail);
+      if (controller.signal.aborted || requestId !== eventRequestRef.current) return;
+      if (detail.id !== event.id || detail.session_id !== event.session_id || detail.player_id !== event.player_id
+        || detail.module !== event.module || detail.sequence !== event.sequence
+        || detail.timestamp_ms !== event.timestamp_ms || detail.raw_score !== event.raw_score) {
+        throw new DashboardApiError("선택한 이벤트와 원본 상세 정보가 일치하지 않습니다.");
+      }
+      setSelectedEvent(detail);
     } catch (caught) {
       if (!controller.signal.aborted && requestId === eventRequestRef.current) setEventError(caught instanceof DashboardApiError ? caught.message : "이벤트 상세를 불러오지 못했습니다.");
     } finally {
@@ -979,7 +1023,7 @@ export default function App() {
                     {playerTab === "timeline" && <Timeline events={subjectEvents} onSelect={(event) => void openEvent(event)} />}
                     {playerTab === "signals" && <><DetailNotice loading={snapshotLoading} error={snapshotError} /><ModuleSignals snapshot={visibleSnapshot} events={assessmentEvents} onSelect={(event) => void openEvent(event)} /></>}
                     {playerTab === "status" && <SubjectSystemStatus status={visibleSubjectStatus} loading={statusLoading} error={statusError} />}
-                    {playerTab === "history" && <GodModeHistoryPanel history={visibleGodModeHistory} events={assessmentEvents} loading={historyLoading} error={historyError} onSelect={openHistoryEvent} />}
+                    {playerTab === "history" && <GodModeHistoryPanel history={visibleGodModeHistory} events={assessmentEvents} connection={mode === "live" ? connection : null} loading={historyLoading} error={historyError} onSelect={openHistoryEvent} />}
                   </div>
                 </> : <VerdictView assessment={null} snapshot={null} events={[]} onSelect={() => undefined} loading={false} error={null} />}
               </div>

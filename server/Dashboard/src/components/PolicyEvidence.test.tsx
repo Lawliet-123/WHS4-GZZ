@@ -93,7 +93,7 @@ describe("VerdictEvidence", () => {
     render(<VerdictEvidence snapshot={snapshot} events={[{ ...incident, time_basis: "unknown" }, { ...latest, time_basis: "unknown" }]} />);
     expect(screen.getByText("timestamp 1000 ms")).toBeTruthy();
     expect(screen.getByText("timestamp 2000 ms")).toBeTruthy();
-    expect(screen.queryByText(/T\+/)).toBeNull();
+    expect(screen.queryByText(/경과 /)).toBeNull();
   });
 
   it("uses the same original event's explicit clocks for a stored-state witness", () => {
@@ -104,8 +104,9 @@ describe("VerdictEvidence", () => {
     entries[0]!.latest_event.observed_at_utc = null;
     const knownOriginal: DashboardEvent = { ...latest, time_basis: "session_relative", observed_at_utc: "2026-10-06T15:00:00Z", received_at_utc: "2026-10-06T15:00:01Z" };
     render(<VerdictEvidence snapshot={snapshot} events={[incident, knownOriginal]} />);
-    expect(screen.getByText("T+00:02")).toBeTruthy();
-    expect(screen.getByText("관측 2026-10-07 00:00:00 KST")).toBeTruthy();
+    expect(screen.getByText("경과 00:02.000")).toBeTruthy();
+    expect(screen.getByText("관측 2026-10-07 00:00:00.000 KST")).toBeTruthy();
+    expect(screen.getByText("수신 2026-10-07 00:00:01.000 KST")).toBeTruthy();
   });
 
   it("does not borrow clock metadata from a different event with the same timestamp", () => {
@@ -117,7 +118,7 @@ describe("VerdictEvidence", () => {
     const otherEvent: DashboardEvent = { ...latest, id: "different-source", time_basis: "session_relative", observed_at_utc: "2026-10-06T15:00:00Z" };
     render(<VerdictEvidence snapshot={snapshot} events={[incident, otherEvent]} />);
     expect(screen.getByText("timestamp 2000 ms")).toBeTruthy();
-    expect(screen.queryByText("관측 2026-10-07 00:00:00 KST")).toBeNull();
+    expect(screen.queryByText("관측 2026-10-07 00:00:00.000 KST")).toBeNull();
   });
 });
 

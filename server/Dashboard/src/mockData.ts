@@ -19,6 +19,8 @@ import type {
  */
 
 const generatedAt = "2026-10-05T03:20:00+00:00";
+// A fixed fictional producer clock, not an inferred live session start.
+const demoSessionStartUnixMs = Date.parse("2026-10-05T03:15:00.000Z");
 
 function makeVerdict(
   sessionId: string,
@@ -110,10 +112,16 @@ const event = (
   event_kind: "detection",
   // Explicit fictional server metadata, not a guess made by UI rendering.
   time_basis: "session_relative",
+  observed_at_utc: new Date(demoSessionStartUnixMs + input.timestamp_ms).toISOString(),
   received_at_utc: generatedAt,
   evidence_image: null,
   log_excerpt: null,
   ...input,
+  evidence: {
+    ...input.evidence,
+    timestamp_basis: "launcher_session_start",
+    session_start_unix_ms: demoSessionStartUnixMs,
+  },
 });
 
 const eventItems: DashboardEvent[] = [

@@ -4,8 +4,10 @@ import type { DashboardEvent } from "../types";
 /** Never equate server receipt time with the detector's observation time. */
 export function EventTimeLabel({ event }: { event: DashboardEvent }) {
   const time = eventTime(event);
-  return <span className="event-time" title={`${time.primaryLabel} · ${time.secondaryLabel ?? "실제 시각 미제공"}`}>
+  const receipt = time.receivedLabel !== null ? `수신 ${time.receivedLabel}` : null;
+  return <span className="event-time" title={[time.primaryLabel, time.secondaryLabel, receipt].filter(Boolean).join(" · ")}>
     <span className="time-cell">{time.primaryLabel}</span>
-    <small>{time.secondaryLabel ?? "실제 시각 미제공"}</small>
+    <small title={time.observedLabel !== null ? "생산자가 선언한 시계 기준. 서버 시계 검증 결과가 아닙니다." : undefined}>{time.secondaryLabel}</small>
+    {receipt && <small>{receipt}</small>}
   </span>;
 }

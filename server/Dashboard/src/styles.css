@@ -127,7 +127,7 @@ td strong { font-size: 12px; font-weight: 550; }
 td small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 .events-panel, .session-panel, .module-operations-panel, .system-overview-panel { overflow: hidden; }
 .detection-table { min-width: 1120px; }
-.detection-table th:nth-child(1) { width: 95px; }
+.detection-table th:nth-child(1) { width: 235px; }
 .detection-table th:nth-child(2) { width: 160px; }
 .detection-table th:nth-child(3) { width: 145px; }
 .detection-table th:nth-child(5) { width: 65px; text-align: right; }
@@ -304,7 +304,8 @@ td small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 .event-time { display: inline-grid; min-width: 0; max-width: 220px; gap: 3px; font-variant-numeric: tabular-nums; }
 .event-time .time-cell { white-space: normal; overflow-wrap: anywhere; }
 .event-time small, .timeline-list .event-time small, .history-list .event-time small { display: block; margin: 0; overflow: visible; color: var(--muted); font-size: 10px; white-space: normal; overflow-wrap: anywhere; }
-.detection-table td:first-child { min-width: 175px; }
+.detection-table td:first-child { min-width: 235px; }
+.detection-table .event-time small { white-space: nowrap; }
 .policy-evidence { min-width: 0; padding-top: 16px; border-top: 1px solid var(--line); }
 .policy-evidence h4, .module-signals h4 { margin: 0 0 12px; color: var(--strong); font-size: 12px; font-weight: 600; }
 .policy-evidence-summary { display: grid; grid-template-columns: 95px minmax(0,1fr); gap: 12px; margin-bottom: 16px; }

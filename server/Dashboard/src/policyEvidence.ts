@@ -41,17 +41,21 @@ function fromState(value: unknown, snapshot: SnapshotResponse, module: string, s
   if (submodule !== null && text(evidence.submodule) !== submodule) return null;
   // Scoring's stored state has no receiver clock metadata. Only the matching
   // original Event can supply those clocks; another event/heartbeat cannot.
-  const original = events.find((event) => event.id === id && sameSubject(event, snapshot)
-    && event.module === module && scopeFor(event) === submodule && event.timestamp_ms === timestamp);
-  const declaredBasis = typeof item.time_basis === "string" ? item.time_basis : "unknown";
+  // A derived aggregate may reuse a contributor's ID/sequence while combining
+  // values from other observations. Even coincident values are not its clock.
+  const original = evidence.derived === true ? undefined : events.find((event) => event.id === id && sameSubject(event, snapshot)
+    && event.module === module && scopeFor(event) === submodule && event.timestamp_ms === timestamp
+    && event.sequence === sequence && event.raw_score === raw);
   return {
     id, sequence, session_id: snapshot.session_id, player_id: snapshot.player_id,
     module, timestamp_ms: timestamp, raw_score: raw, evidence,
     reasons: Array.isArray(item.reasons) ? item.reasons.filter((reason): reason is string => typeof reason === "string") : [],
     event_kind: original?.event_kind ?? (item.event_kind === "operational" ? "operational" : "detection"),
-    time_basis: original && original.time_basis !== "unknown" ? original.time_basis : declaredBasis,
-    received_at_utc: original?.received_at_utc ?? text(item.received_at_utc),
-    observed_at_utc: original?.observed_at_utc ?? text(item.observed_at_utc),
+    // Preserve the canonical projector's unknown/null decisions. Scoring state
+    // is not an alternative declaration or receipt-time source.
+    time_basis: original ? original.time_basis : "unknown",
+    received_at_utc: original ? original.received_at_utc : null,
+    observed_at_utc: original ? original.observed_at_utc : null,
     evidence_image: null, log_excerpt: null,
   };
 }
