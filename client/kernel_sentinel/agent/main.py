@@ -16,13 +16,16 @@ from .telemetry import Telemetry
 from .startup import StartupDiagnostics
 
 class Log:
-    def __init__(self, directory, session, player, config, *, t0=None, telemetry='off', cycle_events=False):
+    def __init__(self, directory, session, player, config, *, t0=None, telemetry='off', cycle_events=False, access_classifier=None):
         self.clock = SessionClock(t0)
         self.telemetry = None
         self.cycle_events = cycle_events
         self.cycle_findings = []
         self.cycle_errors = []
         self.cycle_observed = False
+        self.access_classifier = access_classifier
+        self.cycle_access = []
+        self.cycle_access_counts = {'approved_observation': 0, 'unresolved': 0}
         directory.mkdir(parents=True, exist_ok=False)
         self.raw = (directory/'raw_events.jsonl').open('x', encoding='utf-8')
         self.common = (directory/'common_events.jsonl').open('x', encoding='utf-8')
@@ -66,12 +69,33 @@ class Log:
         self.raw.flush()
         self.feature_status.observe(event)
         observed = findings(event, self.config)
+        # Preserve driver raw first. Apply approval only to this event's access finding.
+        scoring_event = event
+        access = None
+        if event['type'] == 'handle_post' and not event.get('flags', 0) & 3 and observed:
+            access = (self.access_classifier.classify(event) if self.access_classifier else
+                      {'classification': 'unresolved', 'reason': 'approval_classifier_unavailable',
+                       'actor_pid': event.get('actor_pid')})
+            scoring_event = {**event, 'access_approval': access}
+            if access['classification'] == 'approved_observation':
+                self.cycle_observed = True
+                observed = [(reason, score) for reason, score in observed
+                            if reason != 'sensitive_handle_rights_granted']
+                observed.append(('approved_defense_module_access', 0))
+            elif access['reason'] in ('approval_validation_unavailable', 'approval_classifier_unavailable'):
+                observed.append(('access_approval_validation_unavailable', 0))
+            if self.cycle_events:
+                self.cycle_access_counts[access['classification']] += 1
+                # Bounded summary; every original event remains in raw.
+                if len(self.cycle_access) < 64:
+                    self.cycle_access.append(access)
         if self.cycle_events:
             self.cycle_findings.extend(observed)
         if event['type'] == 'kernel_diagnostics':
             self.cycle_observed = True
         errors = [reason for reason, _ in observed if reason.endswith('incomplete') or reason in
-                  ('coverage_gap', 'object_callback_probe_inconclusive', 'handle_post_context_unavailable', 'target_exit')]
+                  ('coverage_gap', 'object_callback_probe_inconclusive', 'handle_post_context_unavailable', 'target_exit',
+                   'access_approval_validation_unavailable')]
         if event['type'] == 'driver_cross_view_status' and event.get('outcome') == 'inconclusive':
             errors.append('driver_cross_view_inconclusive')
         if event['type'] == 'kernel_thread_snapshot' and (event.get('status') != 0 or event.get('lookup_failed', 0)):
@@ -81,14 +105,19 @@ class Log:
         for reason, score in observed:
             # Rate-limit common events, retaining every raw record. No cumulative ban score.
             key = (reason, event.get('actor_pid'), event.get('target_pid'), event.get('path'),
-                   event.get('base'), event.get('tid'), event.get('create_time'), event.get('start'))
+                   event.get('base'), event.get('tid'), event.get('create_time'), event.get('start'),
+                   event.get('actor_create_time'))
             now = time.monotonic()
             if now - self.last.get(key, -1000) < 5:
                 continue
             if len(self.last) > 10000:
                 self.last = {k:v for k,v in self.last.items() if now-v < 5}
             self.last[key] = now
-            record = self.common_event(event, [reason], score, valid=not bool(errors))
+            record = self.common_event(scoring_event, [reason], score, valid=not bool(errors))
+            record['evidence']['measurement_errors'] = errors
+            if access and access['classification'] == 'unresolved' and (score > 0 or not errors):
+                record['evidence']['status'] = 'SUSPICIOUS'
+                record['evidence']['access_conclusion'] = 'sensitive_access_observed_approval_unresolved'
             self.publish(record)
             print(f'[{score}] {reason}', flush=True)
         if self.cycle_events and event['type'] == 'sensor_cycle':
@@ -97,11 +126,20 @@ class Log:
             score = max((score for _, score in positive), default=0)
             record = self.common_event(event, sorted({reason for reason, _ in positive}), score, valid)
             record['evidence'].update(sample_kind='sensor_cycle', measurement_errors=sorted(set(self.cycle_errors)),
-                                      scope='configured_sensors_observed_this_cycle')
+                                      scope='configured_sensors_observed_this_cycle',
+                                      access_approvals=list(self.cycle_access),
+                                      access_approval_counts=dict(self.cycle_access_counts))
+            if all(reason.startswith('sensitive_handle_') for reason, _ in positive) and \
+                    self.cycle_access_counts['unresolved'] and (score > 0 or valid):
+                record['evidence']['status'] = 'SUSPICIOUS'
+            if self.cycle_errors:
+                record['reasons'] = sorted(set(record['reasons']) | set(self.cycle_errors))
             if not valid and not record['reasons']:
                 record['reasons'] = ['Observation Unavailable']
             self.publish(record)
             self.cycle_findings.clear()
+            self.cycle_access.clear()
+            self.cycle_access_counts = {'approved_observation': 0, 'unresolved': 0}
             self.cycle_errors.clear()
             self.cycle_observed = False
     def close(self):
@@ -161,9 +199,22 @@ def watch(args):
             dropped += lost
             if not events:
                 break
+        classifier = None
+        if not kernel_only:
+            from .approved_access import ApprovedAccess, WindowsInspector, digest
+            inspector = WindowsInspector(api)
+            try:
+                runtime = inspector(os.getpid(), command=False)
+                runtime['sha256'] = digest(runtime['image'])
+                runtime['registered_interpreters'] = [sys.executable, getattr(sys, '_base_executable', sys.executable)]
+                classifier = ApprovedAccess(args.session_id, args.player_id, args.pid, created,
+                                            inspector, runtime)
+            except Exception:
+                # Sensor still runs; missing approval verification must never exempt accesses.
+                classifier = None
         log = diag.call('local_log_and_shared_init', Log, Path(args.out), args.session_id, args.player_id, config,
                   t0=getattr(args, 't0', None), telemetry=getattr(args, 'telemetry', 'off'),
-                  cycle_events=getattr(args, 'cycle_events', False))
+                  cycle_events=getattr(args, 'cycle_events', False), access_classifier=classifier)
         log.write({'type': 'session_start', 'pid': args.pid, 'image': image, 'create_time': created,
             'mode': args.mode, 'debug_privilege': privilege, 'config': config,
             'agent_version': '0.2.3', 'capabilities': initial['capabilities'],

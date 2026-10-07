@@ -1,0 +1,2 @@
+# Needed only for live script/cwd attestation. Missing dependency never exempts access.
+psutil>=7.0,<8

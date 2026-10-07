@@ -1,0 +1,141 @@
+{
+  "source_revision": "ce84650240861d4225496304a3d89a00ac022d98",
+  "modules": {
+    "hide_anywhere": {
+      "entry": [
+        "client/detectors/hide_anywhere/mecha_logger.py"
+      ],
+      "trees": [
+        "client/detectors/hide_anywhere"
+      ],
+      "allowed_process_access": 1052688,
+      "target_option": "--pid",
+      "task": "Read-only game values and lifetime/query checks; no write, inject, terminate or duplicate"
+    },
+    "esp": {
+      "entry": [
+        "client/detectors/esp/run.py"
+      ],
+      "trees": [
+        "client/detectors/esp/run.py",
+        "client/detectors/esp/anti_esp"
+      ],
+      "allowed_process_access": 4160,
+      "target_option": null,
+      "task": "Process identity query and source-handle enumeration; no game writes or thread/handle duplication operations"
+    },
+    "autopaint": {
+      "entry": [
+        "-m",
+        "client.detectors.autopaint.main"
+      ],
+      "trees": [
+        "client/detectors/autopaint"
+      ],
+      "allowed_process_access": 4096,
+      "target_option": null,
+      "task": "Limited process identity query only"
+    },
+    "module_integrity": {
+      "entry": [
+        "-m",
+        "client.LocalGuard.external_access.module_integrity.runner"
+      ],
+      "trees": [
+        "client/LocalGuard/external_access/module_integrity"
+      ],
+      "allowed_process_access": null,
+      "target_option": "--game-pid",
+      "task": "Toolhelp module inventory; implicit OS/psutil access masks not yet verified; no exemption"
+    }
+  },
+  "launcher_trees": [
+    "client/Launcher/main.py",
+    "client/Launcher/registry.py",
+    "client/Launcher/modules.py"
+  ],
+  "sha256": {
+    "client/Launcher/main.py": "f8831f57249a5509918970d1de00e1478ef647860963150be4d6521c11801bbc",
+    "client/Launcher/registry.py": "1b9ffe2e5f55ef755a559e5c4e86d64524b31acb107f1f88fa62abdf5e1c1b64",
+    "client/Launcher/modules.py": "2e752e2042bc4dde6da27efa4cf5b766e5f9a4338f647b582f6fc853892575fc",
+    "client/detectors/hide_anywhere/test_shared_contract.py": "c023b653ecc5ca8d40fd54d455ace8b8ad64e239f2fc31ccc4e71c171a8fd521",
+    "client/detectors/hide_anywhere/mecha_detector_v9.py": "34e59c57cfda9ac544cb0f0631c8a9cecf4e1335321df6a4f3c223de0ad5f947",
+    "client/detectors/hide_anywhere/server_bridge.py": "6c6e67daca72bea3289a6258012f7481168167e5512251f1e31862866068ed11",
+    "client/detectors/hide_anywhere/test_session_clock.py": "0ce78b361489b8eaa6996b5af76756fed70414886c87a82ce95cc8a113c09df8",
+    "client/detectors/hide_anywhere/test_detector.py": "ca9f28c94c8b1c59a733da36f2dfc86b51bbac0c0afe4ed6ebb3cc63ae5f3d97",
+    "client/detectors/hide_anywhere/mecha_logger.py": "ca6708930e47d9da02f244f78515f46c4a285e3d0a2b0668be349b96e320309b",
+    "client/detectors/hide_anywhere/test_server_bridge.py": "5e9db21eda8f5931552825bdf0c7f370ac232c08073a1edd96332ddf0e507e49",
+    "client/detectors/hide_anywhere/session_clock.py": "ea636a2e13095b922240f9921a658f0f8f0046b63b6b0577f226e2255e95ce97",
+    "client/detectors/esp/run.py": "36d1de240b16f1a241e95c5e7a56705c5e7c7a8dc422359fb0038df2f7f2db5d",
+    "client/detectors/esp/anti_esp/config.py": "61aaa118733f2d75c1ede366face2ff7f44db969bcd940ba931853c16d7fbacb",
+    "client/detectors/esp/anti_esp/policy.py": "4f93978d61f7be13c602eec99696202224c74bfff5bbbbbabef67b2fa3d3b0ad",
+    "client/detectors/esp/anti_esp/models.py": "804b9be926099c147721f1184002b90fcd2bb5b78068d1eb1de53948daa84691",
+    "client/detectors/esp/anti_esp/pipeline.py": "1331d86158cee3c515208d9e2e058ca6f8749852d96d929e2e35bf1adc86b922",
+    "client/detectors/esp/anti_esp/__init__.py": "a23dbbc3c3e272ad0f15c8c1bde9f9905319ff9dada1e66c16b512df68dada22",
+    "client/detectors/esp/anti_esp/overlay.py": "033ff519348c37adb1f03130c3cd88f96e02ff95edcdd5e1cf18a3ab1623e6de",
+    "client/detectors/esp/anti_esp/windows_api.py": "698aa021220af34f17d72c1f4d17bf37856e69e325e7c7fff2445656757dffd4",
+    "client/detectors/esp/anti_esp/store.py": "a03953034e989bf43e15c4274e1975a24b9b9ec7038d04f51fe3cd4753fac64f",
+    "client/detectors/esp/anti_esp/scoring.py": "ada7e27ecd73871e87ca70d18573aca668d95ddde14bd41746e92e7e1d17c01c",
+    "client/detectors/esp/anti_esp/dashboard.py": "9c0396fd46d086eff34e32a01d2c2c34a7c8a78e6567d9aef6b1e7cca6ca9cc6",
+    "client/detectors/esp/anti_esp/shared_transport.py": "cc78b3c9857da4b4287668806af3a54336519ab352f121d7bfaaeff984a4fd59",
+    "client/detectors/esp/anti_esp/team_format.py": "d1c734bdd0769ce1c4c96427884801b7bc8c67526a899073553733fcba6fda4b",
+    "client/detectors/esp/anti_esp/sysmon.py": "b25170135436bc05ab2ceba452f4750f5c0441a82190266272fb7e9302e4969f",
+    "client/detectors/esp/anti_esp/controller.py": "8a0f4dd3499a5614aa6ce5a1dc561c3dc59a00c97cedf20728a1cd88ccd00f32",
+    "client/detectors/esp/anti_esp/core/wintrust_codes.py": "1b5d78e61df0d7652b98cb7dc51518aa72f357d7ae444dbd47359b62d8cafea6",
+    "client/detectors/esp/anti_esp/core/session.py": "31e00277c4e75ed37dffe72d25b93a7087c20a3d45200779d72c29bdd09c4d0b",
+    "client/detectors/esp/anti_esp/core/events.py": "8241439a7011a53c492e2942a433a56ea8aed11800f9bd14061febd08a249041",
+    "client/detectors/esp/anti_esp/core/__init__.py": "6816037ea50d49e5dc3a78bcfa640a183ba0809c50794c1bd0691abade4e18e5",
+    "client/detectors/esp/anti_esp/core/context.py": "cfa726723e4ffb411efaa0529f62150d224859f667bb99cef8eef0217162862d",
+    "client/detectors/esp/anti_esp/core/interfaces.py": "1f85078cde32d57ec982455b8d9a6338f1668f83f51b5ddffe3337d3b0fff60e",
+    "client/detectors/esp/anti_esp/sensors/handle_sensor.py": "426aee5afa30ca2271346f53bd5e703d38e7d6376018e5ce3522e76eab109e8a",
+    "client/detectors/esp/anti_esp/sensors/module_events.py": "a4ff25cf537dece07b08ae157883396eda203a3f683ed97ae783c54f9be105c8",
+    "client/detectors/esp/anti_esp/sensors/module_sensor.py": "9b1323ab924d777aea091b3a8f251806eee1929e0043c90c6a2fef8a996db891",
+    "client/detectors/esp/anti_esp/sensors/process_relationships.py": "7cfa3e09d14a26e3c440ee1b5c90e7f1925b38fb7b10c7d74d212910352dd8be",
+    "client/detectors/esp/anti_esp/sensors/process_access.py": "7279856fb1536c91946355f27aa21065cc516cc2a5ed2f29cd5344fe5cc3518c",
+    "client/detectors/esp/anti_esp/sensors/signature.py": "45b3c70ed13fe48b0d07955e096e654041633f4031c73e7da2365c18e2120f02",
+    "client/detectors/esp/anti_esp/sensors/__init__.py": "be51c2c794677cd43aadc0c1568107bf5448cdab6d041606516d89dcc0f449bc",
+    "client/detectors/esp/anti_esp/sensors/anticheat_registry.py": "e29668a3659f2b4ecc65af9f61695e65253b029c77e7beef5b1e537d7a818203",
+    "client/detectors/esp/anti_esp/sensors/file_identity.py": "a5f94539813ac2832cd79a98dc261171e4ac18369eaf22ca5ae8863cb18c85e1",
+    "client/detectors/esp/anti_esp/sensors/window_overlap.py": "b639fda84a5da29cf1f4c9f8d9d608b1474b3cb0601ede2b58b67e4d23a42309",
+    "client/detectors/esp/anti_esp/sensors/identity.py": "f80198dbaaa456addae596ed71522f765a33ef5932e0bd83cad87fc6780e2cb7",
+    "client/detectors/esp/anti_esp/detectors/esp_detector.py": "1077b29c2cd6f22f7d563d5bf6c098cbd0d950df6356eacb4a1224cfc4f0f0f5",
+    "client/detectors/esp/anti_esp/detectors/__init__.py": "46cb9f358bb19045e02bf1d62b4d389d588facfb41323d47a1af24c8e7efb6ce",
+    "client/detectors/autopaint/main.py": "644a1726f4694318912bd8894376243ebaf94de20ab56c6c26fad6e8de1aee25",
+    "client/detectors/autopaint/tests/test_session.py": "4005fe77b66c8803570187f8f36121b786276e4425e5775582fa9f32f382e36f",
+    "client/detectors/autopaint/tests/test_behavior.py": "55e2b6a28ee8acbb2bfe039e0b3ac50e428d9899628c9a824a8232781f8976ec",
+    "client/detectors/autopaint/tests/test_detector.py": "b2a07c7faac0b97f8ad17a07120bdd878ecebf0f6373a0cd99ba8e97c870c348",
+    "client/detectors/autopaint/tests/test_shared.py": "e225c9f18aa856953c9007bc8682d4f8c99be338752c2f8cdb06c185d23380e5",
+    "client/detectors/autopaint/tests/test_telemetry.py": "9a25a97cd4a87acf2a8133cd8fff26d9cf0d0529d0f5d2ae2dce5ba397a198fa",
+    "client/detectors/autopaint/tests/test_paint_summary.py": "0b4c4716777aa6b9ea00eedd946e0b50502ab8a756bb6f78f32e728ee02997d5",
+    "client/detectors/autopaint/gzz_anticheat/cli.py": "9703e3ed112f8c3ed6c74ee13a276462c23521a1a0ebbe7593bc21d28b0c5dfa",
+    "client/detectors/autopaint/gzz_anticheat/logging_io.py": "289a7746a5341f1e879fae6b7bac7d05a7648ca6b9cb58cf5f5c8c0087c5e2d3",
+    "client/detectors/autopaint/gzz_anticheat/windows_sensor.py": "59a0162a8917b56f29da485591ff27225195bc01a0ebc1061588d2d43fafb9d5",
+    "client/detectors/autopaint/gzz_anticheat/session.py": "cb12a70b7dc010ccc0efed6df6d04c29ecf8ab35648a675e047b8e67af92d556",
+    "client/detectors/autopaint/gzz_anticheat/replay.py": "ff88c1e9ff9b16befe59316e11ed6ba4674a18a5b90a56642d5da7b16ef44e18",
+    "client/detectors/autopaint/gzz_anticheat/models.py": "59ea396b53230f16c1f814e68a058cbe1d773ae910844d003f6701c52ca2331e",
+    "client/detectors/autopaint/gzz_anticheat/detector.py": "22a0a5507c13dd8885da4c7cf32fc2ad9b8b077d170485104844a0869adaa8c9",
+    "client/detectors/autopaint/gzz_anticheat/behavior.py": "e7d26c9fa213ae291ee305fe30ca405db290d6fd134fb856589d502099e6cc2f",
+    "client/detectors/autopaint/gzz_anticheat/__init__.py": "776b39e8a820cb57f32f9bd62cd31d78985400e5b51dfbfe187fa109da7aabf4",
+    "client/detectors/autopaint/gzz_anticheat/telemetry.py": "ee7f2f5fce0de9b062ab2a431393cf0ece605fa5155fcfe0a5ad47ebe3d2bc50",
+    "client/detectors/autopaint/gzz_anticheat/mark.py": "870fcd55d7f18427ccaaf8bea24731439d690d406ea4bde2fc9908759e4c5bb2",
+    "client/detectors/autopaint/gzz_anticheat/__main__.py": "2cdd23d4f5cd6c3b3e4cb690ad16d560637767b9ca5b2a3cf129fcc0a5ebc82b",
+    "client/detectors/autopaint/gzz_anticheat/behavior_replay.py": "86d9af520e878505b37ab08c7aaf383fa8b44778775216105ec8e21a9c10b10d",
+    "client/detectors/autopaint/gzz_anticheat/paint_summary.py": "4e70932ff628ada9a599ac4929b95a9bafc9e1c20932b9c35aee85348dac171a",
+    "client/LocalGuard/external_access/module_integrity/runner.py": "58f3b9dad30053304873170ae616ad88afe2fefdf0322694c4c20dbbf817f51f",
+    "client/LocalGuard/external_access/module_integrity/module_sensor.py": "44269e83dbfa06978b853fb00957ef0f517c912fa022e445a98ca09ef8f9df40",
+    "client/LocalGuard/external_access/module_integrity/models.py": "e574ea72899c230e5731a83246ac2afd28f4b5b32d6bf409b4bd35066adfd8de",
+    "client/LocalGuard/external_access/module_integrity/detector.py": "9e570897dff881f8912c26af016d8ca6f6de2730f90b1047054775397400bb6a",
+    "client/LocalGuard/external_access/module_integrity/__init__.py": "f8d98d80661ab4f758fcb89b29fa8d42acb827891857123c2069d152337ed5d5",
+    "client/LocalGuard/external_access/module_integrity/smoke_test.py": "db87e2aa5aa6142470fbea97376ebf95298f01c018323a8cf8d196aa18e93369",
+    "client/LocalGuard/external_access/module_integrity/allowlist.py": "2f7d6fbebd017ca7840bc2faa8fd81c9d9193ce669d4ae5c9fb4e43276b1fe94",
+    "client/LocalGuard/external_access/module_integrity/shared_delivery.py": "91992a97ea54320511d256814d411e14d1e574074e6a09681e03a87bb8e04276",
+    "client/LocalGuard/external_access/module_integrity/baseline.py": "72638b4db3fc5a9754978d9556d35dadf5fd070216d93711fd7964c25f095a46",
+    "client/LocalGuard/external_access/module_integrity/tests/test_smoke_test.py": "8fdffc2a40e2891edc08f4b51844ddd7a3535ce664a8a186af1e7c9bd8b5ed09",
+    "client/LocalGuard/external_access/module_integrity/tests/test_runner.py": "2a0d3defd8b31302ffd357bb2760a1233a5ca374e5b20c95d7967a455a7ca430",
+    "client/LocalGuard/external_access/module_integrity/tests/test_detector.py": "0ecbb783a6edf838c61ed311a6abdaa5239bd5fda1c47eb4b0dd30bd65599dae",
+    "client/LocalGuard/external_access/module_integrity/tests/test_allowlist.py": "d4cc6223da17c14004c76b84e5a8922c1c2a16344fd3621d70b9e91c4c8eaa78",
+    "client/LocalGuard/external_access/module_integrity/tests/__init__.py": "98a0a7e4170d8e836ef2f7ee370ba5071ef0da3de409d679884103335ad19a9a",
+    "client/LocalGuard/external_access/module_integrity/tests/test_module_sensor.py": "f536dd9e6aa17af6fb68825e6ee5d3ec470c852569d1a606788de8e9e5c60322",
+    "client/LocalGuard/external_access/module_integrity/tests/test_shared_delivery.py": "6a51edf46d24c8cab535db9dcc238fa7ab9981136763b96a4cf03bbaecccecb6"
+  }
+}
