@@ -164,6 +164,7 @@ describe("dashboard interactions", () => {
   });
   it("keeps the frontend-only build on local data without connection or token controls", () => {
     vi.stubEnv("MODE", "frontend");
+    window.localStorage.setItem(THEME_STORAGE_KEY, "dark");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
@@ -172,11 +173,13 @@ describe("dashboard interactions", () => {
     expect(screen.queryByRole("button", { name: "연결" })).toBeNull();
     expect(screen.queryByLabelText("Dashboard 토큰")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByRole("group", { name: "화면 테마" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "라이트 테마" }));
+    expect(screen.getAllByRole("button", { name: /^(?:라이트|다크) 모드로 전환$/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
     expect(document.documentElement.dataset.theme).toBe("light");
-    fireEvent.click(screen.getByRole("button", { name: "다크 테마" }));
+    expect(screen.getByRole("button", { name: "다크 모드로 전환" }).textContent).toBe("라이트");
+    fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(screen.getByRole("button", { name: "라이트 모드로 전환" }).textContent).toBe("다크");
     act(() => vi.advanceTimersByTime(10_000));
     expect(fetchMock).not.toHaveBeenCalled();
   });

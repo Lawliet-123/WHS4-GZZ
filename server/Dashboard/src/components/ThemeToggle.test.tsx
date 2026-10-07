@@ -35,8 +35,12 @@ function mockSystemTheme(dark: boolean, legacy = false) {
 function expectTheme(theme: "light" | "dark") {
   expect(document.documentElement.dataset.theme).toBe(theme);
   expect(document.documentElement.style.colorScheme).toBe(theme);
-  expect(screen.getByRole("button", { name: "라이트 테마" }).getAttribute("aria-pressed")).toBe(String(theme === "light"));
-  expect(screen.getByRole("button", { name: "다크 테마" }).getAttribute("aria-pressed")).toBe(String(theme === "dark"));
+  const action = theme === "light" ? "다크 모드로 전환" : "라이트 모드로 전환";
+  const button = screen.getByRole("button", { name: action });
+  expect(button.textContent).toBe(theme === "light" ? "라이트" : "다크");
+  expect(button.getAttribute("title")).toBe(action);
+  expect(button.hasAttribute("aria-pressed")).toBe(false);
+  expect(screen.getAllByRole("button")).toHaveLength(1);
 }
 
 beforeEach(() => {
@@ -86,7 +90,7 @@ describe("dashboard theme", () => {
     expect(initializeTheme()).toBe("light");
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(document.documentElement.style.colorScheme).toBe("light");
-    expect(screen.queryByRole("group", { name: "화면 테마" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(?:라이트|다크) 모드로 전환$/ })).toBeNull();
   });
 
   it("tracks system changes only until an explicit choice is made", () => {
@@ -95,7 +99,7 @@ describe("dashboard theme", () => {
     expectTheme("light");
     system.change(true);
     expectTheme("dark");
-    fireEvent.click(screen.getByRole("button", { name: "라이트 테마" }));
+    fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
     expectTheme("light");
     system.change(true);
     expectTheme("light");
@@ -107,7 +111,13 @@ describe("dashboard theme", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const first = render(<ThemeToggle />);
-    fireEvent.click(screen.getByRole("button", { name: "다크 테마" }));
+    fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
+    expectTheme("dark");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
+    fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
+    expectTheme("light");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+    fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
     first.unmount();
     render(<ThemeToggle />);
@@ -121,7 +131,7 @@ describe("dashboard theme", () => {
     expect(() => initializeTheme()).not.toThrow();
     render(<ThemeToggle />);
     expectTheme("dark");
-    fireEvent.click(screen.getByRole("button", { name: "라이트 테마" }));
+    fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
     expectTheme("light");
     system.change(true);
     expectTheme("light");
@@ -131,7 +141,7 @@ describe("dashboard theme", () => {
     const system = mockSystemTheme(true);
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("Full", "QuotaExceededError"); });
     render(<ThemeToggle />);
-    fireEvent.click(screen.getByRole("button", { name: "라이트 테마" }));
+    fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
     expectTheme("light");
     system.change(true);
     expectTheme("light");
@@ -141,9 +151,9 @@ describe("dashboard theme", () => {
     vi.stubGlobal("matchMedia", undefined);
     render(<ThemeToggle />);
     expectTheme("dark");
-    fireEvent.click(screen.getByRole("button", { name: "라이트 테마" }));
+    fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
     expectTheme("light");
-    fireEvent.click(screen.getByRole("button", { name: "다크 테마" }));
+    fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
     expectTheme("dark");
   });
 
@@ -174,17 +184,37 @@ describe("dashboard theme", () => {
     expect(system.remove).toHaveBeenCalledTimes(system.add.mock.calls.length);
   });
 
-  it("provides focusable native buttons with stable names and pressed state", () => {
+  it("provides one focusable native button showing the current mode and next action", () => {
     mockSystemTheme(false);
     render(<ThemeToggle />);
-    expect(screen.getByRole("group", { name: "화면 테마" })).toBeTruthy();
-    const dark = screen.getByRole("button", { name: "다크 테마" }) as HTMLButtonElement;
-    expect(dark.type).toBe("button");
-    expect(dark.tabIndex).toBe(0);
-    dark.focus();
-    expect(document.activeElement).toBe(dark);
-    fireEvent.click(dark);
+    expect(screen.queryByRole("group", { name: "화면 테마" })).toBeNull();
+    const button = screen.getByRole("button", { name: "다크 모드로 전환" }) as HTMLButtonElement;
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(button.type).toBe("button");
+    expect(button.tabIndex).toBe(0);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
     expectTheme("dark");
-    expect(screen.getByRole("button", { name: "다크 테마" })).toBe(dark);
+    expect(screen.getByRole("button", { name: "라이트 모드로 전환" })).toBe(button);
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("leaves Enter and Space to the native button and handles a keyboard-generated click once", () => {
+    mockSystemTheme(false);
+    render(<ThemeToggle />);
+    const button = screen.getByRole("button", { name: "다크 모드로 전환" });
+    button.focus();
+    // jsdom does not synthesize the browser's default keyboard click.
+    expect(fireEvent.keyDown(button, { key: "Enter", code: "Enter" })).toBe(true);
+    expect(fireEvent.keyUp(button, { key: "Enter", code: "Enter" })).toBe(true);
+    fireEvent.click(button, { detail: 0 });
+    expectTheme("dark");
+    expect(fireEvent.keyDown(button, { key: " ", code: "Space" })).toBe(true);
+    expect(fireEvent.keyUp(button, { key: " ", code: "Space" })).toBe(true);
+    fireEvent.click(button, { detail: 0 });
+    expectTheme("light");
+    expect(document.activeElement).toBe(button);
   });
 });

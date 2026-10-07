@@ -3,29 +3,19 @@ import { Icon } from "./Icon";
 
 export function ThemeToggle() {
   const { theme, selectTheme } = useDashboardTheme();
+  const nextTheme = theme === "light" ? "dark" : "light";
+  const actionLabel = `${nextTheme === "light" ? "라이트" : "다크"} 모드로 전환`;
 
   return (
-    <div className="theme-toggle" role="group" aria-label="화면 테마">
-      <button
-        className="theme-toggle-button"
-        type="button"
-        aria-label="라이트 테마"
-        aria-pressed={theme === "light"}
-        onClick={() => selectTheme("light")}
-      >
-        <Icon name="sun" size={15} />
-        <span className="theme-toggle-label">라이트</span>
-      </button>
-      <button
-        className="theme-toggle-button"
-        type="button"
-        aria-label="다크 테마"
-        aria-pressed={theme === "dark"}
-        onClick={() => selectTheme("dark")}
-      >
-        <Icon name="moon" size={15} />
-        <span className="theme-toggle-label">다크</span>
-      </button>
-    </div>
+    <button
+      className="theme-toggle-button"
+      type="button"
+      aria-label={actionLabel}
+      title={actionLabel}
+      onClick={() => selectTheme(nextTheme)}
+    >
+      <Icon name={theme === "light" ? "sun" : "moon"} size={15} />
+      <span className="theme-toggle-label">{theme === "light" ? "라이트" : "다크"}</span>
+    </button>
   );
 }
