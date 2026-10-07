@@ -205,7 +205,7 @@ class Tests(unittest.TestCase):
             session.finish()
 
     def test_hash_monitor_partial_no_hit_emits_no_zero(self):
-        """부분 검사에 일치가 없으면 정상 0점 Event를 내보내지 않는다."""
+        """부분 검사에 일치가 없으면 측정 불가 ERROR Event를 보낸다."""
         session = ReplaySession(self.root, 'hash_partial',
                                 data_origin='controlled_fixture',
                                 modules=['localguard_executable_hash'])
@@ -221,8 +221,12 @@ class Tests(unittest.TestCase):
             with patch('hash_monitor.process_session_id', return_value=1), \
                  patch('hash_monitor.scan_running_executable_hashes', return_value=partial):
                 monitor._run_once()
-            self.assertEqual(session.counts, {})
-            self.assertEqual(forwarded, [])
+            self.assertEqual(session.counts['localguard_executable_hash'], 1)
+            self.assertEqual(len(forwarded), 1)
+            self.assertEqual(forwarded[0]['raw_score'], 0)
+            self.assertEqual(forwarded[0]['evidence']['status'], 'ERROR')
+            self.assertIs(forwarded[0]['evidence']['measurement_valid'], False)
+            self.assertFalse(forwarded[0]['evidence']['coverage_complete'])
             self.assertEqual(heartbeat.calls[-1][1], 'degraded')
             self.assertFalse(json.loads(monitor.raw.getvalue())['score_evaluated'])
         finally:

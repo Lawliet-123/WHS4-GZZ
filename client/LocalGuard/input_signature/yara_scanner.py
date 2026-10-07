@@ -32,7 +32,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.config import ClientConfig
-from shared.logger import configure_client, send_detection, flush_client, shutdown_client
+from shared.logger import (configure_client, send_detection, get_client_status,
+                           flush_client, shutdown_client)
 
 GAME = 'PenguinHotel-Win64-Shipping.exe'
 EXTERNAL_PYTHON_NAMES = frozenset(('python.exe', 'pythonw.exe'))
@@ -100,9 +101,20 @@ def stop_detection_forwarding(active):
     if not active:
         return
     try:
-        if not flush_client(timeout=3):
+        flushed = flush_client(timeout=3)
+        if not flushed:
             print('[중앙 전송 미완료] 미전송·실패 항목이 대기열에 남아 있습니다.',
                   file=sys.stderr, flush=True)
+        try:
+            state = get_client_status()
+            print('[중앙 전송 결과] '
+                  f'acknowledged_this_run={state.acknowledged_this_run} '
+                  f'pending={state.pending} failed={state.failed} '
+                  f'last_http_code={state.last_code}',
+                  file=sys.stderr, flush=True)
+        except Exception:
+            # 진단 출력이 실제 종료·전송 정리를 방해하지 않게 한다.
+            pass
     except Exception as exc:
         print('[중앙 전송 정리 오류]', type(exc).__name__, file=sys.stderr, flush=True)
     finally:
@@ -438,12 +450,30 @@ def scan_once(rules, process, session, raw_stream, *, timeout=45,
         if warnings: raise RuntimeError('yara_incomplete_scan_warning:' + ','.join(warnings))
         hits = _hits_from_matches(matches)
     except Exception as exc:
-        record = {'type': 'scan_error', 'timestamp_ms': session.elapsed(), 'scan_start_ms': start,
+        end = session.elapsed()
+        record = {'type': 'scan_error', 'timestamp_ms': end, 'scan_start_ms': start,
                   'pid': process.pid, 'error_type': type(exc).__name__, 'error': str(exc),
                   'score_evaluated': False}
         json_line(raw_stream, record)
         session.error('yara_scan_failed')
-        # 검사 공백을 '정상'이라고 오인하지 않도록 공통 0점 Event를 만들지 않는다.
+        # 점수 0은 검사 성공을 뜻하지 않는다. 원시 예외 메시지나 메모리 내용은
+        # 서버로 보내지 않고, 측정 불가 상태만 공통 Event에 표시한다.
+        evidence = {
+            'status': 'ERROR', 'measurement_valid': False,
+            'scope': scope, 'pid': process.pid,
+            'scan_start_ms': start, 'scan_duration_ms': end - start,
+            'error_type': type(exc).__name__,
+            'matched_rules': [], 'rule_match_count': 0,
+            'coverage': 'scan_incomplete_or_unavailable',
+        }
+        if selection:
+            evidence['selection'] = selection
+        ruleset_info = _ruleset_evidence(ruleset)
+        if ruleset_info is not None:
+            evidence['ruleset'] = ruleset_info
+        session.emit('localguard_yara', session.manifest['player_id'], evidence,
+                     ['YARA scan unavailable: ' + type(exc).__name__], 0,
+                     timestamp_ms=end)
         return None
     return _emit_scan_result(
         process, session, raw_stream, start, hits,
