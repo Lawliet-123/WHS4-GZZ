@@ -407,13 +407,41 @@ def resolve_calibration(
                 ),
             )
 
+        # 2026-10-07 live E2E에서 아래 repository-default ruleset을
+        # NORMAL 0 / loaded AutoPaint bridge 3으로 분리 검증했다.
+        #
+        # YARA 3은 실제 페인팅 행동 자체가 아니라 알려진 bridge DLL의
+        # 메모리 signature 존재 근거다. active_cheat_proven /
+        # cheat_confirmed 의미를 여기서 승격하지 않는다.
+        validated_ruleset_id = (
+            "sha256:"
+            "fce9ed2602083e312eaa938b7a2b9d9f"
+            "59b2ab062318a48cd8c712788c627ae6"
+        )
+
+        if ruleset_id == validated_ruleset_id:
+            return ModuleCalibration(
+                "localguard_yara",
+                "threshold",
+                3,
+                note=(
+                    "Replay v1: exact repository-default YARA ruleset "
+                    "fce9ed...27ae6 produced complete NORMAL raw 0 and "
+                    "loaded AutoPaint bridge memory raw 3. Threshold 3 "
+                    "classifies the validated artifact signature; it does "
+                    "not prove cheat-function activation. Recovery/expiry "
+                    "after target termination remains separately unverified."
+                ),
+            )
+
         return ModuleCalibration(
             "localguard_yara",
             "pending",
             None,
             note=(
-                "Repository-default YARA ruleset identity is available; "
-                "threshold awaits exact-ruleset NORMAL/positive E2E calibration."
+                "Repository-default YARA ruleset identity is available, "
+                "but this exact ruleset has not been calibrated by "
+                "NORMAL/positive E2E."
             ),
         )
 
