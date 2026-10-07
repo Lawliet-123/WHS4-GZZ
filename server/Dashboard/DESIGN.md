@@ -16,10 +16,10 @@
 | --- | --- | --- |
 | 분석 | 종합 현황 | 작은 핵심 지표, 판정 분포·탐지기별 관측, 중앙 탐지 표, 검토 대상 표 |
 | 분석 | 세션 | 세션별 대상·채널·연결 상태·플레이어 판정 요약, 수신 순서별 관측 그래프 |
-| 분석 | 플레이어 | 대상 목록 + 판정 / 타임라인 / 모듈 신호 / 실행 상태 / 사건 이력 |
+| 분석 | 플레이어 | 대상 목록 + 판정 / 타임라인 / 모듈 신호 / 실행 상태 / GodMode 이력 |
 | 분석 | 이벤트 | 필터 + 수신 순서 표 + 원본 상세 drawer |
 | 운영 | 보호 모듈 | 그룹별 모듈 표, 상태, 관측 수, 이벤트 조회 |
-| 운영 | 시스템 | 연결·capability·Launcher 전체 상태 |
+| 운영 | 시스템 | 연결·capability·Launcher 전체 상태 / 점검 대상 |
 
 각 페이지는 `#/overview` 등 고유 주소를 가지며 활성 페이지의 내용만 마운트한다. 뒤로/앞으로, 직접 접속, 새로고침을 지원한다. 메뉴 선택은 스크롤 위치가 아닌 현재 주소에 대응한다. 페이지 이동 시 제목에 포커스를 옮기고, 플레이어 상세 탭은 방향키·Home·End로 이동할 수 있다.
 
@@ -34,8 +34,8 @@
 - 일반 표면과 입력의 모서리는 2px로 제한한다.
 - 기본 글자 12~13px, 제목 20px, 사이드바 180px, 상단 바 48px로 맞춘다.
 - 명시적 severity는 Critical 빨강 / High 주황 / Medium 노랑 / Low 옅은 청록으로 구분한다. 서버 판정은 SUSPICIOUS 빨강, INCONCLUSIVE 노랑, NO_ACTIVE_EVIDENCE 옅은 녹색, UNKNOWN 회색으로 별도 강조한다. 원점수에는 위험 색상을 붙이지 않는다.
-- 요약 수치는 72px 높이 strip으로, 개요와 이벤트의 중심은 8열 탐지 표로 표시한다.
-- 표는 경과 시간·플레이어/클라이언트·탐지기·유형/근거·Raw 점수·Severity·대상 판정·상세로 구성한다.
+- 요약 수치는 72px 높이 strip으로, 개요와 이벤트의 중심은 밀도 있는 탐지 표로 표시한다.
+- 표는 시간·플레이어/클라이언트·탐지기·유형/근거·Raw 점수·선택적 Severity·이벤트 상태·상세로 구성한다. 모든 Severity가 미제공이면 관련 열·필터·정렬은 숨긴다.
 
 ## 실행 상태와 탐지 채널 분리
 
@@ -57,7 +57,7 @@ Launcher heartbeat의 component는 프로세스 실행 단위다. `input_signatu
 | `NO_ACTIVE_EVIDENCE` | 활성 근거 없음 | 현재 평가 가능한 범위에 ACTIVE 근거가 없음 |
 | `UNKNOWN` | 판정 없음 | 판정 공급자 미연결 또는 데이터 없음 |
 
-`raw_score`는 Event 생산자가 만든 원본 값이다. 모듈마다 상한, emission 방식과 threshold가 다르므로 `raw_score > 0`만으로 severity를 선택하지 않는다. Scoring의 Final Verdict는 severity나 사건 처리 상태가 아니며 표에서는 `대상 판정`으로 별도 표시한다. 숫자 `score`와 `confidence`가 `null`이면 `미제공`으로 유지한다.
+`raw_score`는 Event 생산자가 만든 원본 값이다. 모듈마다 상한, emission 방식과 threshold가 다르므로 `raw_score > 0`만으로 severity를 선택하지 않는다. 이벤트 표는 명시적 `evidence.status`만 표시하며, Scoring의 현재 Final Verdict를 이벤트 상태로 복사하지 않는다. 조사 패널의 `현재 플레이어 판정`과 플레이어 페이지에서 Final Verdict를 확인한다. 플레이어 점수·신뢰도는 제거하고 독립 위험 근거·활성 모듈·중복 보정·평가 완료 여부를 표시한다.
 
 현재 공통 계약에는 severity가 없다. 화면은 선택적 `evidence.severity`가 명시적으로 Critical/High/Medium/Low일 때만 해당 표시를 지원하며, 이는 새 필수 계약을 만든 것이 아니다. 값이 없거나 알 수 없는 경우 `미제공`으로 표시한다. 개요의 의심 판정 지표는 실제 SUSPICIOUS 대상 수를 사용한다. 현재 데모에도 심각도를 임의로 추가하지 않았다.
 
@@ -69,12 +69,9 @@ Launcher heartbeat의 component는 프로세스 실행 단위다. `input_signatu
 - 모듈별 원점수 합, 검증되지 않은 시간축, 점수→severity 환산 그래프는 만들지 않는다. 숫자와 범례를 함께 표시하고 키보드로 구간별 건수를 읽을 수 있다.
 - 모든 그래프는 불러온 데이터 범위만 사용한다. 페이지 조회 제한·동기화·갱신 실패 안내와 DEMO/LIVE 표시를 유지한다.
 
-정책 영역은 최신 관측마다 다음을 보여 준다.
+정책 영역은 서버의 `module_evidence`에서 현재 정책 상태·최신 raw·실제 임계값·대표 reasons를 읽는다. DLL·GodMode·AutoPaint처럼 이력 보존 정책이 있는 모듈의 최신 관측과 보존 사건을 구분한다. 최신 raw 0을 이전 사건의 삭제로 보지 않으며, 일반 모듈의 과거 고점을 현재 ACTIVE로 승격하지 않는다. 서버의 판정 근거와 불러온 원본 관측은 별개다.
 
-- `signal.state`, `emission`, 측정 가능 여부
-- threshold 확정·pending·advisory 구분
-- event history 또는 entity scope 필요 여부
-- issues, overlap 후보와 미해결 사유
+모듈 신호는 최신 raw 높은 순과 불러온 이력 최고 raw 높은 순으로 정렬한다. 정렬은 관측을 찾기 위한 기능이며 모듈 간 동일 위험도 비교가 아니다.
 
 ## 전역 관제
 
@@ -83,13 +80,14 @@ Launcher heartbeat의 component는 프로세스 실행 단위다. `input_signatu
 - Launcher: 반환된 세션·플레이어의 `state_counts`, `connected_pairs/observed_pairs` 표시
 - 모듈 표: `overview.module_statuses`의 모든 component를 세션·플레이어별로 표시
 - Launcher 표: `overview.launcher_statuses`에서 stale, stopped, degraded, unknown을 빠르게 찾음
+- Launcher 연결 요약에서 점검 대상 표로 이동한다. 실패/WARN/SKIPPED·전송 장애·미보고를 세션/플레이어/client 단위로 확인하고 대상 실행 상태를 연다. 이전 실행 client의 모듈을 새 실행과 섞지 않는다.
 - capability: Final Verdict, heartbeat, evidence image 지원 여부를 데이터 없음과 구분
 
 `counts.scope=indexed_events`의 숫자를 접속자·활성 세션 수로 해석하지 않는다. 개요 `탐지 기록`은 실제 적재된 detection 관측 수이며 0점도 포함한다. `연결 클라이언트`는 조회된 최신 Launcher 상태 중 connected=true이고 healthy/online인 고유 client_id 수다. ID가 전혀 없으면 미제공이며 전역 활성 PC 수를 의미하지 않는다. 표의 클라이언트는 해당 대상의 최신 Heartbeat 소스이지 그 Event의 발신자가 확인됐다는 뜻은 아니다. 검토 대상은 Scoring이 `SUSPICIOUS` 또는 `INCONCLUSIVE`로 반환한 대상 수다.
 
 ## 타임라인과 Event
 
-Event는 `sequence`가 서버 저장 순서이고 `timestamp_ms`는 생산자가 보낸 경과시간이다. 현재 backend의 `time_basis=unknown`은 모든 모듈 시계가 검증됐다는 뜻이 아니다. 기본 타임라인은 `sequence`를 안정적인 순서로 사용하고, 경과시간은 보조 정보와 기준 미확인 표시로 제공한다.
+Event는 `sequence`가 서버 저장 순서이고 `timestamp_ms`는 생산자가 보낸 원본 시간 값이다. 기본 타임라인은 `sequence`로 정렬한다. 명시적 `time_basis=session_relative`만 T+로 표시하고 unknown은 원본 ms로 표시한다. `received_at_utc`가 있으면 `수신 … KST`를 함께 표시하며 관측 시각으로 부르지 않는다. 과거 자료의 실제 시각을 소급 생성하지 않는다. GodMode 이력 링크와 조사 패널도 같은 시간 규칙을 사용한다.
 
 Event 화면은 다음을 구분한다.
 

@@ -2,6 +2,19 @@
 
 이 폴더의 이미지는 종합 Dashboard와 LocalGuard 연동 결과를 설명하기 위한 캡처다. 실제 구현 범위를 넘어선 탐지 성공으로 해석하지 않는다.
 
+## dashboard-feedback-deployed.jpg / dashboard-feedback-verdict-deployed.jpg
+
+2026-10-07 공개 [kkinomalo.com/GZZ/](https://kkinomalo.com/GZZ/)에서 촬영한 피드백 반영 화면이다. 소스 `6fb1f15`의 프론트 단독 DEMO 빌드이며 실제 중앙 서버·게임 결과가 아니다.
+
+- 이벤트 직접 상태와 플레이어의 현재 Final Verdict를 분리하고 T+·KST 수신 시각을 함께 표시한다. 서버가 주지 않은 관측 시각을 생성하지 않는다.
+- 미제공 Severity 열을 숨기고 플레이어 점수·신뢰도 대신 독립 위험 근거·활성 모듈·중복 보정·평가 상태를 표시한다.
+- 판정 탭에서 활성 모듈 이름·대표 이유·최신 raw·실제 서버 임계값·세션 보존 사건을 나눠 표시한다. `GodMode 이력`의 범위를 명시한다.
+- 공개 화면에서 Launcher 일부 저하 → 점검 대상 → 해당 세션/플레이어 실행 상태로 이동했다. 판정 탭의 근거 표시도 확인했으며 해당 점검의 브라우저 warning/error는 없었다.
+- Vercel `gzz-dashboard-frontend`만 Production으로 갱신했다. 공개 HTML·JS·CSS가 200이며 로컬 빌드와 SHA-256이 동일하다. 기존 홈페이지는 200·기존 제목을 유지한다.
+- 공개 HTML meta CSP는 `connect-src 'none'`이다. 실제 로그·DB·환경 파일은 업로드하지 않았다. `/GZZ/` 응답의 HTTP CSP 헤더 적용은 확인되지 않았으므로 meta CSP와 구분한다.
+
+이번 배포는 사람들이 프론트 표시를 확인하고 피드백할 수 있게 하는 목적이다. 운영 backend 배포·새로운 실게임 E2E 완료로 해석하지 않는다.
+
 ## dashboard-overview.png
 
 페이지 분리 전 React Dashboard의 데모 화면이다. 이전 레이아웃 기록으로 보존하며 현재 디자인은 SOC JPEG 캡처를 기준으로 확인한다.

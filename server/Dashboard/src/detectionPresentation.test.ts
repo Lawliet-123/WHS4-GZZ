@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectedClientCount, detectionType, eventVerdict, explicitSeverity, optionalEvidenceText, sortDetectionEvents } from "./detectionPresentation";
+import { connectedClientCount, detectionType, eventReportedStatus, eventVerdict, explicitSeverity, optionalEvidenceText, sortDetectionEvents } from "./detectionPresentation";
 import { redactEventText } from "./components/EvidenceDrawer";
 import { demoEvents, demoOverview } from "./mockData";
 import type { DashboardEvent, LauncherOverviewStatus } from "./types";
@@ -13,6 +13,27 @@ const status = (changes: Partial<LauncherOverviewStatus> = {}): LauncherOverview
 });
 
 describe("explicit SOC detection presentation", () => {
+  it.each([
+    ["NORMAL", "NORMAL", "success"], [" suspicious ", "SUSPICIOUS", "warning"], ["error", "ERROR", "danger"],
+    ["INSUFFICIENT", "INSUFFICIENT", "warning"], ["STOPPED", "STOPPED", "neutral"],
+  ])("keeps the directly reported event status %s independent of raw score", (status, label, tone) => {
+    expect(eventReportedStatus(event({ raw_score: 0, evidence: { status } }))).toEqual({ label, tone });
+  });
+
+  it.each([undefined, null, "", "constructor", "not-a-state", 0, { state: "NORMAL" }, ["ERROR"]])(
+    "leaves event status %j unprovided rather than deriving it from scores or player verdicts",
+    (status) => {
+      for (const raw_score of [0, 999]) expect(eventReportedStatus(event({ raw_score, evidence: { status } }))).toEqual({ label: "미제공", tone: "neutral" });
+    },
+  );
+
+  it("keeps NORMAL raw zero and the player's current SUSPICIOUS verdict in different presentations", () => {
+    const assessment = demoOverview.assessments.find((item) => item.status === "SUSPICIOUS")!;
+    const observed = event({ session_id: assessment.session_id, player_id: assessment.player_id, raw_score: 0, evidence: { status: "NORMAL" } });
+    expect(eventReportedStatus(observed).label).toBe("NORMAL");
+    expect(eventVerdict(observed, demoOverview.assessments)).toBe("SUSPICIOUS");
+  });
+
   it.each([
     ["critical", "Critical"], ["HIGH", "High"], [" Medium ", "Medium"], ["LoW", "Low"],
   ])("canonicalizes explicit severity %s", (value, expected) => {

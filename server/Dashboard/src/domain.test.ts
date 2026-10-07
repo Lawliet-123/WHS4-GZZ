@@ -68,7 +68,7 @@ describe("Dashboard backend-v2 domain", () => {
       evidence_unit_count: 1,
       active_module_count: 1,
       active_modules: ["external_access"],
-      unresolved_modules: ["esp", "selfdefense"],
+      unresolved_modules: ["esp"],
       reason_codes: ["CALIBRATED_ACTIVE_EVIDENCE", "ASSESSMENT_INCOMPLETE"],
     });
     expect(snapshot.final_verdict).toEqual(assessment.final_verdict);

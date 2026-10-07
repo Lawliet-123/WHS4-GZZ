@@ -5,6 +5,9 @@ import { EvidenceDrawer, redactEventText, redactSensitiveText } from "./componen
 import { Icon, type IconName } from "./components/Icon";
 import { StatusBadge } from "./components/StatusBadge";
 import { OverviewAnalytics, SessionObservationChart } from "./components/AnalyticsCharts";
+import { EventTimeLabel } from "./components/EventTimeLabel";
+import { ModuleSignals, VerdictEvidence } from "./components/PolicyEvidence";
+import { LauncherIssues } from "./components/LauncherIssues";
 import {
   connectionMeta,
   defaultFilters,
@@ -12,7 +15,6 @@ import {
   filterEvents,
   formatAge,
   formatDateTime,
-  formatElapsed,
   humanizeModule,
   humanizeReason,
   subjectKey,
@@ -21,7 +23,7 @@ import {
 import { demoEvents, demoGodModeHistories, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 import { buildModuleRollups, moduleFilterOptions, protectionModuleGroupLabels } from "./moduleCatalog";
 import { dashboardPageHref, readDashboardPage, type DashboardPage } from "./navigation";
-import { connectedClientCount, detectionType, eventVerdict, explicitSeverity, optionalEvidenceText, sortDetectionEvents } from "./detectionPresentation";
+import { connectedClientCount, detectionType, eventReportedStatus, explicitSeverity, optionalEvidenceText, sortDetectionEvents } from "./detectionPresentation";
 import type {
   Assessment,
   DashboardEvent,
@@ -55,7 +57,7 @@ const playerTabs = [
   { id: "timeline", label: "타임라인" },
   { id: "signals", label: "모듈 신호" },
   { id: "status", label: "실행 상태" },
-  { id: "history", label: "사건 이력" },
+  { id: "history", label: "GodMode 이력" },
 ] as const;
 type PlayerTab = typeof playerTabs[number]["id"];
 
@@ -102,48 +104,6 @@ function SectionHeader({ title, count, action }: { title: string; count?: string
 
 function EmptyState({ title, action }: { title: string; action?: ReactNode }) {
   return <div className="empty-state"><Icon name="database" size={22} /><strong>{title}</strong>{action}</div>;
-}
-
-interface PolicySignalView {
-  state: string;
-  emission: string;
-  issues: string[];
-}
-
-function policySignals(snapshot: SnapshotResponse | null): Map<string, PolicySignalView> {
-  const result = new Map<string, PolicySignalView>();
-  const policy = snapshot?.policy;
-  if (!policy || !Array.isArray(policy.modules)) return result;
-  for (const entry of policy.modules) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as Record<string, unknown>;
-    const state = record.state && typeof record.state === "object" ? record.state as Record<string, unknown> : {};
-    const evaluation = record.evaluation && typeof record.evaluation === "object" ? record.evaluation as Record<string, unknown> : {};
-    const signal = evaluation.signal && typeof evaluation.signal === "object" ? evaluation.signal as Record<string, unknown> : {};
-    const view: PolicySignalView = {
-      state: typeof signal.state === "string" ? signal.state : "UNKNOWN",
-      emission: typeof signal.emission === "string" ? signal.emission : "unknown",
-      issues: Array.isArray(signal.issues) ? signal.issues.filter((value): value is string => typeof value === "string") : [],
-    };
-    if (typeof state.event_id === "string") result.set(state.event_id, view);
-    if (typeof state.module === "string") result.set(state.module, view);
-  }
-  return result;
-}
-
-function policyMeta(state: string): { label: string; tone: string } {
-  const values: Record<string, { label: string; tone: string }> = {
-    ACTIVE: { label: "활성 근거", tone: "danger" },
-    INACTIVE: { label: "비활성", tone: "success" },
-    ADVISORY: { label: "참고 근거", tone: "warning" },
-    DEFERRED: { label: "평가 보류", tone: "warning" },
-    UNRESOLVED: { label: "미해결", tone: "warning" },
-    UNAVAILABLE: { label: "평가 불가", tone: "neutral" },
-    RAW_FRACTION_ONLY: { label: "원본 비율", tone: "info" },
-    POLICY_NOT_CALIBRATED: { label: "정책 미보정", tone: "warning" },
-    UNKNOWN_MODULE: { label: "정책 없음", tone: "neutral" },
-  };
-  return values[state] ?? { label: state.replaceAll("_", " "), tone: "neutral" };
 }
 
 function useCompactNavigation() {
@@ -198,7 +158,7 @@ function SummaryCard({ icon, label, value, tone, title, onSelect }: { icon: Icon
   return onSelect ? <button type="button" title={title} onClick={onSelect} className={`summary-card summary-${tone}`}>{contents}</button> : <div title={title} className={`summary-card summary-${tone}`}>{contents}</div>;
 }
 
-function ConnectionStrip({ overview, transportStale }: { overview: OverviewResponse; transportStale: boolean }) {
+function ConnectionStrip({ overview, transportStale, onLauncherIssues }: { overview: OverviewResponse; transportStale: boolean; onLauncherIssues?: () => void }) {
   const scopes: Record<string, string> = {
     local_detection_storage: "이벤트 저장소",
     local_scoring_read: "판정 조회",
@@ -211,7 +171,10 @@ function ConnectionStrip({ overview, transportStale }: { overview: OverviewRespo
       {Object.entries(overview.connection).map(([name, value]) => {
         const meta = transportStale ? { label: "갱신 실패", tone: "warning" } : connectionMeta(value.state);
         const scope = scopes[value.scope] ?? value.scope.replaceAll("_", " ");
-        return <div className="connection-item" key={name} title={`${name} · ${scope}`}><span className={`connection-light tone-${meta.tone}`} /><div><span>{name}</span><strong>{meta.label}</strong><small>{scope}</small></div></div>;
+        const content = <><span className={`connection-light tone-${meta.tone}`} /><div><span>{name}</span><strong>{meta.label}</strong><small>{scope}</small></div></>;
+        return name === "Launcher" && onLauncherIssues
+          ? <button type="button" className="connection-item connection-action" key={name} title={`${name} · ${scope}`} aria-label={`Launcher ${meta.label} · 문제 대상 확인`} onClick={onLauncherIssues}>{content}<Icon name="chevron" size={12} /></button>
+          : <div className="connection-item" key={name} title={`${name} · ${scope}`}>{content}</div>;
       })}
       <div className="connection-scope">
         <Icon name="activity" size={15} />
@@ -288,9 +251,11 @@ function SubjectList({ assessments, selected, onSelect }: { assessments: Assessm
   );
 }
 
-function VerdictView({ assessment, snapshot, loading, error }: {
+function VerdictView({ assessment, snapshot, events, onSelect, loading, error }: {
   assessment: Assessment | null;
   snapshot: SnapshotResponse | null;
+  events: DashboardEvent[];
+  onSelect: (event: DashboardEvent) => void;
   loading: boolean;
   error: string | null;
 }) {
@@ -301,8 +266,6 @@ function VerdictView({ assessment, snapshot, loading, error }: {
   const reasonCodes = snapshot ? snapshot.reason_codes : assessment.reason_codes;
   const assessmentAvailable = snapshot ? snapshot.assessment_available : assessment.assessment_available;
   const dataState = snapshot ? snapshot.data_state : assessment.data_state;
-  const score = snapshot ? snapshot.score : assessment.score;
-  const confidence = snapshot ? snapshot.confidence : assessment.confidence;
   const assessmentState = dataState === "not_connected"
     ? "Scoring 미연결"
     : dataState === "missing"
@@ -327,9 +290,7 @@ function VerdictView({ assessment, snapshot, loading, error }: {
       </div>
 
       <div className="verdict-metrics">
-        <div><span>점수</span><strong className="metric-text">{score === null ? "미제공" : score}</strong></div>
-        <div><span>신뢰도</span><strong className="metric-text">{confidence === null ? "미제공" : confidence}</strong></div>
-        <div><span>근거 단위</span><strong>{verdict?.evidence_unit_count ?? "—"}</strong></div>
+        <div><span>독립 위험 근거</span><strong>{verdict?.evidence_unit_count ?? "—"}</strong></div>
         <div><span>활성 모듈</span><strong>{verdict?.active_module_count ?? "—"}</strong></div>
         <div><span>중복 보정</span><strong>{verdict?.overlap_adjustment_count ?? "—"}</strong></div>
         <div><span>평가 상태</span><strong className="metric-text">{assessmentState}</strong></div>
@@ -338,21 +299,7 @@ function VerdictView({ assessment, snapshot, loading, error }: {
       <div className="reason-block"><h3>판정 코드</h3>{reasonCodes.length ? <ul>{reasonCodes.map((reason) => <li key={reason}><Icon name="check" size={14} />{humanizeReason(reason)}</li>)}</ul> : <div className="empty-inline">판정 코드 없음</div>}</div>
 
       {groups.length > 0 && <div className="module-groups">{groups.map((group) => <div key={group.label}><span>{group.label}</span><div>{group.values.map((module) => <span className={`module-pill tone-${group.tone}`} key={module}>{humanizeModule(module)}</span>)}</div></div>)}</div>}
-    </div>
-  );
-}
-
-function ModuleStateList({ snapshot }: { snapshot: SnapshotResponse | null }) {
-  const modules = snapshot?.modules ?? [];
-  const signals = policySignals(snapshot);
-  return (
-    <div className="module-state-list">
-      <SectionHeader title="최신 탐지 신호" count={modules.length} />
-      {modules.length ? modules.map((item) => {
-        const signal = signals.get(item.event_id) ?? signals.get(item.module);
-        const meta = signal ? policyMeta(signal.state) : null;
-        return <article className="module-state-card" key={item.event_id}><div><span className="module-glyph"><Icon name="activity" size={16} /></span><div><strong>{humanizeModule(item.module)}</strong><small>{formatElapsed(item.timestamp_ms)} · #{item.sequence}</small></div></div><span className="raw-chip">raw {item.raw_score}</span>{meta && <div className="module-policy-row"><StatusBadge tone={meta.tone}>{meta.label}</StatusBadge><span>{signal?.emission}</span></div>}{item.reasons.length > 0 && <p>{redactSensitiveText(item.reasons[0]!)}</p>}{signal?.issues[0] && <p className="policy-issue">{redactSensitiveText(signal.issues[0])}</p>}</article>;
-      }) : <EmptyState title="탐지 신호 없음" />}
+      <VerdictEvidence snapshot={snapshot} events={events} onSelect={onSelect} />
     </div>
   );
 }
@@ -371,13 +318,31 @@ function Timeline({ events, onSelect }: { events: DashboardEvent[]; onSelect: (e
       <SectionHeader title="플레이어 타임라인" count={events.length} />
       {ordered.length > 0 && <div className="sequence-timeline" aria-label={`서버 수신 순서 타임라인 · ${events.length}개 중 ${timelinePoints.length}개 표식`}><div className="sequence-rail">{timelinePoints.map((event) => <button type="button" className={`sequence-point kind-${event.event_kind}`} style={{ left: `${((event.sequence - firstSequence) / sequenceSpan) * 100}%` }} key={event.id} onClick={() => onSelect(event)} title={`${humanizeModule(event.module)} · #${event.sequence}`} aria-label={`${humanizeModule(event.module)} ${event.event_kind === "operational" ? "운영" : "관측"} 이벤트 #${event.sequence}`} />)}</div><div className="sequence-labels"><span>#{firstSequence}</span><strong>서버 수신 순서</strong><span>#{lastSequence}</span></div></div>}
       <div className="timeline-subhead">최근 이벤트</div>
-      {latest.length ? <ol className="timeline-list">{latest.map((event) => <li key={event.id}><button type="button" onClick={() => onSelect(event)}><time title={event.time_basis === "unknown" ? "시간 기준 미확인" : event.time_basis}>{formatElapsed(event.timestamp_ms)}</time><span className={`timeline-dot kind-${event.event_kind}`} /><span><strong>{humanizeModule(event.module)}</strong><small>{event.reasons[0] ? redactSensitiveText(event.reasons[0]) : (event.event_kind === "operational" ? "운영 상태" : "관측 신호")}</small></span><span className={`event-kind kind-${event.event_kind}`}>{event.event_kind === "operational" ? "운영" : "관측"}</span><Icon name="chevron" size={15} /></button></li>)}</ol> : <EmptyState title="표시할 이벤트 없음" />}
+      {latest.length ? <ol className="timeline-list">{latest.map((event) => <li key={event.id}><button type="button" onClick={() => onSelect(event)}><EventTimeLabel event={event} /><span className={`timeline-dot kind-${event.event_kind}`} /><span className="timeline-reason"><strong>{humanizeModule(event.module)}</strong><small>{event.reasons[0] ? redactEventText(event, event.reasons[0]) : (event.event_kind === "operational" ? "운영 상태" : "관측 신호")}</small></span><span className={`event-kind kind-${event.event_kind}`}>{event.event_kind === "operational" ? "운영" : "관측"}</span><Icon name="chevron" size={15} /></button></li>)}</ol> : <EmptyState title="표시할 이벤트 없음" />}
     </Panel>
   );
 }
 
-function GodModeHistoryPanel({ history, loading, error, onSelect }: {
+function historyEvent(item: GodModeHistoryItem, events: readonly DashboardEvent[]): DashboardEvent {
+  const indexed = events.find((event) => event.id === item.event_id
+    && event.session_id === item.session_id && event.player_id === item.player_id
+    && event.module === item.module);
+  if (indexed) return indexed;
+  const basis = item.evidence.time_basis;
+  return {
+    id: item.event_id, sequence: item.sequence,
+    session_id: item.session_id, player_id: item.player_id, module: item.module,
+    timestamp_ms: item.timestamp_ms, evidence: item.evidence,
+    reasons: item.reasons, raw_score: item.raw_score,
+    event_kind: "detection",
+    time_basis: basis === "session_relative" || basis === "unix_epoch_ms" ? basis : "unknown",
+    evidence_image: null, log_excerpt: null,
+  };
+}
+
+function GodModeHistoryPanel({ history, events, loading, error, onSelect }: {
   history: GodModeHistoryResponse | null;
+  events: readonly DashboardEvent[];
   loading: boolean;
   error: string | null;
   onSelect: (item: GodModeHistoryItem) => void;
@@ -390,7 +355,7 @@ function GodModeHistoryPanel({ history, loading, error, onSelect }: {
       {items.length ? <ol className="history-list">{items.map((item) => (
         <li key={item.event_id}>
           <button type="button" onClick={() => onSelect(item)} aria-label={`GodMode 사건 #${item.sequence} 상세 보기`}>
-            <time>{formatElapsed(item.timestamp_ms)}</time>
+            <EventTimeLabel event={historyEvent(item, events)} />
             <span><strong>사건 #{item.sequence}</strong><small>{item.reasons[0] ? redactSensitiveText(item.reasons[0]) : "기록된 사유 없음"}</small></span>
             <span className="raw-chip">raw {item.raw_score}</span>
             <Icon name="chevron" size={15} />
@@ -463,10 +428,11 @@ function ModuleOperations({ rollups, selected, onSelect }: { rollups: ModuleRoll
   );
 }
 
-function OverviewPage({ overview, events, transportStale, onNavigate, onSubject, onEvent, onVerdict, onDetector }: {
+function OverviewPage({ overview, events, transportStale, onLauncherIssues, onNavigate, onSubject, onEvent, onVerdict, onDetector }: {
   overview: OverviewResponse;
   events: DashboardEvent[];
   transportStale: boolean;
+  onLauncherIssues: () => void;
   onNavigate: (page: DashboardPage) => void;
   onSubject: (assessment: Assessment) => void;
   onEvent: (event: DashboardEvent) => void;
@@ -479,7 +445,7 @@ function OverviewPage({ overview, events, transportStale, onNavigate, onSubject,
   const suspiciousCount = overview.assessments.filter((assessment) => assessment.status === "SUSPICIOUS").length;
   const connectedClients = connectedClientCount(overview.launcher_statuses);
   return <div className="overview-section">
-    <ConnectionStrip overview={overview} transportStale={transportStale} />
+    <ConnectionStrip overview={overview} transportStale={transportStale} onLauncherIssues={onLauncherIssues} />
     <div className="summary-grid" aria-label="요약">
       <SummaryCard icon="database" label="탐지 기록" value={detections.length} tone="neutral" title="조회 범위의 관측 이벤트. 0점 기록도 포함합니다." onSelect={() => onNavigate("events")} />
       <SummaryCard icon="alert" label="의심 판정" value={suspiciousCount} tone="red" title="불러온 세션·플레이어 쌍 중 Scoring의 SUSPICIOUS 판정" onSelect={() => onVerdict("SUSPICIOUS")} />
@@ -487,7 +453,7 @@ function OverviewPage({ overview, events, transportStale, onNavigate, onSubject,
       <SummaryCard icon="user" label="검토 대상" value={review.length} tone="amber" onSelect={() => onNavigate("players")} />
     </div>
     <OverviewAnalytics assessments={overview.assessments} events={events} onVerdict={onVerdict} onDetector={onDetector} />
-    <EventsTable events={detections} assessments={overview.assessments} launcherStatuses={overview.launcher_statuses} page={1} onPage={() => undefined} onSelect={onEvent} preview title="최근 탐지 기록" action={<button className="page-link" type="button" onClick={() => onNavigate("events")}>전체 이벤트<Icon name="chevron" size={13} /></button>} />
+    <EventsTable events={detections} launcherStatuses={overview.launcher_statuses} page={1} onPage={() => undefined} onSelect={onEvent} preview title="최근 탐지 기록" action={<button className="page-link" type="button" onClick={() => onNavigate("events")}>전체 이벤트<Icon name="chevron" size={13} /></button>} />
     <Panel className="overview-review-panel"><SectionHeader title="검토 대상" count={review.length} action={<button className="page-link" type="button" onClick={() => onNavigate("players")}>플레이어 목록<Icon name="chevron" size={13} /></button>} />
       {review.length ? <div className="review-table-wrap"><table className="review-table"><thead><tr><th>플레이어 / 세션</th><th>최종 판정</th><th>평가</th><th>근거</th><th>활성 모듈</th><th><span className="sr-only">작업</span></th></tr></thead><tbody>{review.slice(0, 4).map((assessment) => <tr key={assessment.id} onClick={() => onSubject(assessment)}><td><button className="session-link" type="button" onClick={(event) => { event.stopPropagation(); onSubject(assessment); }}>{assessment.player_id}</button><small>{assessment.session_id}</small></td><td><StatusBadge tone={verdictMeta[assessment.status].tone}>{assessment.status}</StatusBadge></td><td>{assessment.final_verdict ? assessment.final_verdict.assessment_complete ? "완료" : "미완료" : "미제공"}</td><td>{assessment.final_verdict?.evidence_unit_count ?? "—"}</td><td>{assessment.final_verdict?.active_module_count ?? "—"}</td><td><button className="row-open" type="button" aria-label={`${assessment.player_id} 판정 확인`} onClick={(event) => { event.stopPropagation(); onSubject(assessment); }}><Icon name="chevron" size={14} /></button></td></tr>)}</tbody></table></div> : <EmptyState title="검토 대상 없음" />}
     </Panel>
@@ -518,7 +484,7 @@ function SessionOverview({ overview, assessments, events, launcherStatuses, visi
   return (
     <Panel id="sessions" className="session-panel">
       <SectionHeader title="세션 현황" count={sorted.length} />
-      {sorted.length ? <div className="session-table-wrap"><table className="session-table"><thead><tr><th>세션</th><th>플레이어</th><th>이벤트 채널</th><th>Launcher</th><th>플레이어 판정 요약</th><th>최대 관측 시각</th></tr></thead><tbody>{sorted.map((session) => {
+      {sorted.length ? <div className="session-table-wrap"><table className="session-table"><thead><tr><th>세션</th><th>플레이어</th><th>이벤트 채널</th><th>Launcher</th><th>플레이어 판정 요약</th><th>최근 수신 이벤트 시각</th></tr></thead><tbody>{sorted.map((session) => {
         const sessionVerdict = sessionStatus(session.id, session.status);
         const verdict = verdictMeta[sessionVerdict];
         const scopedEvents = events.filter((item) => item.session_id === session.id);
@@ -527,7 +493,8 @@ function SessionOverview({ overview, assessments, events, launcherStatuses, visi
           ...scopedEvents.map((item) => item.player_id),
         ]);
         const scopedChannels = new Set(scopedEvents.map((item) => item.module));
-        const scopedMaximumTimestamp = scopedEvents.length ? Math.max(...scopedEvents.map((item) => item.timestamp_ms)) : null;
+        const latestReceivedEvent = scopedEvents.reduce<DashboardEvent | null>((latest, event) =>
+          !latest || event.sequence > latest.sequence ? event : latest, null);
         const launchers = launcherBySession.get(session.id) ?? [];
         const connected = launchers.filter((item) => item.connected).length;
         const launcherState = aggregateLauncherState(launchers.map((item) => item.state));
@@ -537,7 +504,7 @@ function SessionOverview({ overview, assessments, events, launcherStatuses, visi
           : ["healthy", "online"].includes(launcherState) && connected === launchers.length
             ? `${connected}/${launchers.length} 연결`
             : `${launcherMeta.label} · ${connected}/${launchers.length}`;
-        return <tr key={session.id} onClick={() => onSelect(session.id)}><td><button className="session-link" type="button" onClick={(event) => { event.stopPropagation(); onSelect(session.id); }}>{session.id}</button></td><td>{scopedPlayers.size}</td><td>{scopedChannels.size}</td><td><StatusBadge tone={launcherMeta.tone}>{launcherLabel}</StatusBadge></td><td><StatusBadge tone={verdict.tone}>{verdict.short}</StatusBadge></td><td>{scopedMaximumTimestamp === null ? "—" : formatElapsed(scopedMaximumTimestamp)}</td></tr>;
+        return <tr key={session.id} onClick={() => onSelect(session.id)}><td><button className="session-link" type="button" onClick={(event) => { event.stopPropagation(); onSelect(session.id); }}>{session.id}</button></td><td>{scopedPlayers.size}</td><td>{scopedChannels.size}</td><td><StatusBadge tone={launcherMeta.tone}>{launcherLabel}</StatusBadge></td><td><StatusBadge tone={verdict.tone}>{verdict.short}</StatusBadge></td><td>{latestReceivedEvent ? <EventTimeLabel event={latestReceivedEvent} /> : "—"}</td></tr>;
       })}</tbody></table></div> : <EmptyState title="세션 데이터 없음" />}
     </Panel>
   );
@@ -585,11 +552,14 @@ function SystemOverview({ overview, launcherStatuses, operationalEventCount }: {
   );
 }
 
-function EventsTable({ events, assessments, launcherStatuses, page, onPage, onSelect, preview = false, title = "전체 이벤트", action }: { events: DashboardEvent[]; assessments: Assessment[]; launcherStatuses: OverviewResponse["launcher_statuses"]; page: number; onPage: (page: number) => void; onSelect: (event: DashboardEvent) => void; preview?: boolean; title?: string; action?: ReactNode }) {
+function EventsTable({ events, launcherStatuses, page, onPage, onSelect, preview = false, title = "전체 이벤트", action }: { events: DashboardEvent[]; launcherStatuses: OverviewResponse["launcher_statuses"]; page: number; onPage: (page: number) => void; onSelect: (event: DashboardEvent) => void; preview?: boolean; title?: string; action?: ReactNode }) {
   const [sort, setSort] = useState("sequence:desc");
   const [severityFilter, setSeverityFilter] = useState("ALL");
-  const [sortKey, direction] = sort.split(":") as ["sequence" | "score" | "severity", "asc" | "desc"];
-  const sorted = sortDetectionEvents(events.filter((event) => severityFilter === "ALL" || (severityFilter === "unknown" ? explicitSeverity(event) === null : explicitSeverity(event) === severityFilter)), sortKey, direction);
+  const hasSeverity = events.some((event) => explicitSeverity(event) !== null);
+  const effectiveSort = !hasSeverity && sort.startsWith("severity:") ? "sequence:desc" : sort;
+  const effectiveSeverityFilter = hasSeverity ? severityFilter : "ALL";
+  const [sortKey, direction] = effectiveSort.split(":") as ["sequence" | "score" | "severity", "asc" | "desc"];
+  const sorted = sortDetectionEvents(events.filter((event) => effectiveSeverityFilter === "ALL" || (effectiveSeverityFilter === "unknown" ? explicitSeverity(event) === null : explicitSeverity(event) === effectiveSeverityFilter)), sortKey, direction);
   const pageCount = Math.max(1, Math.ceil(sorted.length / EVENT_PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
   const visible = preview ? sorted.slice(0, 8) : sorted.slice((safePage - 1) * EVENT_PAGE_SIZE, safePage * EVENT_PAGE_SIZE);
@@ -597,17 +567,17 @@ function EventsTable({ events, assessments, launcherStatuses, page, onPage, onSe
     <Panel id={preview ? undefined : "events"} className={`events-panel ${preview ? "overview-detection-table" : ""}`}>
       <SectionHeader title={title} count={sorted.length} action={action} />
       <div className="table-tools">
-        <label><span>정렬</span><select aria-label={`${title} 정렬`} value={sort} onChange={(event) => { setSort(event.target.value); onPage(1); }}><option value="sequence:desc">수신 순서 · 최신</option><option value="sequence:asc">수신 순서 · 이전</option><option value="score:desc">Raw 점수 · 높은 순</option><option value="severity:desc">Severity · 높은 순</option></select></label>
-        <label><span>Severity</span><select aria-label={`${title} Severity`} value={severityFilter} onChange={(event) => { setSeverityFilter(event.target.value); onPage(1); }}><option value="ALL">전체</option>{["Critical", "High", "Medium", "Low"].map((level) => <option key={level}>{level}</option>)}<option value="unknown">미제공</option></select></label>
+        <label><span>정렬</span><select aria-label={`${title} 정렬`} value={effectiveSort} onChange={(event) => { setSort(event.target.value); onPage(1); }}><option value="sequence:desc">수신 순서 · 최신</option><option value="sequence:asc">수신 순서 · 이전</option><option value="score:desc">Raw 점수 · 높은 순</option>{hasSeverity && <option value="severity:desc">Severity · 높은 순</option>}</select></label>
+        {hasSeverity && <label><span>Severity</span><select aria-label={`${title} Severity`} value={effectiveSeverityFilter} onChange={(event) => { setSeverityFilter(event.target.value); onPage(1); }}><option value="ALL">전체</option>{["Critical", "High", "Medium", "Low"].map((level) => <option key={level}>{level}</option>)}<option value="unknown">미제공</option></select></label>}
         <span className="table-scope">{preview ? "관측 이벤트" : "관측 · 운영 이벤트"}</span>
       </div>
-      {visible.length ? <><div className="table-wrap"><table className="detection-table" aria-label={title}><thead><tr><th>경과 시간</th><th title="클라이언트는 해당 대상의 최신 Launcher Heartbeat 소스입니다.">플레이어 / 클라이언트</th><th>탐지기</th><th>탐지 유형 / 근거</th><th>Raw 점수</th><th>Severity</th><th title="현재 세션·플레이어의 Scoring 판정. 사건 처리 상태가 아닙니다.">대상 판정</th><th><span className="sr-only">상세</span></th></tr></thead><tbody>{visible.map((event) => {
+      {visible.length ? <><div className="table-wrap"><table className="detection-table" aria-label={title}><thead><tr><th>시간</th><th title="클라이언트는 해당 대상의 최신 Launcher Heartbeat 소스입니다.">플레이어 / 클라이언트</th><th>탐지기</th><th>탐지 유형 / 근거</th><th>Raw 점수</th>{hasSeverity && <th>Severity</th>}<th title="해당 이벤트가 직접 보고한 상태. 플레이어 종합 판정과 별개입니다.">이벤트 상태</th><th><span className="sr-only">상세</span></th></tr></thead><tbody>{visible.map((event) => {
         const severity = explicitSeverity(event);
-        const verdict = eventVerdict(event, assessments);
+        const reportedStatus = eventReportedStatus(event);
         const submodule = optionalEvidenceText(event, "submodule");
         const clientId = launcherStatuses.find((status) => status.session_id === event.session_id && status.player_id === event.player_id)?.source?.client_id;
         const reason = event.reasons[0] ? redactEventText(event, event.reasons[0]) : "—";
-        return <tr key={event.id} onClick={() => onSelect(event)}><td><span className="time-cell" title={event.time_basis === "unknown" ? "시간 기준 미확인 · 원본 timestamp_ms" : event.time_basis}>{formatElapsed(event.timestamp_ms)}</span><small className="mono">#{event.sequence}</small></td><td><strong title={`${event.player_id} · ${event.session_id}`}>{event.player_id}</strong><small title={`세션 ${event.session_id} · 최신 Launcher 소스`}>{clientId ? redactEventText(event, clientId) : "클라이언트 미제공"}</small></td><td><strong>{humanizeModule(event.module)}</strong><small>{event.event_kind === "operational" ? "운영" : "관측"}{submodule ? ` · ${redactEventText(event, humanizeModule(submodule))}` : ""}</small></td><td><strong title={detectionType(event)}>{detectionType(event)}</strong><small title={reason}>{reason}</small></td><td><span className="raw-chip">{event.raw_score}</span></td><td><span className={`severity-badge severity-${severity?.toLowerCase() ?? "unknown"}`} title={severity === null ? "서버의 명시적 severity 없음" : undefined}>{severity ?? "미제공"}</span></td><td><StatusBadge tone={verdictMeta[verdict].tone}>{verdict}</StatusBadge></td><td><button type="button" className="row-open" aria-label={`${event.player_id} ${humanizeModule(event.module)} 이벤트 #${event.sequence} 상세 보기`} onClick={(click) => { click.stopPropagation(); onSelect(event); }}><Icon name="chevron" size={15} /></button></td></tr>;
+        return <tr key={event.id} onClick={() => onSelect(event)}><td><EventTimeLabel event={event} /><small className="mono">#{event.sequence}</small></td><td><strong title={`${event.player_id} · ${event.session_id}`}>{event.player_id}</strong><small title={`세션 ${event.session_id} · 최신 Launcher 소스`}>{clientId ? redactEventText(event, clientId) : "클라이언트 미제공"}</small></td><td><strong>{humanizeModule(event.module)}</strong><small>{event.event_kind === "operational" ? "운영" : "관측"}{submodule ? ` · ${redactEventText(event, humanizeModule(submodule))}` : ""}</small></td><td><strong title={detectionType(event)}>{detectionType(event)}</strong><small title={reason}>{reason}</small></td><td><span className="raw-chip">{event.raw_score}</span></td>{hasSeverity && <td><span className={`severity-badge severity-${severity?.toLowerCase() ?? "unknown"}`} title={severity === null ? "서버의 명시적 severity 없음" : undefined}>{severity ?? "미제공"}</span></td>}<td><StatusBadge tone={reportedStatus.tone}>{reportedStatus.label}</StatusBadge></td><td><button type="button" className="row-open" aria-label={`${event.player_id} ${humanizeModule(event.module)} 이벤트 #${event.sequence} 상세 보기`} onClick={(click) => { click.stopPropagation(); onSelect(event); }}><Icon name="chevron" size={15} /></button></td></tr>;
       })}</tbody></table></div><div className="pagination"><span>{preview ? `최근 ${visible.length} / ${sorted.length}` : `${(safePage - 1) * EVENT_PAGE_SIZE + 1}–${Math.min(safePage * EVENT_PAGE_SIZE, sorted.length)} / ${sorted.length}`}</span>{!preview && <div><button type="button" onClick={() => onPage(safePage - 1)} disabled={safePage === 1}>이전</button><span>{safePage} / {pageCount}</span><button type="button" onClick={() => onPage(safePage + 1)} disabled={safePage === pageCount}>다음</button></div>}</div></> : <EmptyState title="조건에 맞는 이벤트 없음" />}
     </Panel>
   );
@@ -617,6 +587,7 @@ export default function App() {
   const frontendOnly = import.meta.env.MODE === "frontend";
   const compactNavigation = useCompactNavigation();
   const [activePage, setActivePage] = useState<DashboardPage>(() => readDashboardPage(window.location.hash));
+  const [systemIssuesOnly, setSystemIssuesOnly] = useState(false);
   const [playerTab, setPlayerTab] = useState<PlayerTab>("verdict");
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousPageRef = useRef(activePage);
@@ -728,6 +699,8 @@ export default function App() {
   }, [filteredAssessments, filteredEvents, filteredLauncherStatuses, filtersActive, overview.sessions]);
   const selectedAssessment = filteredAssessments.find((item) => item.id === selectedKey) ?? filteredAssessments[0] ?? null;
   const subjectEvents = selectedAssessment ? filteredEvents.filter((event) => event.session_id === selectedAssessment.session_id && event.player_id === selectedAssessment.player_id) : [];
+  // Current verdict evidence must not disappear when the Event search is narrowed.
+  const assessmentEvents = selectedAssessment ? events.filter((event) => event.session_id === selectedAssessment.session_id && event.player_id === selectedAssessment.player_id) : [];
   const selectedSubjectKey = selectedAssessment ? subjectKey(selectedAssessment.session_id, selectedAssessment.player_id) : "";
   const visibleSnapshot = snapshot && subjectKey(snapshot.session_id, snapshot.player_id) === selectedSubjectKey ? snapshot : null;
   const visibleSubjectStatus = subjectStatus && subjectKey(subjectStatus.session_id, subjectStatus.player_id) === selectedSubjectKey ? subjectStatus : null;
@@ -944,21 +917,7 @@ export default function App() {
     }
   };
 
-  const openHistoryEvent = (item: GodModeHistoryItem) => void openEvent({
-    id: item.event_id,
-    sequence: item.sequence,
-    session_id: item.session_id,
-    player_id: item.player_id,
-    module: item.module,
-    timestamp_ms: item.timestamp_ms,
-    evidence: item.evidence,
-    reasons: item.reasons,
-    raw_score: item.raw_score,
-    event_kind: "detection",
-    time_basis: "unknown",
-    evidence_image: null,
-    log_excerpt: null,
-  });
+  const openHistoryEvent = (item: GodModeHistoryItem) => void openEvent(historyEvent(item, events));
 
   useEffect(() => () => {
     connectControllerRef.current?.abort();
@@ -974,10 +933,17 @@ export default function App() {
     : activePage === "modules" ? moduleRollups.filter((item) => item.known).length
     : null;
   const openOverviewPage = (nextPage: DashboardPage) => { setFilters(defaultFilters); navigate(nextPage); };
+  const openLauncherIssues = () => { setFilters(defaultFilters); setSystemIssuesOnly(true); navigate("system"); };
+  const investigateLauncherSubject = (sessionId: string, playerId: string) => {
+    setFilters({ ...defaultFilters, sessionId, playerId });
+    setSelectedKey(overview.assessments.find((item) => item.session_id === sessionId && item.player_id === playerId)?.id ?? "");
+    setPlayerTab("status");
+    navigate("players");
+  };
 
   return (
     <div className="app-shell">
-      <Sidebar open={menuOpen} compact={compactNavigation} activePage={activePage} onNavigate={navigate} onClose={() => setMenuOpen(false)} />
+      <Sidebar open={menuOpen} compact={compactNavigation} activePage={activePage} onNavigate={(next) => { setSystemIssuesOnly(false); navigate(next); }} onClose={() => setMenuOpen(false)} />
       <main className="main-shell" inert={compactNavigation && menuOpen} aria-hidden={compactNavigation && menuOpen ? true : undefined}>
         <header className="topbar">
           <div className="topbar-title"><button className="menu-button" type="button" onClick={() => setMenuOpen(true)} aria-label="메뉴 열기" aria-expanded={menuOpen} aria-controls="dashboard-sidebar"><Icon name="menu" /></button><div><span>MECCHA</span><span className="topbar-divider">/</span><strong>{pageTitle}</strong></div></div>
@@ -997,7 +963,7 @@ export default function App() {
           <div className="page-header"><div className="page-header-title"><h1 ref={headingRef} tabIndex={-1}>{pageTitle}</h1>{pageCount !== null && <span>{pageCount}</span>}</div></div>
           {activePage !== "overview" && <FilterBar key={activePage} filters={filters} overview={overview} modules={modules} submodules={submodules} onChange={setFilters} onReset={() => setFilters(defaultFilters)} />}
           <div className={`page-content page-${activePage}`}>
-            {activePage === "overview" && <OverviewPage overview={overview} events={events} transportStale={transportStale} onNavigate={openOverviewPage} onSubject={(assessment) => { setFilters({ ...defaultFilters, sessionId: assessment.session_id, playerId: assessment.player_id }); setSelectedKey(assessment.id); setPlayerTab("verdict"); navigate("players"); }} onEvent={(event) => void openEvent(event)} onVerdict={(verdict) => { setFilters({ ...defaultFilters, verdict }); setPlayerTab("verdict"); navigate("players"); }} onDetector={(module) => { setFilters({ ...defaultFilters, module, eventKind: "detection" }); navigate("events"); }} />}
+            {activePage === "overview" && <OverviewPage overview={overview} events={events} transportStale={transportStale} onLauncherIssues={openLauncherIssues} onNavigate={openOverviewPage} onSubject={(assessment) => { setFilters({ ...defaultFilters, sessionId: assessment.session_id, playerId: assessment.player_id }); setSelectedKey(assessment.id); setPlayerTab("verdict"); navigate("players"); }} onEvent={(event) => void openEvent(event)} onVerdict={(verdict) => { setFilters({ ...defaultFilters, verdict }); setPlayerTab("verdict"); navigate("players"); }} onDetector={(module) => { setFilters({ ...defaultFilters, module, eventKind: "detection" }); navigate("events"); }} />}
             {activePage === "sessions" && <><SessionOverview overview={overview} assessments={filteredAssessments} events={filteredEvents} launcherStatuses={filteredLauncherStatuses} visibleSessionIds={visibleSessionIds} onSelect={(sessionId) => { setFilters({ ...defaultFilters, sessionId }); setPlayerTab("verdict"); navigate("players"); }} /><SessionObservationChart events={filteredEvents} sessionIds={[...visibleSessionIds].sort()} onEvents={(sessionId) => { setFilters({ ...filters, sessionId, eventKind: "detection" }); navigate("events"); }} /></>}
             {activePage === "players" && <Panel className="player-workspace">
               <div className="player-sidebar"><SubjectList assessments={filteredAssessments} selected={selectedAssessment?.id ?? ""} onSelect={(key) => { setSelectedKey(key); setPlayerTab("verdict"); }} /></div>
@@ -1009,18 +975,22 @@ export default function App() {
                     if (nextIndex !== null) { event.preventDefault(); const next = playerTabs[nextIndex]!; setPlayerTab(next.id); document.getElementById(`player-tab-${next.id}`)?.focus(); }
                   }}>{tab.label}</button>)}</div>
                   <div className="detail-tab-content" role="tabpanel" id={`player-panel-${playerTab}`} aria-labelledby={`player-tab-${playerTab}`} tabIndex={0}>
-                    {playerTab === "verdict" && <VerdictView assessment={selectedAssessment} snapshot={visibleSnapshot} loading={snapshotLoading} error={snapshotError} />}
+                    {playerTab === "verdict" && <VerdictView assessment={selectedAssessment} snapshot={visibleSnapshot} events={assessmentEvents} onSelect={(event) => void openEvent(event)} loading={snapshotLoading} error={snapshotError} />}
                     {playerTab === "timeline" && <Timeline events={subjectEvents} onSelect={(event) => void openEvent(event)} />}
-                    {playerTab === "signals" && <><DetailNotice loading={snapshotLoading} error={snapshotError} /><ModuleStateList snapshot={visibleSnapshot} /></>}
+                    {playerTab === "signals" && <><DetailNotice loading={snapshotLoading} error={snapshotError} /><ModuleSignals snapshot={visibleSnapshot} events={assessmentEvents} onSelect={(event) => void openEvent(event)} /></>}
                     {playerTab === "status" && <SubjectSystemStatus status={visibleSubjectStatus} loading={statusLoading} error={statusError} />}
-                    {playerTab === "history" && <GodModeHistoryPanel history={visibleGodModeHistory} loading={historyLoading} error={historyError} onSelect={openHistoryEvent} />}
+                    {playerTab === "history" && <GodModeHistoryPanel history={visibleGodModeHistory} events={assessmentEvents} loading={historyLoading} error={historyError} onSelect={openHistoryEvent} />}
                   </div>
-                </> : <VerdictView assessment={null} snapshot={null} loading={false} error={null} />}
+                </> : <VerdictView assessment={null} snapshot={null} events={[]} onSelect={() => undefined} loading={false} error={null} />}
               </div>
             </Panel>}
-            {activePage === "events" && <EventsTable events={filteredEvents} assessments={overview.assessments} launcherStatuses={overview.launcher_statuses} page={page} onPage={setPage} onSelect={(event) => void openEvent(event)} />}
+            {activePage === "events" && <EventsTable events={filteredEvents} launcherStatuses={overview.launcher_statuses} page={page} onPage={setPage} onSelect={(event) => void openEvent(event)} />}
             {activePage === "modules" && <ModuleOperations rollups={moduleRollups} selected={filters.module} onSelect={(moduleId) => { setFilters({ ...filters, module: moduleId }); navigate("events"); }} />}
-            {activePage === "system" && <><ConnectionStrip overview={overview} transportStale={transportStale} /><SystemOverview overview={overview} launcherStatuses={filteredLauncherStatuses} operationalEventCount={operationalEventCount} /></>}
+            {activePage === "system" && <>
+              <ConnectionStrip overview={overview} transportStale={transportStale} onLauncherIssues={openLauncherIssues} />
+              <div className="system-view-tools" role="group" aria-label="시스템 표시 범위"><button type="button" aria-pressed={!systemIssuesOnly} onClick={() => setSystemIssuesOnly(false)}>전체 상태</button><button type="button" aria-pressed={systemIssuesOnly} onClick={() => setSystemIssuesOnly(true)}>점검 대상만</button></div>
+              {systemIssuesOnly ? <Panel><LauncherIssues launcherStatuses={filteredLauncherStatuses} moduleStatuses={moduleScopeStatuses} onSubject={investigateLauncherSubject} /></Panel> : <SystemOverview overview={overview} launcherStatuses={filteredLauncherStatuses} operationalEventCount={operationalEventCount} />}
+            </>}
           </div>
         </div>
       </main>

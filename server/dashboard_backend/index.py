@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -26,11 +27,16 @@ class DashboardIndex:
                     session_id TEXT NOT NULL, player_id TEXT NOT NULL,
                     module TEXT NOT NULL, submodule TEXT,
                     timestamp_ms INTEGER NOT NULL, payload TEXT NOT NULL,
-                    kind TEXT NOT NULL
+                    kind TEXT NOT NULL, received_at_utc TEXT
                 );
                 CREATE INDEX IF NOT EXISTS event_scope ON events(session_id, player_id, sequence);
                 CREATE INDEX IF NOT EXISTS event_module ON events(module, sequence);
             """)
+            # Serialize additive migrations across independent Dashboard workers.
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
+            if "received_at_utc" not in columns:
+                db.execute("ALTER TABLE events ADD COLUMN received_at_utc TEXT")
             # Reusing an index against another writer would silently mix sessions.
             source = str(writer.root.resolve())
             old = db.execute("SELECT value FROM metadata WHERE key='source'").fetchone()
@@ -60,10 +66,11 @@ class DashboardIndex:
                     event = item.result
                     submodule = event["evidence"].get("submodule")
                     kind = "operational" if event["module"] == "selfdefense" or event["evidence"].get("kind") == "module_health" else "detection"
-                    db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+                    db.execute("INSERT INTO events(sequence,id,session_id,player_id,module,submodule,timestamp_ms,payload,kind,received_at_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
                         item.sequence, item.event_id, event["session_id"], event["player_id"],
                         event["module"], submodule if isinstance(submodule, str) else None,
                         event["timestamp_ms"], json.dumps(event, ensure_ascii=False, allow_nan=False), kind,
+                        self.utc_receipt(getattr(item, "received_at_utc", None)),
                     ))
                     cursor = item.sequence
                 remaining -= len(batch)
@@ -75,11 +82,29 @@ class DashboardIndex:
             return {"through_sequence": cursor, "catching_up": not complete}
 
     @staticmethod
+    def utc_receipt(value) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+            return None
+        return value
+
+    @staticmethod
     def event(row) -> dict:
         event = json.loads(row["payload"])
+        basis = event["evidence"].get("time_basis")
+        # Only explicit producer declarations are interpretable. Do not guess
+        # from detector name, value magnitude, current time, or session IDs.
+        if basis not in ("session_relative", "unix_epoch_ms"):
+            basis = "unknown"
         return {
             **event, "id": row["id"], "sequence": row["sequence"],
-            "event_kind": row["kind"], "time_basis": "unknown",
+            "event_kind": row["kind"], "time_basis": basis,
+            "received_at_utc": row["received_at_utc"],
             "evidence_image": None, "log_excerpt": None,
         }
 

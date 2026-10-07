@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -35,6 +36,8 @@ class StoredDetection:
     sequence: int
     event_id: str
     result: dict
+    # First durable acceptance at this writer. Legacy rows deliberately stay null.
+    received_at_utc: str | None = None
 
 
 class DetectionSink(Protocol):
@@ -58,7 +61,12 @@ class DetectionWriter:
                     db.execute("""CREATE TABLE IF NOT EXISTS stored (
                         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                         event_id TEXT UNIQUE NOT NULL, digest TEXT NOT NULL, payload BLOB NOT NULL,
-                        relative_path TEXT NOT NULL, byte_offset INTEGER NOT NULL, state TEXT NOT NULL)""")
+                        relative_path TEXT NOT NULL, byte_offset INTEGER NOT NULL, state TEXT NOT NULL,
+                        received_at_utc TEXT)""")
+                    columns = {row["name"] for row in db.execute("PRAGMA table_info(stored)")}
+                    if "received_at_utc" not in columns:
+                        # No inferred backfill: historical acceptance time was not recorded.
+                        db.execute("ALTER TABLE stored ADD COLUMN received_at_utc TEXT")
                 self._recover()
         except OSError as exc:
             raise StorageError("cannot initialize detection storage") from exc
@@ -140,8 +148,9 @@ class DetectionWriter:
                     expected_offset = previous[0] + previous[1] + 1 if previous else 0
                     if offset != expected_offset:
                         raise StorageError("JSONL was changed outside the writer; manual recovery required")
-                    db.execute("INSERT INTO stored(event_id,digest,payload,relative_path,byte_offset,state) VALUES(?,?,?,?,?,'pending')",
-                               (key, digest, payload, relative, offset))
+                    received_at_utc = datetime.now(timezone.utc).isoformat()
+                    db.execute("INSERT INTO stored(event_id,digest,payload,relative_path,byte_offset,state,received_at_utc) VALUES(?,?,?,?,?,'pending',?)",
+                               (key, digest, payload, relative, offset, received_at_utc))
                     row = db.execute("SELECT * FROM stored WHERE event_id=?", (key,)).fetchone()
                 self._append_pending(row)
                 return WriteReceipt(key, "stored", row["sequence"], path)
@@ -161,7 +170,7 @@ class DetectionWriter:
                 results = []
                 for row in rows:
                     self._verify_committed(row)
-                    results.append(StoredDetection(row["sequence"], row["event_id"], json.loads(bytes(row["payload"]))))
+                    results.append(StoredDetection(row["sequence"], row["event_id"], json.loads(bytes(row["payload"])), row["received_at_utc"]))
                 return results
         except OSError as exc:
             raise StorageError("cannot read stored detection feed") from exc

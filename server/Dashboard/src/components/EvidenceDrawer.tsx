@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatElapsed, humanizeModule } from "../domain";
+import { humanizeModule } from "../domain";
+import { eventTime } from "../eventTime";
+import { EventTimeLabel } from "./EventTimeLabel";
 import type { Assessment, DashboardEvent } from "../types";
 import { Icon } from "./Icon";
 import { StatusBadge } from "./StatusBadge";
@@ -270,6 +272,7 @@ export function EvidenceDrawer({
 
   if (!event || !payload || !sanitizedEvidence) return null;
   const operational = event.event_kind === "operational";
+  const time = eventTime(event);
   const evidenceImageUrl = safeEvidenceImageUrl(event.evidence_image);
   const showEvidenceImage = evidenceImagesAvailable !== undefined || event.evidence_image !== null;
 
@@ -313,7 +316,7 @@ export function EvidenceDrawer({
             </div>
             <h3>{detectionLabel ? redactSensitiveText(detectionLabel, sensitiveEvidenceValues) : humanizeModule(event.module)}</h3>
             <p>{event.player_id} · {event.session_id}</p>
-            <div className="investigation-meta"><span>Severity <span className={`severity-badge severity-${severity?.toLowerCase() ?? "unknown"}`}>{severity ?? "미제공"}</span></span><span className="mono">raw {event.raw_score}</span><span>{formatElapsed(event.timestamp_ms)}</span></div>
+            <div className="investigation-meta">{severity && <span>Severity <span className={`severity-badge severity-${severity.toLowerCase()}`}>{severity}</span></span>}<span className="mono">raw {event.raw_score}</span><EventTimeLabel event={event} /></div>
           </div>
 
           <section className="detail-section" aria-labelledby="reason-title">
@@ -324,12 +327,12 @@ export function EvidenceDrawer({
           </section>
 
           {assessment !== undefined && <section className="detail-section investigation-verdict" aria-labelledby="investigation-verdict-title">
-            <h4 id="investigation-verdict-title">대상 판정</h4>
+            <h4 id="investigation-verdict-title">현재 플레이어 판정</h4>
             <dl className="detail-grid">
               <div><dt>현재 판정</dt><dd>{assessment?.status ?? "UNKNOWN"}</dd></div>
               <div><dt>평가</dt><dd>{assessment?.final_verdict ? assessment.final_verdict.assessment_complete ? "완료" : "미완료" : "미확정"}</dd></div>
-              <div><dt>점수 / 신뢰도</dt><dd>{assessment?.score ?? "미제공"} / {assessment?.confidence ?? "미제공"}</dd></div>
-              <div><dt>근거 단위</dt><dd>{assessment?.final_verdict?.evidence_unit_count ?? "미제공"}</dd></div>
+              <div><dt>독립 위험 근거</dt><dd>{assessment?.final_verdict?.evidence_unit_count ?? "미제공"}</dd></div>
+              <div><dt>중복 보정</dt><dd>{assessment?.final_verdict?.overlap_adjustment_count ?? "미제공"}</dd></div>
             </dl>
             <div className="investigation-codes"><span>활성 모듈</span><strong>{assessment?.final_verdict?.active_modules.length ? assessment.final_verdict.active_modules.map(humanizeModule).join(", ") : "—"}</strong></div>
             <div className="investigation-codes"><span>Reason codes</span><strong>{assessment?.reason_codes.length ? assessment.reason_codes.map((reason) => redactSensitiveText(reason, sensitiveEvidenceValues)).join(", ") : "—"}</strong></div>
@@ -343,7 +346,9 @@ export function EvidenceDrawer({
               <div><dt>플레이어</dt><dd>{event.player_id}</dd></div>
               <div><dt>Launcher 클라이언트</dt><dd title="해당 대상의 최신 Heartbeat 소스. 이벤트 발신자와 동일하다는 보장은 없습니다.">{clientId ? redactEventText(event, clientId) : "미제공"}</dd></div>
               <div><dt>모듈</dt><dd>{humanizeModule(event.module)}</dd></div>
-              <div><dt>세션 경과</dt><dd>{formatElapsed(event.timestamp_ms)}</dd></div>
+              <div><dt>{time.elapsedLabel ? "세션 경과" : "원본 타임스탬프"}</dt><dd>{time.elapsedLabel ?? time.rawLabel}</dd></div>
+              <div><dt>관측 시각</dt><dd>{time.observedLabel ?? "미제공"}</dd></div>
+              <div><dt>수신 시각</dt><dd>{time.receivedLabel ?? "미제공"}</dd></div>
               <div><dt>원시 점수</dt><dd>{event.raw_score}</dd></div>
               <div><dt>Event ID</dt><dd className="mono">{event.id}</dd></div>
             </dl>

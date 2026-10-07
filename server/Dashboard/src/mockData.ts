@@ -76,7 +76,7 @@ const espVerdict = makeVerdict("demo_esp_001", "player_042", "SUSPICIOUS", {
   evidence_unit_count: 1,
   active_module_count: 1,
   active_modules: ["external_access"],
-  unresolved_modules: ["esp", "selfdefense"],
+  unresolved_modules: ["esp"],
   reason_codes: ["CALIBRATED_ACTIVE_EVIDENCE", "ASSESSMENT_INCOMPLETE"],
 });
 
@@ -108,7 +108,9 @@ const event = (
   id: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
   sequence,
   event_kind: "detection",
-  time_basis: "unknown",
+  // Explicit fictional server metadata, not a guess made by UI rendering.
+  time_basis: "session_relative",
+  received_at_utc: generatedAt,
   evidence_image: null,
   log_excerpt: null,
   ...input,
@@ -456,6 +458,80 @@ function policyModule(item: ModuleSnapshot) {
   };
 }
 
+/**
+ * Fixed synthetic Scoring responses. These values describe only the named
+ * DEMO records. LIVE rendering never uses this table to classify a detector,
+ * choose a threshold, or derive a verdict from a raw score.
+ */
+function demoPolicyExplanation(assessment: Assessment) {
+  const source = (sequence: number) => {
+    const item = eventItems.find((event) => event.sequence === sequence)!;
+    return { ...item, event_id: item.id };
+  };
+  const signal = (sequence: number, status: string, threshold: number | null, mode: string | null = "threshold") => ({
+    module: source(sequence).module, event_id: source(sequence).id,
+    status, raw_score: source(sequence).raw_score,
+    calibration_version: "replay-v1", calibration_mode: mode,
+    calibration_threshold: threshold, threshold_met: threshold === null ? null : status === "ACTIVE" ? true : status === "INACTIVE" ? false : null,
+    overlap_tags: [], entity_key: null,
+    history_resolved: false, history_total_events: null,
+    history_qualifying_events: null, history_max_raw_score: null,
+  });
+  const explained = (sequence: number, status: string, threshold: number | null, mode: string | null = "threshold") => ({
+    module: source(sequence).module,
+    submodule: typeof source(sequence).evidence.submodule === "string" ? source(sequence).evidence.submodule : null,
+    signal: signal(sequence, status, threshold, mode),
+    latest_event: source(sequence), retained_incident_event: null,
+  });
+
+  // The status and threshold below are literal mock server responses, not
+  // derived by comparing the raw values in eventItems.
+  const scenarios: Record<string, {
+    signals: ReturnType<typeof signal>[];
+    explanations: ReturnType<typeof explained>[];
+    inactive: string[];
+    units: { kind: "INDEPENDENT"; modules: string[]; event_ids: string[]; overlap_tags: string[]; candidate_count: number }[];
+  }> = {
+    demo_normal_001: { signals: [signal(1, "INACTIVE", 4)], explanations: [explained(1, "INACTIVE", 4)], inactive: ["aimbot"], units: [] },
+    demo_aimbot_001: { signals: [signal(8, "ACTIVE", 4)], explanations: [explained(8, "ACTIVE", 4)], inactive: [],
+      units: [{ kind: "INDEPENDENT", modules: ["aimbot"], event_ids: [source(8).id], overlap_tags: [], candidate_count: 0 }] },
+    demo_noclip_001: { signals: [signal(3, "ACTIVE", 3)], explanations: [explained(3, "ACTIVE", 3)], inactive: [],
+      units: [{ kind: "INDEPENDENT", modules: ["noclip"], event_ids: [source(3).id], overlap_tags: [], candidate_count: 0 }] },
+    demo_esp_001: {
+      // external_access is aggregate ACTIVE through its external_process
+      // channel. The aggregate has no single interchangeable raw threshold.
+      signals: [{ ...signal(5, "ACTIVE", null, "pending"), history_resolved: true }, signal(6, "UNRESOLVED", null, "pending")],
+      explanations: [explained(5, "ACTIVE", 2), explained(4, "INACTIVE", 2, "event_threshold"), explained(6, "UNRESOLVED", null, "pending")],
+      inactive: [],
+      units: [{ kind: "INDEPENDENT", modules: ["external_access"], event_ids: [source(5).id], overlap_tags: [], candidate_count: 0 }],
+    },
+  };
+  const fixture = scenarios[assessment.session_id]!;
+  const verdict = assessment.final_verdict!;
+  return {
+    aggregate_evidence: {
+      session_id: assessment.session_id, player_id: assessment.player_id,
+      signals: fixture.signals,
+      active_modules: verdict.active_modules, inactive_modules: fixture.inactive,
+      advisory_modules: verdict.advisory_modules, deferred_modules: verdict.deferred_modules,
+      unresolved_modules: verdict.unresolved_modules, unavailable_modules: verdict.unavailable_modules,
+      correlation_candidates: [], overlap_groups: [],
+    },
+    aggregate_risk: {
+      version: "evidence-units-v1", session_id: assessment.session_id, player_id: assessment.player_id,
+      evidence_units: fixture.units,
+      evidence_unit_count: verdict.evidence_unit_count, active_module_count: verdict.active_module_count,
+      independent_unit_count: verdict.evidence_unit_count, overlap_cluster_count: 0,
+      overlap_adjustment_count: verdict.overlap_adjustment_count,
+      assessment_complete: verdict.assessment_complete, active_modules: verdict.active_modules,
+      independent_modules: verdict.active_modules, clustered_modules: [],
+      advisory_modules: verdict.advisory_modules, unresolved_modules: verdict.unresolved_modules,
+      deferred_modules: verdict.deferred_modules, unavailable_modules: verdict.unavailable_modules,
+    },
+    module_evidence: fixture.explanations,
+  };
+}
+
 function snapshotFrom(assessment: Assessment): SnapshotResponse {
   const modules = latestModules(assessment.session_id, assessment.player_id);
   return {
@@ -474,6 +550,7 @@ function snapshotFrom(assessment: Assessment): SnapshotResponse {
       player_id: assessment.player_id,
       modules: modules.map(policyModule),
       correlation_candidates: [],
+      ...demoPolicyExplanation(assessment),
       synthetic: true,
     },
   };

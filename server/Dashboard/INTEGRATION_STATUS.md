@@ -2,6 +2,31 @@
 
 이 문서는 8-A 화면이 종합 안티치트 관제 역할을 하기 위해 현재 연결할 수 있는 범위와, 8-B·Receiver·Scoring·Launcher 쪽에서 추가로 확정해야 하는 범위를 구분한다. 화면에 보인다는 이유만으로 아직 없는 서버 기능을 구현된 것처럼 표시하지 않는다.
 
+## 2026-10-07 Dashboard 피드백 반영
+
+기준 main `76c03dd`에서 작업했다. 기존 LocalGuard·ESP 변경은 유지하고 Dashboard 표시와 필요한 읽기용 메타데이터만 보강했다.
+
+- 시간: 확인된 세션 기준에 T+를 표시하고 신규 최초 저장 UTC 시각을 별도 KST 수신 시각으로 연결했다. unknown 시간은 원본 ms로 남기며 과거 실제 시각을 만들지 않았다. 실제 관측 시각의 완전한 연결은 생산자 시간 계약 협의가 남아 있다.
+- 이력 범위: 플레이어 상세의 일반적인 사건 이력 명칭을 `GodMode 이력`으로 변경했다.
+- 이벤트 상태: 플레이어의 SUSPICIOUS를 raw 0 Event에 복사하던 표시를 제거했다. Event 직접 보고 상태와 현재 플레이어 판정을 분리했다.
+- 판정 근거: 활성 모듈 이름·대표 reasons·최신 raw·실제 서버 임계값·보존 사건을 추가했다. DLL `[0, 2, 0]`은 최신 0과 보존 2를 나눠 표시하고, 일반 모듈의 과거 고점은 현재 활성으로 승격하지 않는다.
+- 미사용 필드: 모두 미제공인 Severity 열·필터·정렬은 숨긴다. 플레이어 점수·신뢰도 대신 Final Verdict의 독립 위험 근거·활성 모듈·중복 보정·평가 상태를 표시한다.
+- Launcher: 연결 요약에서 점검 대상 목록으로 이동하고 실패/WARN/SKIPPED·수신 지연·미보고·전송 장애를 세션/플레이어/client 기준으로 확인한다. 해당 대상의 실행 상태 상세로 이동할 수 있다.
+- 모듈 신호: 최신 raw 높은 순 / 불러온 이력 최고 raw 높은 순 정렬과 원본 상세 연결을 추가했다.
+
+검증: 프론트 단위·jsdom 상호작용 235개, Shared 52개, Receiver 30개, Scoring 403개, Dashboard backend 76개 통과. 일반 빌드와 `/GZZ/` 프론트 단독 빌드도 통과했다. backend HTTP 회귀에는 이벤트 목록·상세의 동일 시각, 중복 전송의 최초 시각 유지, Shared 7필드 보존을 포함한다.
+
+자동화 회귀 후 추가 요청으로 아래 프론트 단독 공개 배포를 진행했다. 실제 게임·운영 backend 시험을 새로 진행한 것은 아니다. 과거 실게임 결과와 이번 자동화 회귀·DEMO 화면 확인을 구분한다. Scoring의 snapshot·이력·판정 조회는 원자적 watermark 계약이 아니므로 수신 중 시점 차이는 남아 있다. 정책 설명만으로 최종 판정을 대체하지 않는다.
+
+### 프론트 단독 공개 배포 확인
+
+- 공개 주소: [kkinomalo.com/GZZ/](https://kkinomalo.com/GZZ/). 피드백 반영 소스 `6fb1f15`의 정적 빌드를 기존 Vercel `gzz-dashboard-frontend`에 Production 배포했다.
+- 업로드 범위는 `GZZ/index.html`, 해시 JS·CSS, 정적 배포 설정이다. 소스 전체·실제 로그·DB·인증 환경 파일은 올리지 않았다. 기존 홈페이지 프로젝트와 `/GZZ` 연결 규칙은 변경하지 않았다.
+- 공개 주소의 HTML·JS·CSS가 모두 200이며 빌드 원본과 SHA-256이 일치한다. JS는 `index-CNePWaIw.js`, CSS는 `index-CwAw_pIf.css`다.
+- 공개 브라우저에서 T+·KST 수신 시각, raw 0 이벤트의 직접 상태, 미제공 Severity 열 숨김, 판정 근거·독립 위험 근거·활성 모듈·중복 보정·평가 상태, `GodMode 이력` 명칭을 확인했다. Launcher 일부 저하 → 문제 세션/플레이어 → 해당 실행 상태 상세 이동도 확인했다. 점검 중 브라우저 warning/error는 없었다.
+- 공개 화면은 계속 `DEMO`이며 HTML meta CSP의 `connect-src 'none'`으로 API 통신을 막는다. `/GZZ/` HTML 응답의 HTTP 보안 헤더는 CDN 경유 시 보이지 않으므로 헤더 적용을 검증됐다고 주장하지 않는다. 일반 LIVE 빌드·Receiver·Scoring·Launcher는 배포하지 않았다.
+- 기존 홈페이지는 200과 `스쿨캠핑 | 신청` 제목을 유지한다. 화면 캡처는 [보고 근거](./docs/report-evidence/REPORT_EVIDENCE.md)에 추가했다.
+
 ## 2026-10-06 실제 게임 검증 추가 결과
 
 승인된 비공개 방에서 이미 실행 중인 게임을 대상으로 확인했다. 이번에는 웹 화면 테스트를 하지 않았으며 아래 API 검증과 과거 React 검증을 하나의 실게임 화면 시험으로 묶지 않는다.
@@ -35,8 +60,8 @@ ESP ON은 실제 게임 핸들을 연 시각이고 OFF는 해당 프로세스 �
 
 - [x] Logger 연동: 실제 `shared.logger.send_detection`과 HTTP ACK, 재시도·중복 억제 검증.
 - [x] Detector 업로드: ESP와 DLL 무결성 코드가 팀 main에 반영됨.
-- [x] Replay 세션 추가: 기존 정상 캡처 `normal_001`의 132개 Event 내보내기에 더해 위 실제 NORMAL 1개·CHEAT 2개를 새로 수집함. 유효 ESP 자료는 CHEAT 3개·NORMAL 3개이며 `esp_only_001`은 제외함. 새 자료는 검토 중인 변경에 포함되며 main 반영 여부와 구분함.
-- [x] E2E: 통제된 Windows 보조 프로세스에서 실제 DLL·VM_READ 핸들을 관측하고 Shared → Receiver → Scoring → 조회 API를 확인함. 실제 `server.main` → React LIVE 연결도 확인함. 이번 보강 코드는 [검토 중인 변경](https://github.com/Lawliet-123/WHS4-GZZ/pull/126)으로 올림.
+- [x] Replay 세션 추가: 기존 정상 캡처 `normal_001`의 132개 Event 내보내기에 더해 위 실제 NORMAL 1개·CHEAT 2개를 새로 수집함. 유효 ESP 자료는 CHEAT 3개·NORMAL 3개이며 `esp_only_001`은 제외함. 추가 자료는 2026-10-06 팀 main에 반영됨.
+- [x] E2E: 통제된 Windows 보조 프로세스에서 실제 DLL·VM_READ 핸들을 관측하고 Shared → Receiver → Scoring → 조회 API를 확인함. 실제 `server.main` → React LIVE 연결도 확인함. 보강 코드는 [팀 main에 반영된 변경](https://github.com/Lawliet-123/WHS4-GZZ/pull/126)에서 확인할 수 있음.
 
 **4/4는 위 기본 요건의 완료이지 실게임·운영 검증 전체 완료가 아니다.** 다음 항목은 계속 미완료로 남긴다.
 

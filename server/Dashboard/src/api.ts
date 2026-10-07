@@ -132,6 +132,9 @@ function validateEvent(value: unknown, endpoint: string, path: string, status: n
   finiteNumberAt(event.raw_score, endpoint, `${path}.raw_score`, status);
   enumAt(event.event_kind, new Set(["detection", "operational"]), endpoint, `${path}.event_kind`, status);
   stringAt(event.time_basis, endpoint, `${path}.time_basis`, status);
+  for (const key of ["received_at_utc", "observed_at_utc"]) {
+    if (event[key] !== undefined) nullableStringAt(event[key], endpoint, `${path}.${key}`, status);
+  }
   nullableStringAt(event.evidence_image, endpoint, `${path}.evidence_image`, status);
   nullableStringAt(event.log_excerpt, endpoint, `${path}.log_excerpt`, status);
 }
