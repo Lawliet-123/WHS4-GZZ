@@ -164,9 +164,13 @@ _ITEMS = (
     ),
     ModuleCalibration(
         "whistle_rpc",
-        "pending",
+        "advisory",
         None,
-        note="Threshold/TTL requires additional window-history replay data.",
+        note=(
+            "Optional RPC observation path. PR #135 removed it from the default "
+            "Launcher because the required hook DLL is not injected in normal "
+            "deployments; absence must not make the whole assessment unresolved."
+        ),
     ),
 
     # 현재 중앙 risk calibration 근거가 없는 알려진 모듈들.
@@ -224,7 +228,15 @@ _ITEMS = (
             "Detector contract assigns one point per scan for this condition."
         ),
     ),
-    ModuleCalibration("aimbot_runtime", "pending", None),
+    ModuleCalibration(
+        "aimbot_runtime",
+        "advisory",
+        None,
+        note=(
+            "Runtime aimbot evidence is currently advisory; lack of runtime "
+            "evidence must not make the whole assessment unresolved."
+        ),
+    ),
 )
 
 
