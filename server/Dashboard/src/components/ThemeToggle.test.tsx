@@ -37,7 +37,13 @@ function expectTheme(theme: "light" | "dark") {
   expect(document.documentElement.style.colorScheme).toBe(theme);
   const action = theme === "light" ? "다크 모드로 전환" : "라이트 모드로 전환";
   const button = screen.getByRole("button", { name: action });
-  expect(button.textContent).toBe(theme === "light" ? "라이트" : "다크");
+  expect(button.textContent).toBe("");
+  expect(button.children).toHaveLength(1);
+  expect(button.querySelectorAll("svg")).toHaveLength(1);
+  const icon = button.querySelector("svg")!;
+  expect(icon.getAttribute("aria-hidden")).toBe("true");
+  // Sun has a central circle; the moon is a single crescent path.
+  expect(icon.querySelector("circle") !== null).toBe(theme === "light");
   expect(button.getAttribute("title")).toBe(action);
   expect(button.hasAttribute("aria-pressed")).toBe(false);
   expect(screen.getAllByRole("button")).toHaveLength(1);
@@ -184,7 +190,7 @@ describe("dashboard theme", () => {
     expect(system.remove).toHaveBeenCalledTimes(system.add.mock.calls.length);
   });
 
-  it("provides one focusable native button showing the current mode and next action", () => {
+  it("provides one focusable icon-only button with an accessible next action", () => {
     mockSystemTheme(false);
     render(<ThemeToggle />);
     expect(screen.queryByRole("group", { name: "화면 테마" })).toBeNull();

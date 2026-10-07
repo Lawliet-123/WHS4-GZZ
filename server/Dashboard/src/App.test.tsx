@@ -176,10 +176,12 @@ describe("dashboard interactions", () => {
     expect(screen.getAllByRole("button", { name: /^(?:라이트|다크) 모드로 전환$/ })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "라이트 모드로 전환" }));
     expect(document.documentElement.dataset.theme).toBe("light");
-    expect(screen.getByRole("button", { name: "다크 모드로 전환" }).textContent).toBe("라이트");
+    expect(screen.getByRole("button", { name: "다크 모드로 전환" }).textContent).toBe("");
+    expect(screen.getByRole("button", { name: "다크 모드로 전환" }).querySelectorAll("svg")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(screen.getByRole("button", { name: "라이트 모드로 전환" }).textContent).toBe("다크");
+    expect(screen.getByRole("button", { name: "라이트 모드로 전환" }).textContent).toBe("");
+    expect(screen.getByRole("button", { name: "라이트 모드로 전환" }).querySelectorAll("svg")).toHaveLength(1);
     act(() => vi.advanceTimersByTime(10_000));
     expect(fetchMock).not.toHaveBeenCalled();
   });

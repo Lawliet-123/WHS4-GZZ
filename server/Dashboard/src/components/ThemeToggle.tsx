@@ -14,8 +14,7 @@ export function ThemeToggle() {
       title={actionLabel}
       onClick={() => selectTheme(nextTheme)}
     >
-      <Icon name={theme === "light" ? "sun" : "moon"} size={15} />
-      <span className="theme-toggle-label">{theme === "light" ? "라이트" : "다크"}</span>
+      <Icon name={theme === "light" ? "sun" : "moon"} />
     </button>
   );
 }
