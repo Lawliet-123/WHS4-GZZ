@@ -252,12 +252,15 @@ class ProcessManager:
                             # FAILED 로 셌다 — 누가 먼저 보느냐에 따라 종료코드가 갈렸다.
                             st.status = STOPPED
                             st.detail = "게임이 꺼져 스스로 끝남"
+                            self._note_exit(st, code, registry.STOP_EXITED)
                         else:
-                            self._down(st, f"종료됨 (code {code})")
+                            self._down(st, f"종료됨 (code {code})", code)
                 elif st.adopted_pid and not registry.is_alive(st.adopted_pid, st.adopted_ctime):
                     st.adopted_pid, st.adopted_ctime = None, 0
                     exited = True
-                    self._down(st, "이어받은 프로세스가 종료됨")
+                    # 이어받은 프로세스라 Popen 이 없다. 종료 코드를 모른다 — 모르는
+                    # 것을 0 으로 적지 않는다.
+                    self._down(st, "이어받은 프로세스가 종료됨", None)
 
             if st.status == RESTARTING:
                 self._try_restart(st)
@@ -279,12 +282,25 @@ class ProcessManager:
         """게임이 꺼졌는가. 게임 PID 를 아직 모르면 꺼졌다고 하지 않는다."""
         return self.game_pid is not None and not registry.is_alive(self.game_pid)
 
+    def _note_exit(self, st: ModuleState, code: Optional[int], reason: str) -> None:
+        """등록부에 '왜 안 돌고 있나'를 남긴다. 등록부를 못 써도 런처는 계속 간다.
+
+        죽은 PID 만 보고는 곧 되살아날 것과 끝난 것을 구분할 수 없어서 넣었다
+        (4번 AntiDebug·1번·커널이 이 파일로 우리 프로세스를 가려낸다).
+        """
+        try:
+            registry.note_exit(st.name, code=code, reason=reason)
+        except Exception:
+            pass
+
     def _oneshot_exit(self, st: ModuleState, code: int, now: float) -> None:
         # run_session.py 의 계약: 0 정상 / 1 의심 / 2 검사 실패 / 3 크래시.
         # 3 은 아래 비정상 종료 쪽으로 간다 — 크래시를 의심으로 세지 않는다.
         if code in (0, 1, 2):
             st.status = {0: DONE, 1: DONE, 2: WARN}[code]
             st.detail = {0: "정상", 1: "의심 발견", 2: "검사 실패"}[code]
+            # 주기 검사는 끝나는 게 정상이다. 멈춘 것과 구분해서 적는다.
+            self._note_exit(st, code, registry.STOP_FINISHED)
         else:
             # 비정상 종료. 다음 주기에 다시 부르되, 상주 모듈과 같은 한도를 넘으면 멈춘다.
             st.crash_times = [t for t in st.crash_times if now - t < registry.WINDOW_S] + [now]
@@ -293,19 +309,25 @@ class ProcessManager:
                 st.detail = (f"비정상 종료 {len(st.crash_times)}회 "
                              f"({registry.WINDOW_S / 60:.0f}분 안) — 더 부르지 않음. 로그 확인")
                 self.say(f"  ! {st.name} 이 계속 비정상 종료합니다. {st.log_path}")
+                self._note_exit(st, code, registry.STOP_CRASH_LIMIT)
                 return
             st.status = WARN
             st.detail = f"비정상 종료 (code {code}) — 다음 주기에 다시"
+            self._note_exit(st, code, registry.STOP_EXITED)
         st.next_run_at = time.time() + st.module.every_s if st.module.every_s else 0.0
 
-    def _down(self, st: ModuleState, why: str) -> None:
+    def _down(self, st: ModuleState, why: str, code: Optional[int] = None) -> None:
         if not self._restartable(st):
             st.status = FAILED
             st.detail = f"상주 모듈이 {why} — 재시작 안 함, 로그 확인"
             self.say(f"  ! {st.name} 이 멈췄습니다. {st.log_path}")
+            self._note_exit(st, code, registry.STOP_EXITED)
             return
         st.status = RESTARTING
         st.detail = f"{why} — 되살리는 중"
+        # 되살리기 **전에** 적는다. restart_if_dead 가 성공하면 거기서 지운다.
+        # 안 적으면 BACKOFF 로 기다리는 동안 이유 없는 죽은 항목으로 보인다.
+        self._note_exit(st, code, registry.STOP_EXITED)
         self._try_restart(st)
 
     def _try_restart(self, st: ModuleState) -> None:
@@ -595,6 +617,7 @@ class ProcessManager:
         else:
             st.detail = "요청 후 종료" + (f" (code {code})" if code is not None else "")
         out["graceful"].append(st.name)
+        self._note_exit(st, code, registry.STOP_BY_LAUNCHER)
         self._finish(st)
 
     def _force(self, st: ModuleState, was_sent: bool, waited: float,
@@ -611,4 +634,6 @@ class ProcessManager:
             st.detail = "강제 종료 — 종료 요청을 보내지 못함"
             out["unsignaled"].append(st.name)
         self.say(f"  - {st.name} {st.detail}")
+        # 강제로 껐으므로 종료 코드는 우리가 만든 값이다. 모듈이 낸 것처럼 적지 않는다.
+        self._note_exit(st, None, registry.STOP_KILLED)
         self._finish(st)

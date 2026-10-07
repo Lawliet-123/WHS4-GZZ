@@ -50,13 +50,32 @@ msvcrt 바이트 잠금을 쓴다. 잠금을 잡은 프로세스가 죽으면 OS
         "external_access": {
           "pid": 5678, "create_time": ..., "started_by": "launcher" | "watchdog",
           "restartable": true, "argv": [...], "cwd": "...", "log": "...",
-          "restarts": [재시작 시각, ...], "gave_up": false
+          "restarts": [재시작 시각, ...], "gave_up": false,
+
+          "last_exit": {"code": 2, "at": 1791346000.1},   <- 마지막으로 끝났을 때
+          "next_restart_at": 1791346008.1,                <- 되살릴 수 있는 가장 이른 시각
+          "stop_reason": "crash_limit"                    <- 왜 안 돌고 있나
         }
       },
       "policy": {"max_restarts": 5, "window_s": 300}
     }
 
 create_time 은 PID 재사용을 가려낸다. 같은 PID 라도 생성 시각이 다르면 다른 프로세스다.
+
+## 죽은 항목을 읽는 쪽을 위해 (2026-10-07)
+
+PID 가 죽어 있는 항목만 보고는 **곧 되살아날 것**과 **끝난 것**을 구분할 수 없었다.
+`gave_up` 하나로는 "왜" 를 알 수 없다. 그래서 세 칸을 더했다. 기존 칸은 그대로 두고
+더하기만 한다 — 4번 AntiDebug 가 이 파일을 엄격하게 읽어서, 기존 칸이 비면 등록부
+전체를 오류로 본다(#124 registry_reader.py).
+
+  last_exit        마지막으로 끝났을 때의 종료 코드와 시각. 없으면 아직 안 끝났다
+  next_restart_at  되살릴 수 있는 가장 이른 시각. 0 이면 지금 바로 (대기 없음)
+  stop_reason      아래 STOP_* 중 하나. None 이면 멈춘 게 아니다
+
+읽는 쪽은 **살아 있는지를 먼저 is_alive 로 본다.** 이 세 칸은 죽어 있을 때 그 이유를
+말해 줄 뿐, 생존 여부를 대신하지 않는다. 쓰는 순간과 읽는 순간 사이에 상태가 바뀔 수
+있기 때문이다.
 """
 
 import contextlib
@@ -89,6 +108,15 @@ GAVE_UP = "gave_up"        # 한도를 넘었다. 더 되살리지 않는다
 STOPPING = "stopping"      # 런처가 끄는 중이다
 ORPHANED = "orphaned"      # 런처가 없다(비정상 종료 또는 누가 죽였다). 되살리지 않는다
 SKIP = "skip"              # 등록 안 됐거나 되살리는 대상이 아니다
+
+# entries[*].stop_reason — 죽어 있는 항목이 **왜** 안 도는지. 기계가 읽는 값이라
+# 문구를 바꾸지 않는다(사람이 읽을 문장은 런처 화면의 detail 에 따로 있다).
+STOP_EXITED = "exited"              # 스스로 끝났다. 되살릴 수 있으면 곧 되살아난다
+STOP_FINISHED = "finished"          # 주기 검사가 한 바퀴 정상으로 끝났다. 다음 주기에 다시 돈다
+STOP_GAVE_UP = "gave_up"            # 재시작 한도를 넘었다. 더 안 되살린다
+STOP_CRASH_LIMIT = "crash_limit"    # 주기 검사가 계속 비정상 종료했다. 더 안 부른다
+STOP_BY_LAUNCHER = "stopped_by_launcher"   # 세션이 끝나 런처가 껐다
+STOP_KILLED = "killed"              # 종료 요청에 안 끝나 강제로 껐다
 
 # ── 프로세스 생존 확인 ──────────────────────────────────────────────────
 
@@ -483,10 +511,35 @@ def register(name: str, proc: subprocess.Popen, *, by: str, restartable: bool,
             "env": dict(env or {}),
             "restarts": prev.get("restarts", []),
             "gave_up": False,
+            # 지금 막 떴으니 멈춘 게 아니다. 지난 세션·지난 실행의 사유를 들고 있으면
+            # 읽는 쪽이 살아 있는 모듈을 멈춘 것으로 본다.
+            "stop_reason": None,
+            "next_restart_at": 0.0,
+            # last_exit 은 이력이라 지우지 않는다. "지난번엔 code 2 로 끝났다" 가
+            # 지금 돌고 있다는 사실과 부딪히지 않는다.
+            "last_exit": prev.get("last_exit"),
         }
 
 
 # ── 되살리기 ────────────────────────────────────────────────────────────
+
+def _recent(restarts, now: float) -> List[float]:
+    # 0 <= 도 같이 본다. 시계가 뒤로 가면 미래 시각이 남는데, 그대로 세면
+    # 한도에 걸린 채로 영원히 안 풀린다.
+    return [t for t in (restarts or []) if 0 <= now - t < WINDOW_S]
+
+
+def ready_at(restarts, now: float) -> float:
+    """되살릴 수 있는 가장 이른 시각. 기다릴 필요가 없으면 0.0.
+
+    `_decide` 의 BACKOFF 판정과 등록부에 적는 `next_restart_at` 이 **같은 식**을
+    쓰게 하려고 뺐다. 두 군데서 따로 계산하면 조용히 어긋난다.
+    """
+    recent = _recent(restarts, now)
+    if not recent:
+        return 0.0
+    return recent[-1] + BACKOFF_S[min(len(recent), len(BACKOFF_S) - 1)]
+
 
 def _decide(d: dict, name: str, now: float):
     e = d.get("entries", {}).get(name)
@@ -504,12 +557,10 @@ def _decide(d: dict, name: str, now: float):
         return ORPHANED, None
     if e.get("gave_up"):
         return GAVE_UP, None
-    # 0 <= 도 같이 본다. 시계가 뒤로 가면 미래 시각이 남는데, 그대로 세면
-    # 한도에 걸린 채로 영원히 안 풀린다.
-    recent = [t for t in e.get("restarts", []) if 0 <= now - t < WINDOW_S]
+    recent = _recent(e.get("restarts"), now)
     if len(recent) >= MAX_RESTARTS:
         return GAVE_UP, None
-    if recent and now - recent[-1] < BACKOFF_S[min(len(recent), len(BACKOFF_S) - 1)]:
+    if now < ready_at(recent, now):
         return BACKOFF, None
     return None, None          # 죽었고, 되살려도 된다
 
@@ -536,15 +587,22 @@ def restart_if_dead(name: str, by: str) -> Tuple[str, Optional[int], Optional[su
             return status, pid, None
 
         e = d["entries"][name]
-        recent = [t for t in e.get("restarts", []) if 0 <= now - t < WINDOW_S] + [now]
+        recent = _recent(e.get("restarts"), now) + [now]
 
         # 띄우기 **전에** 이번 시도를 먼저 적는다. 아래 등록이 실패해도 이 시도가
         # 한도·간격에 잡혀야 한다. 안 그러면 등록부를 못 쓰는 동안 poll 마다
         # 계속 새로 띄워서 같은 모듈이 쌓인다.
+        #
+        # next_restart_at 도 여기서 같이 적는다. 이번 시도를 셈에 넣은 뒤의 값이라,
+        # **이 다음에 죽었을 때** 언제부터 되살릴 수 있는지를 가리킨다. BACKOFF 로
+        # 기다리는 동안에는 이 값이 그대로라 poll 마다 다시 쓸 일이 없다 — 등록부를
+        # 자주 쓰면 읽는 쪽(1번·커널·4번)이 바꿔 끼우는 순간과 부딪힌다.
         with edit() as d0:
             if d0.get("stopping"):
                 return STOPPING, None, None
-            d0.setdefault("entries", {}).setdefault(name, dict(e))["restarts"] = recent
+            e0 = d0.setdefault("entries", {}).setdefault(name, dict(e))
+            e0["restarts"] = recent
+            e0["next_restart_at"] = ready_at(recent, now)
 
         proc = spawn(e["argv"], e["cwd"], e["log"],
                      note=f"{by} restart {len(recent)}/{MAX_RESTARTS}",
@@ -557,7 +615,8 @@ def restart_if_dead(name: str, by: str) -> Tuple[str, Optional[int], Optional[su
                     return STOPPING, None, None
                 e2 = d2.setdefault("entries", {}).setdefault(name, dict(e))
                 e2.update({"pid": proc.pid, "create_time": popen_create_time(proc),
-                           "started_by": by, "restarts": recent, "gave_up": False})
+                           "started_by": by, "restarts": recent, "gave_up": False,
+                           "stop_reason": None})   # 되살아났다. 더는 멈춘 게 아니다
         except BaseException:
             # 등록을 못 했으면 방금 띄운 것을 남기면 안 된다. 아무도 추적하지 못하고
             # stop_all 도 모르는 프로세스가 되어 세션이 끝난 뒤에도 게임 핸들을 쥔 채 남는다.
@@ -574,6 +633,35 @@ def _kill_proc(proc: subprocess.Popen) -> None:
         pass
 
 
+def note_exit(name: str, *, code: Optional[int] = None,
+              reason: str = STOP_EXITED) -> None:
+    """모듈이 끝났다고 등록부에 적는다. 런처가 종료를 **본 순간** 부른다.
+
+    PID 가 죽은 항목만 보고는 곧 되살아날 것과 끝난 것을 구분할 수 없었다.
+    `reason` 은 STOP_* 중 하나다.
+
+    **바뀐 게 없으면 안 쓴다.** 런처는 poll 마다 상태를 보는데 그때마다 등록부를
+    다시 쓰면, 읽는 쪽이 os.replace 로 바꿔 끼우는 순간과 계속 부딪힌다(load 가
+    다시 읽게 되어 있지만 공짜가 아니다).
+
+    등록이 없으면 아무것도 하지 않는다. 없는 항목을 여기서 만들면 pid 없는 항목이
+    생겨서 4번 AntiDebug 가 등록부 전체를 오류로 본다(#124 registry_reader.py).
+    """
+    e0 = load().get("entries", {}).get(name)
+    if not e0:
+        return
+    last = e0.get("last_exit") or {}
+    if e0.get("stop_reason") == reason and (code is None or last.get("code") == code):
+        return
+    with edit() as d:
+        e = d.get("entries", {}).get(name)
+        if not e:
+            return
+        e["stop_reason"] = reason
+        if code is not None:
+            e["last_exit"] = {"code": int(code), "at": time.time()}
+
+
 def _mark_gave_up(name: str) -> None:
     # 이미 표시돼 있으면 아무것도 하지 않는다. 워치독은 포기한 모듈에도 계속 물어보는데,
     # 그때마다 등록부를 다시 쓰면 읽는 쪽(1번·커널)이 내내 쓰다 만 파일과 부딪힌다.
@@ -583,3 +671,7 @@ def _mark_gave_up(name: str) -> None:
         e = d.get("entries", {}).get(name)
         if e and not e.get("gave_up"):
             e["gave_up"] = True
+            # 더 안 되살리므로 기다릴 시각도 없다. 남겨 두면 읽는 쪽이 그 시각에
+            # 되살아날 것으로 본다.
+            e["stop_reason"] = STOP_GAVE_UP
+            e["next_restart_at"] = 0.0
