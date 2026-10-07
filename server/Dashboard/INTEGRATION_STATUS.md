@@ -16,7 +16,16 @@
 
 검증: 프론트 단위·jsdom 상호작용 235개, Shared 52개, Receiver 30개, Scoring 403개, Dashboard backend 76개 통과. 일반 빌드와 `/GZZ/` 프론트 단독 빌드도 통과했다. backend HTTP 회귀에는 이벤트 목록·상세의 동일 시각, 중복 전송의 최초 시각 유지, Shared 7필드 보존을 포함한다.
 
-이번에는 실제 브라우저·공개 사이트·실게임 시험을 새로 진행하지 않았으며 공개 Vercel 재배포도 하지 않았다. 과거 실게임 결과와 이번 자동화 회귀 결과를 구분한다. Scoring의 snapshot·이력·판정 조회는 원자적 watermark 계약이 아니므로 수신 중 시점 차이는 남아 있다. 정책 설명만으로 최종 판정을 대체하지 않는다.
+자동화 회귀 후 추가 요청으로 아래 프론트 단독 공개 배포를 진행했다. 실제 게임·운영 backend 시험을 새로 진행한 것은 아니다. 과거 실게임 결과와 이번 자동화 회귀·DEMO 화면 확인을 구분한다. Scoring의 snapshot·이력·판정 조회는 원자적 watermark 계약이 아니므로 수신 중 시점 차이는 남아 있다. 정책 설명만으로 최종 판정을 대체하지 않는다.
+
+### 프론트 단독 공개 배포 확인
+
+- 공개 주소: [kkinomalo.com/GZZ/](https://kkinomalo.com/GZZ/). 피드백 반영 소스 `6fb1f15`의 정적 빌드를 기존 Vercel `gzz-dashboard-frontend`에 Production 배포했다.
+- 업로드 범위는 `GZZ/index.html`, 해시 JS·CSS, 정적 배포 설정이다. 소스 전체·실제 로그·DB·인증 환경 파일은 올리지 않았다. 기존 홈페이지 프로젝트와 `/GZZ` 연결 규칙은 변경하지 않았다.
+- 공개 주소의 HTML·JS·CSS가 모두 200이며 빌드 원본과 SHA-256이 일치한다. JS는 `index-CNePWaIw.js`, CSS는 `index-CwAw_pIf.css`다.
+- 공개 브라우저에서 T+·KST 수신 시각, raw 0 이벤트의 직접 상태, 미제공 Severity 열 숨김, 판정 근거·독립 위험 근거·활성 모듈·중복 보정·평가 상태, `GodMode 이력` 명칭을 확인했다. Launcher 일부 저하 → 문제 세션/플레이어 → 해당 실행 상태 상세 이동도 확인했다. 점검 중 브라우저 warning/error는 없었다.
+- 공개 화면은 계속 `DEMO`이며 HTML meta CSP의 `connect-src 'none'`으로 API 통신을 막는다. `/GZZ/` HTML 응답의 HTTP 보안 헤더는 CDN 경유 시 보이지 않으므로 헤더 적용을 검증됐다고 주장하지 않는다. 일반 LIVE 빌드·Receiver·Scoring·Launcher는 배포하지 않았다.
+- 기존 홈페이지는 200과 `스쿨캠핑 | 신청` 제목을 유지한다. 화면 캡처는 [보고 근거](./docs/report-evidence/REPORT_EVIDENCE.md)에 추가했다.
 
 ## 2026-10-06 실제 게임 검증 추가 결과
 
