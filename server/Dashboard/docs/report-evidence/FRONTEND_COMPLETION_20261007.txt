@@ -34,3 +34,13 @@ writer ledger/dashboard index의 수신 시각은 확인하지 않았다.
 운영 담당자가 검토한 main을 배포한 뒤 같은 세션을 다시 조회해야 한다.
 null 수신 시각의 원인은 추정하지 않으며 과거 수신 시각을 임의 복원하지 않는다.
 운영 토큰, 전체 로그, 데이터베이스, 개인 raw 자료는 제출하지 않는다.
+
+공개 배포 확인
+
+프론트 소스 f6d0702를 기존 gzz-dashboard-frontend에 정적 배포했다.
+https://kkinomalo.com/GZZ/의 HTML, JS, CSS가 최신 빌드와 SHA-256 일치하며
+모두 HTTP 200이다. 기존 홈페이지도 HTTP 200을 유지한다.
+브라우저에서 기능별 운영 상태와 raw 0 ERROR/DETECTED, 밀리초 표시,
+점검 대상 필터를 확인했고 console warning/error는 없었다.
+첨부 dashboard-selfdefense-demo-20261007.jpg는 공개 합성 화면 캡처다.
+운영 서버 배포 및 실제 Light 세션 검증이 완료됐다는 의미는 아니다.
