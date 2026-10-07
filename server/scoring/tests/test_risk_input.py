@@ -201,6 +201,37 @@ class RiskInputTests(unittest.TestCase):
         self.assertEqual(result.unresolved_policy_modules, ())
 
 
+    def test_optional_runtime_advisory_does_not_make_assessment_unresolved(self) -> None:
+        for index, module in enumerate(
+            ("whistle_rpc", "aimbot_runtime"),
+            start=1,
+        ):
+            with self.subTest(module=module):
+                snapshot = PlayerPolicySnapshot(
+                    session_id="session_1",
+                    player_id="player_1",
+                    modules=(
+                        _module_snapshot(
+                            module,
+                            raw_score=0.0,
+                            policy_state="POLICY_NOT_CALIBRATED",
+                            raw_fraction_pct=None,
+                            sequence=index,
+                        ),
+                    ),
+                    correlation_candidates=(),
+                )
+
+                result = build_player_risk_input(snapshot)
+
+                self.assertEqual(len(result.signals), 1)
+                self.assertEqual(
+                    result.signals[0].calibration_mode,
+                    "advisory",
+                )
+                self.assertIsNone(result.signals[0].threshold_met)
+                self.assertEqual(result.unresolved_policy_modules, ())
+
     def test_unresolved_module_is_kept_instead_of_dropped(self) -> None:
         snapshot = PlayerPolicySnapshot(
             session_id="session_1",
