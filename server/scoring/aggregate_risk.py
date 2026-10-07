@@ -49,6 +49,8 @@ class AggregateRisk:
     unresolved_modules: tuple[str, ...]
     deferred_modules: tuple[str, ...]
     unavailable_modules: tuple[str, ...]
+    missing_modules: tuple[str, ...] = ()
+    stale_modules: tuple[str, ...] = ()
 
 
 def build_aggregate_risk(
@@ -117,6 +119,8 @@ def build_aggregate_risk(
         plan.unresolved_modules
         or plan.deferred_modules
         or plan.unavailable_modules
+        or plan.missing_modules
+        or plan.stale_modules
     )
 
     return AggregateRisk(
@@ -137,4 +141,6 @@ def build_aggregate_risk(
         unresolved_modules=plan.unresolved_modules,
         deferred_modules=plan.deferred_modules,
         unavailable_modules=plan.unavailable_modules,
+        missing_modules=plan.missing_modules,
+        stale_modules=plan.stale_modules,
     )

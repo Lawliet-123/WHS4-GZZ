@@ -41,6 +41,8 @@ class PlayerPolicySnapshot:
     player_id: str
     modules: tuple[ModulePolicySnapshot, ...]
     correlation_candidates: tuple[CorrelationCandidate, ...]
+    missing_modules: tuple[str, ...] = ()
+    stale_modules: tuple[str, ...] = ()
 
 
 def _event_from_state(state: ModuleState) -> dict:
@@ -62,6 +64,9 @@ def build_player_policy_snapshot(
     session_id: str,
     player_id: str,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> PlayerPolicySnapshot:
     """현재 모듈 상태들을 Policy 평가가 포함된 플레이어 뷰로 변환한다.
 
@@ -73,6 +78,30 @@ def build_player_policy_snapshot(
     ):
         raise ValueError("max_time_distance_ms must be None or a nonnegative integer")
 
+    if (observed_at_ms is None) != (max_age_ms is None):
+        raise ValueError(
+            "observed_at_ms and max_age_ms must be provided together"
+        )
+
+    if observed_at_ms is not None and (
+        type(observed_at_ms) is not int or observed_at_ms < 0
+    ):
+        raise ValueError("observed_at_ms must be a nonnegative integer")
+
+    if max_age_ms is not None and (
+        type(max_age_ms) is not int or max_age_ms < 0
+    ):
+        raise ValueError("max_age_ms must be a nonnegative integer")
+
+    expected = tuple(expected_modules or ())
+    if any(
+        not isinstance(module, str) or not module
+        for module in expected
+    ):
+        raise ValueError(
+            "expected_modules must contain nonempty strings"
+        )
+
     entries: list[ModulePolicySnapshot] = []
     observations = []
 
@@ -81,6 +110,23 @@ def build_player_policy_snapshot(
         states,
         key=lambda item: (item.module, item.timestamp_ms, item.sequence, item.event_id),
     )
+
+    observed_modules = {state.module for state in ordered_states}
+
+    missing_modules = tuple(sorted(
+        set(expected) - observed_modules
+    ))
+
+    stale_modules: tuple[str, ...] = ()
+    if observed_at_ms is not None and max_age_ms is not None:
+        stale_modules = tuple(sorted({
+            state.module
+            for state in ordered_states
+            if (
+                state.module in expected
+                and observed_at_ms - state.timestamp_ms > max_age_ms
+            )
+        }))
 
     for state in ordered_states:
         if state.session_id != session_id or state.player_id != player_id:
@@ -109,5 +155,7 @@ def build_player_policy_snapshot(
         session_id=session_id,
         player_id=player_id,
         modules=tuple(entries),
+        missing_modules=missing_modules,
+        stale_modules=stale_modules,
         correlation_candidates=candidates,
     )

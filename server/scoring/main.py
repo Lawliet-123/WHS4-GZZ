@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .aggregate import AggregateEvidence, build_aggregate_evidence
 from .autopaint_history import (
@@ -108,11 +108,35 @@ def evaluate_event_policy(payload: Mapping[str, Any]) -> PolicyEvaluation:
     return evaluate_registered_policy(payload)
 
 
+def _measurement_state_kwargs(
+    *,
+    expected_modules: Iterable[str] | None,
+    observed_at_ms: int | None,
+    max_age_ms: int | None,
+) -> dict[str, Any]:
+    """Forward only explicitly provided measurement-state options."""
+    kwargs: dict[str, Any] = {}
+
+    if expected_modules is not None:
+        kwargs["expected_modules"] = expected_modules
+
+    if observed_at_ms is not None:
+        kwargs["observed_at_ms"] = observed_at_ms
+
+    if max_age_ms is not None:
+        kwargs["max_age_ms"] = max_age_ms
+
+    return kwargs
+
+
 def get_player_policy_snapshot(
     session_id: str,
     player_id: str,
     *,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> PlayerPolicySnapshot:
     """플레이어의 현재 모듈별 상태를 등록 Policy로 한 번에 해석한다.
 
@@ -124,6 +148,11 @@ def get_player_policy_snapshot(
         session_id=session_id,
         player_id=player_id,
         max_time_distance_ms=max_time_distance_ms,
+        **_measurement_state_kwargs(
+            expected_modules=expected_modules,
+            observed_at_ms=observed_at_ms,
+            max_age_ms=max_age_ms,
+        ),
     )
 
 
@@ -132,6 +161,9 @@ def get_player_risk_input(
     player_id: str,
     *,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> PlayerRiskInput:
     """현재 Policy snapshot을 최종 risk 계산 전의 공통 입력 형태로 정리한다.
 
@@ -143,6 +175,11 @@ def get_player_risk_input(
         session_id,
         player_id,
         max_time_distance_ms=max_time_distance_ms,
+        **_measurement_state_kwargs(
+            expected_modules=expected_modules,
+            observed_at_ms=observed_at_ms,
+            max_age_ms=max_age_ms,
+        ),
     )
     return build_player_risk_input(snapshot)
 
@@ -152,6 +189,9 @@ def get_player_aggregate_evidence(
     player_id: str,
     *,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> AggregateEvidence:
     """현재 플레이어의 RiskInput을 Aggregate Risk 계산 직전 증거로 분류한다.
 
@@ -162,6 +202,11 @@ def get_player_aggregate_evidence(
         session_id,
         player_id,
         max_time_distance_ms=max_time_distance_ms,
+        **_measurement_state_kwargs(
+            expected_modules=expected_modules,
+            observed_at_ms=observed_at_ms,
+            max_age_ms=max_age_ms,
+        ),
     )
 
     autopaint_history = None
@@ -208,6 +253,9 @@ def get_player_fusion_plan(
     player_id: str,
     *,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> FusionPlan:
     """현재 AggregateEvidence를 최종 risk 계산 직전 fusion 계획으로 변환한다.
 
@@ -221,6 +269,11 @@ def get_player_fusion_plan(
             session_id,
             player_id,
             max_time_distance_ms=max_time_distance_ms,
+            **_measurement_state_kwargs(
+                expected_modules=expected_modules,
+                observed_at_ms=observed_at_ms,
+                max_age_ms=max_age_ms,
+            ),
         )
     )
 
@@ -230,6 +283,9 @@ def get_player_aggregate_risk(
     player_id: str,
     *,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> AggregateRisk:
     """현재 플레이어의 overlap 보정 Aggregate Risk 근거를 반환한다.
 
@@ -243,6 +299,11 @@ def get_player_aggregate_risk(
             session_id,
             player_id,
             max_time_distance_ms=max_time_distance_ms,
+            **_measurement_state_kwargs(
+                expected_modules=expected_modules,
+                observed_at_ms=observed_at_ms,
+                max_age_ms=max_age_ms,
+            ),
         )
     )
 
@@ -252,6 +313,9 @@ def get_player_final_verdict(
     player_id: str,
     *,
     max_time_distance_ms: int | None = None,
+    expected_modules: Iterable[str] | None = None,
+    observed_at_ms: int | None = None,
+    max_age_ms: int | None = None,
 ) -> FinalVerdict:
     """현재 플레이어의 보수적 Final Verdict를 반환한다.
 
@@ -268,6 +332,11 @@ def get_player_final_verdict(
             session_id,
             player_id,
             max_time_distance_ms=max_time_distance_ms,
+            **_measurement_state_kwargs(
+                expected_modules=expected_modules,
+                observed_at_ms=observed_at_ms,
+                max_age_ms=max_age_ms,
+            ),
         )
     )
 
