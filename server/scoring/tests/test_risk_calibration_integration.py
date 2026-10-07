@@ -168,6 +168,45 @@ class RiskCalibrationIntegrationTests(unittest.TestCase):
         # 알려진 advisory라는 의미가 확정됐으므로 unresolved는 아니다.
         self.assertEqual(result.unresolved_policy_modules, ())
 
+    def test_validated_yara_ruleset_resolves_at_three(self):
+        result = build(
+            entry(
+                "localguard_yara",
+                raw_score=3,
+                emission="per_entity_snapshot",
+                policy_state="POLICY_NOT_CALIBRATED",
+                evidence={
+                    "measurement_valid": True,
+                    "scope": "loaded_autopaint_bridge_module_memory",
+                    "pid": 66600,
+                    "matched_rules": [
+                        "MECCHA_PRReady_AutoPaint_Bridge",
+                        "MECCHA_Repo_AutoPaint_Bridge",
+                    ],
+                    "test_rule_match": False,
+                    "ruleset": {
+                        "id": "sha256:fce9ed2602083e312eaa938b7a2b9d9f59b2ab062318a48cd8c712788c627ae6",
+                        "source": "repository_default",
+                        "files": [
+                            {
+                                "file": "repository_cheats.yar",
+                                "sha256": "755412da8bec58853c8581529a79cd6f0d8ca63947323cf274ddeebc132bd3d3",
+                            },
+                        ],
+                        "rule_count": 12,
+                        "test_rules_present": False,
+                    },
+                },
+            )
+        )
+
+        signal = result.signals[0]
+
+        self.assertEqual(signal.calibration_mode, "threshold")
+        self.assertEqual(signal.calibration_threshold, 3.0)
+        self.assertTrue(signal.threshold_met)
+        self.assertEqual(result.unresolved_policy_modules, ())
+
     def test_noclip_threshold_is_applied(self):
         below = build(
             entry(

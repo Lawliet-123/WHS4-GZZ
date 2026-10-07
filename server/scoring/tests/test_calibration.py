@@ -253,7 +253,40 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(calibration.mode, "advisory")
         self.assertIsNone(calibration.threshold)
 
-    def test_yara_repository_default_identity_stays_pending_until_e2e(self):
+    def test_yara_validated_repository_ruleset_uses_threshold_three(self):
+        evidence = {
+            "ruleset": {
+                "id": "sha256:fce9ed2602083e312eaa938b7a2b9d9f59b2ab062318a48cd8c712788c627ae6",
+                "source": "repository_default",
+                "files": [
+                    {
+                        "file": "repository_cheats.yar",
+                        "sha256": "755412da8bec58853c8581529a79cd6f0d8ca63947323cf274ddeebc132bd3d3",
+                    },
+                ],
+                "rule_count": 12,
+                "test_rules_present": False,
+            },
+        }
+
+        below = resolve_calibration(
+            "localguard_yara",
+            raw_score=2,
+            evidence=evidence,
+        )
+        matched = resolve_calibration(
+            "localguard_yara",
+            raw_score=3,
+            evidence=evidence,
+        )
+
+        self.assertEqual(matched.mode, "threshold")
+        self.assertEqual(matched.threshold, 3)
+        self.assertTrue(matched.calibrated)
+        self.assertFalse(below.meets_threshold(2))
+        self.assertTrue(matched.meets_threshold(3))
+
+    def test_yara_other_repository_ruleset_stays_pending(self):
         calibration = resolve_calibration(
             "localguard_yara",
             raw_score=3,
@@ -275,7 +308,6 @@ class CalibrationTests(unittest.TestCase):
 
         self.assertEqual(calibration.mode, "pending")
         self.assertFalse(calibration.calibrated)
-        self.assertIn("E2E", calibration.note)
 
     def test_yara_malformed_repository_identity_stays_pending(self):
         calibration = resolve_calibration(
