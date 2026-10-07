@@ -35,6 +35,12 @@ ESP_SHA256 = "897dd9da21b39e738306c79b8225a8b9bd35de8a52d038c83ce4d829f39da973"
 GAME_EXE = "PenguinHotel-Win64-Shipping.exe"
 SENSORS = frozenset({"collector", "game", "privilege", "sysmon", "overlay", "modules", "handles"})
 VALID_STATUS = {"LOW", "REVIEW", "HIGH", "CRITICAL"}
+READINESS_REASONS = {"READY", "NO_FRAME", "OVERLAY_HIDDEN", "ESP_DISABLED", "FRAME_ERROR",
+                     "CAMERA_MISSING", "CAMERA_INVALID", "FRAME_NOT_FRESH", "COLLECTION_SLOW",
+                     "PLAYERS_INVALID", "NO_LOCAL_PLAYER", "COLLECTION_INVALID", "DIAGNOSTIC_ERROR"}
+FRAME_ERROR_TYPES = {"str", "ValueError", "TypeError", "RuntimeError", "KeyError", "OSError",
+                     "MemoryReadError", "ProcessError", "WinAPIError", "Other"}
+INITIALIZATION_STAGES = {"original_constructor_started", "original_constructor_completed", "overlay_initialized"}
 
 
 def emit(kind: str, **fields: object) -> None:
@@ -46,6 +52,22 @@ def worker_diagnostic(record: object) -> dict | None:
     if type(record) is not dict:
         return None
     kind = record.get("kind")
+    if kind == "esp_initialization_stage":
+        if record.get("stage") not in INITIALIZATION_STAGES or type(record.get("elapsed_ms")) is not int or not 0 <= record["elapsed_ms"] <= 3600000:
+            return None
+        return {"kind": kind, "stage": record["stage"], "elapsed_ms": record["elapsed_ms"]}
+    if kind == "esp_readiness_diagnostic":
+        if record.get("reason") not in READINESS_REASONS or record.get("frame_error_type") not in FRAME_ERROR_TYPES | {None}:
+            return None
+        fields = ("frame_exists", "camera_exists", "overlay_visible", "enabled", "collection_valid", "frame_fresh")
+        if any(record.get(key) is not None and type(record[key]) is not bool for key in fields):
+            return None
+        for key in ("local_player_count", "remote_player_count", "frame_age_ms", "collection_ms"):
+            value = record.get(key)
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 3600000):
+                return None
+        return {key: record.get(key) for key in ("kind", "reason", "frame_error_type", *fields,
+               "local_player_count", "remote_player_count", "frame_age_ms", "collection_ms")}
     scalar_fields = {
         "warmup_complete": ("healthy_poll_count",),
         "warmup_progress": ("poll_count", "healthy_poll_count", "elapsed_ms", "budget_ms"),
@@ -234,6 +256,59 @@ def verified_frame(module, overlay, now: float, *, frame=None) -> dict[str, obje
             "camera_valid": True, "overlay_visible": True, "collection_ms": frame.collection_ms}
 
 
+def readiness_diagnostic(module, overlay, now: float, *, frame=None) -> dict:
+    """Report scalar readiness facts only; this never grants capture readiness."""
+    result = {"kind": "esp_readiness_diagnostic", "reason": "NO_FRAME", "frame_error_type": None,
+              "frame_exists": False, "camera_exists": False, "overlay_visible": None, "enabled": None,
+              "collection_valid": None, "frame_fresh": None, "local_player_count": None,
+              "remote_player_count": None, "frame_age_ms": None, "collection_ms": None}
+    try:
+        result["overlay_visible"] = overlay.isVisible() is True
+        result["enabled"] = overlay.config.enabled is True
+        frame = overlay._snapshots.latest() if frame is None else frame
+        if not isinstance(frame, module.FrameRenderSnapshot):
+            return result
+        result["frame_exists"] = True
+        result["camera_exists"] = isinstance(frame.camera, module.CameraSnapshot)
+        if frame.error is not None:
+            error_type = type(frame.error).__name__
+            if isinstance(frame.error, str):
+                prefix = frame.error.partition(":")[0]
+                error_type = prefix if prefix in FRAME_ERROR_TYPES - {"str", "Other"} else "str"
+            result["frame_error_type"] = error_type if error_type in FRAME_ERROR_TYPES else "Other"
+        age = now - frame.started_at
+        if type(age) in (int, float) and math.isfinite(age):
+            result["frame_fresh"] = 0 <= age < overlay.STALE_AFTER_SECONDS
+            if 0 <= age <= 3600:
+                result["frame_age_ms"] = round(age * 1000)
+        duration = frame.collection_ms
+        if type(duration) in (int, float) and math.isfinite(duration) and 0 <= duration <= 3600000:
+            result["collection_ms"] = duration
+        valid_players = isinstance(frame.players, tuple) and all(isinstance(player, module.PlayerRenderSnapshot) for player in frame.players)
+        if valid_players:
+            result["local_player_count"] = sum(player.is_local is True for player in frame.players)
+            result["remote_player_count"] = sum(player.is_local is False for player in frame.players)
+        collection_valid = dict(frame.stats).get("collection_valid")
+        result["collection_valid"] = collection_valid if type(collection_valid) is bool else None
+        finite_camera = result["camera_exists"] and all(math.isfinite(value) for value in
+            (*frame.camera.loc, *frame.camera.rot, frame.camera.fov)) and 0 < frame.camera.fov < 180
+        finite_players = valid_players and all(all(math.isfinite(value) for value in player.position) for player in frame.players)
+        conditions = (
+            (not result["overlay_visible"], "OVERLAY_HIDDEN"), (not result["enabled"], "ESP_DISABLED"),
+            (frame.error is not None, "FRAME_ERROR"), (not result["camera_exists"], "CAMERA_MISSING"),
+            (not finite_camera, "CAMERA_INVALID"), (result["frame_fresh"] is not True, "FRAME_NOT_FRESH"),
+            (not 0 <= duration < overlay.STALE_AFTER_SECONDS * 1000, "COLLECTION_SLOW"),
+            (not finite_players, "PLAYERS_INVALID"), (not result["local_player_count"], "NO_LOCAL_PLAYER"),
+            (collection_valid is not True, "COLLECTION_INVALID"),
+        )
+        result["reason"] = next((reason for failed, reason in conditions if failed), "READY")
+    except Exception as error:
+        result["reason"] = "DIAGNOSTIC_ERROR"
+        error_type = type(error).__name__
+        result["frame_error_type"] = error_type if error_type in FRAME_ERROR_TYPES else "Other"
+    return result
+
+
 def validate_ready(record: dict, child_pid: int, game_pid: int, t0: float, latest: float) -> dict:
     if record.get("kind") != "esp_read_ready" or record.get("source_sha256") != ESP_SHA256:
         raise ValueError("Missing audited ESP readiness")
@@ -417,6 +492,13 @@ def esp_child(args) -> int:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     original_init, original_paint = module.Overlay.__init__, module.Overlay.paintEvent
+    original_constructor = module.MecchaESP.__init__
+    def measured_constructor(instance, *values, **options):
+        started = time.monotonic()
+        emit("esp_initialization_stage", stage="original_constructor_started", elapsed_ms=0)
+        original_constructor(instance, *values, **options)
+        emit("esp_initialization_stage", stage="original_constructor_completed", elapsed_ms=round((time.monotonic() - started) * 1000))
+    module.MecchaESP.__init__ = measured_constructor
     original_pymem = module.pymem.Pymem
     spec_observer = importlib.util.spec_from_file_location("realgame_paint_observer",
         Path(__file__).with_name("realgame_paint_observer.py"))
@@ -458,6 +540,7 @@ def esp_child(args) -> int:
     last_heartbeat = 0.
     last_remote = 0.
     last_remote_sequence = -1
+    last_diagnostic = -1.
 
     def measured_paint(overlay, event):
         nonlocal ready, last_remote, last_remote_sequence
@@ -480,14 +563,19 @@ def esp_child(args) -> int:
                 last_remote, last_remote_sequence = now, facts["frame_sequence"]
 
     def bounded_init(overlay, *values, **options):
+        init_started = time.monotonic()
         original_init(overlay, *values, **options)
+        emit("esp_initialization_stage", stage="overlay_initialized", elapsed_ms=round((time.monotonic() - init_started) * 1000))
         timer = module.QTimer(overlay)
         def check_stop():
-            nonlocal last_heartbeat
+            nonlocal last_heartbeat, last_diagnostic
             now = time.monotonic()
             if (Path(args.run_dir) / "esp-stop").exists() or now >= args.deadline:
                 module.QApplication.instance().quit()
                 return
+            if now - last_diagnostic >= 1:
+                emit(**readiness_diagnostic(module, overlay, now))
+                last_diagnostic = now
             if ready and now - last_heartbeat >= 0.5:
                 facts = verified_frame(module, overlay, now)
                 emit("esp_read_health", source_sha256=ESP_SHA256, pid=os.getpid(), game_pid=game.pid,
@@ -874,7 +962,8 @@ def capture_worker(args) -> int:
                                 try:
                                     record = json.loads(line)
                                     if isinstance(record, dict) and record.get("kind") in {
-                                            "esp_handle_open", "esp_read_ready", "esp_read_health", "esp_remote_paint"}:
+                                            "esp_handle_open", "esp_read_ready", "esp_read_health", "esp_remote_paint",
+                                            "esp_initialization_stage", "esp_readiness_diagnostic"}:
                                         messages.put(record)
                                 except (ValueError, TypeError):
                                     pass
@@ -894,7 +983,11 @@ def capture_worker(args) -> int:
                         record = messages.get_nowait()
                     except queue.Empty:
                         break
-                    if record.get("kind") == "esp_handle_open":
+                    if record.get("kind") in {"esp_initialization_stage", "esp_readiness_diagnostic"}:
+                        diagnostic = worker_diagnostic(record)
+                        if diagnostic is not None:
+                            emit(**diagnostic)
+                    elif record.get("kind") == "esp_handle_open":
                         if proof["handle_open"] is not None:
                             raise ValueError("Duplicate original ESP handle opening")
                         proof["handle_open"] = validate_handle_open(record, child.pid, game.pid, game.created_at, t0, time.time())

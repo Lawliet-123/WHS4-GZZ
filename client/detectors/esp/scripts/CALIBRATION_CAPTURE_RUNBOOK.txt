@@ -56,10 +56,17 @@ ESP calibration 자료 수집 준비 / 2026-10-07
     계약에 따른 일반 버그 수정이며, 이번 실게임 warmup 실패가 실제 259
     때문이었다고 확정하지 않는다. 실제 native probe를 실행한 검증도 아니다.
     근거: https://learn.microsoft.com/en-us/windows/win32/api/winevt/nf-winevt-evtnext
+14. 원본 ESP의 초기화 시작/완료와 overlay 준비를 별도 고정 단계로 표시한다.
+    초당 readiness 진단은 camera 존재, local/remote player 수, 신선도,
+    collection 상태 등 scalar와 허용된 enum만 전달한다. 예외 본문·주소·
+    사용자명·경로는 제외하며 이 진단만으로 ON/remote draw를 인정하지 않는다.
+    실제 준비는 기존 verified_frame와 완료된 원본 painter 호출로만 판단한다.
+    초기화가 느린 게임에서는 제한된 --readiness-timeout 120과 전체 duration
+    210을 사용한다. 실제 ESP 60초 동작과 센서 정상 검증 조건은 그대로다.
 
 검증
 
-capture 45개 + paint observer 12개 + Sysmon 13개 + exporter 18개 + 실제 C 앱 계약 3개 = 91개 통과.
+capture 53개 + paint observer 12개 + Sysmon 13개 + exporter 18개 + 실제 C 앱 계약 3개 = 99개 통과.
 C 앱 계약 테스트는 fresh 임시 stores / 합성 입력 / in-process TestClient이며
 게임, Sysmon, 포트 listen, production 서버를 실행한 테스트가 아니다.
 원본 modules/esp/esp.py는 변경하지 않았다.
@@ -93,7 +100,7 @@ Get-Service -Name Sysmon,Sysmon64 -ErrorAction SilentlyContinue | Select-Object 
 
 NORMAL 종료 및 PoC 부재를 확인한 뒤 별도 ESP 세션
 
-& $espCalibrationPython -B .\client\detectors\esp\scripts\realgame_replay.py --approved-private-test-room --scenario esp --game-pid $espCalibrationGamePid --duration 120 --esp-seconds 60 --player-id calibration_player --session-id esp_calibration_20261007_run01 --server-setup .\logs\esp-calibration-server-20261007-run01\setup.json
+& $espCalibrationPython -B .\client\detectors\esp\scripts\realgame_replay.py --approved-private-test-room --scenario esp --game-pid $espCalibrationGamePid --duration 210 --esp-seconds 60 --readiness-timeout 120 --player-id calibration_player --session-id esp_calibration_20261007_run01 --server-setup .\logs\esp-calibration-server-20261007-run01\setup.json
 
 ESP 세션은 이 도구가 원본 ESP를 소유한 자식으로 실행하고 종료한다.
 ESP를 별도로 한 번 더 실행하지 않는다. 게임 재시작 시 이전 PID를 재사용하지 않는다.

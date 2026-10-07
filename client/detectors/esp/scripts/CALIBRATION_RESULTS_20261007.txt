@@ -33,7 +33,7 @@ ReplayAnalyzer/replay-data/esp/normal_calibration_20261007_run01/calibration-evi
 회귀 테스트 9개를 추가했다. 원본 capture 해시는 참조이며 공개 JSONL 해시와
 동일하다고 주장하지 않는다. 늦게 도착한 sensor timestamp도 저장 순서 그대로다.
 
-양성 세션 상태
+양성 세션 및 실패 구간 구분
 
 esp_calibration_20261007_run01은 PoC 실행 이전 warmup 관측 부족으로 실패했다.
 성공한 CHEAT Replay로 내보내지 않았다. 첫 warmup은 Sysmon의 과거 512개 기록을
@@ -49,21 +49,66 @@ collector/sender의 종료 검증 후에만 새 Replay를 공개하고 중복 cl
 https://learn.microsoft.com/en-us/windows/win32/api/winevt/nf-winevt-evtnext
 
 esp_calibration_20261007_run02 재시험은 Windows 권한 승인이 취소되어 실행되지 않았다.
-실제 ESP ON 기능 관측 -> Server 저장 -> Scoring 양성 자료는 아직 미완료다.
-없는 ON/OFF, remote draw, 실제 행동 시각, 잔존 확인을 만들어 넣지 않는다.
+run03은 센서 정상과 실제 핸들 접근은 확인했지만 30초 안에 원본 읽기/그리기
+준비를 완료하지 못했다. 실패한 세션을 CHEAT 성공 Replay로 제출하지 않았다.
+초기화 시작/완료, overlay 준비 및 개인정보 없는 scalar readiness 진단을
+추가하고, 준비 대기를 제한된 120초로 늘려 별도 세션에서 재시험했다.
+실제 센서 정상, fresh read, 완료된 원본 remote painter 검증 조건은 유지했다.
+
+최종 양성 세션: esp_calibration_20261007_run04 / player_id=calibration_player
+세션 시작: 2026-10-07T12:58:26.695Z / 21:58:26.695 KST
+세션 종료: 2026-10-07T13:01:58.525Z / 22:01:58.525 KST
+사용자 확인: 승인된 비공개방에서 살아 있는 캐릭터로 실제 플레이 중.
+프로그램 spawn 경계: T+6.862~6.893초
+실제 게임 핸들 ON: T+7.751초
+첫 fresh local read 및 다른 플레이어 geometry: T+31.807초
+마지막 remote geometry 관측: T+93.236초
+소유 ESP 프로세스 정상 종료/OFF: T+93.639초, exit 0, 강제 종료 없음
+
+원본 프로그램의 초기화는 22.063초가 걸렸고, spawn/handle 접근과 기능 준비를
+같은 시각으로 취급하지 않았다. 첫 기능 관측에서 remote player 5명, 서로 다른
+원본 painter frame 85개, remote box line 646개와 skeleton line 2136개를 관측했다.
+fresh read heartbeat 123개, 최대 read gap 0.580초다. 다른 플레이어 geometry의
+첫/마지막 관측 경계는 연속 표시나 사람이 직접 본 것을 보장하지 않는다.
+스크린샷 검증과 직접 행동 시작/종료 시각은 미관측으로 null을 유지한다.
+
+Event 126개: raw 1은 74개, raw 2는 50개, raw 3은 2개.
+소유 PoC의 PID에 연결되는 직접 Event 12개: process 권한 raw 3은 2개,
+overlay 관련 raw 1은 10개다. PROCESS_ALL_ACCESS 요청을 실제 메모리 쓰기나
+주입으로 표현하지 않는다. source/module/timestamp_ms/evidence/reasons는
+서버 저장 payload와 대조했으며 정상 배경 신호도 삭제하지 않았다.
+Shared queued 126 / ACK 126 / pending 0 / failed 0.
+실제 C 저장 126개, sequence 1~126, 목록/상세/시간/Scoring 대조 6항목 모두 통과.
+Scoring은 INCONCLUSIVE / assessment_complete=false / ESP pending을 반환했다.
+점수·confidence·threshold가 null인 것을 0이나 임의 확정 판정으로 바꾸지 않았다.
+threshold 또는 advisory/pending 여부의 최종 결정은 B 담당의 calibration 범위다.
+
+양성 공개 파일
+ReplayAnalyzer/replay-data/esp/esp_calibration_20261007_run04/manifest.json
+ReplayAnalyzer/replay-data/esp/esp_calibration_20261007_run04/events.jsonl
+ReplayAnalyzer/replay-data/esp/esp_calibration_20261007_run04/calibration-evidence.json
+
+CHEAT / module=esp / 원본 raw_score / timestamp_ms를 유지했다. 프로세스 종료 후
+소유 자식은 ABSENT였고 게임 loaded-module snapshot 지문 변화는 없었다.
+다른 자식·기존 PoC 전체 부재나 DLL 주입의 인과관계를 검증한 것은 아니다.
+이제 NORMAL 1개와 실제 ESP ON 1개를 각각 독립 세션으로 전달할 수 있다.
 
 실행 안전 및 정리
 
 기존 게임과 소유하지 않은 프로세스는 종료하지 않았다. 각 수집 세션은 별도
 로컬 저장소를 사용했고 기존 운영 DB와 접속키는 사용하지 않았다.
-두 disposable loopback 서버는 stop request로 종료했다.
+각 disposable loopback 서버는 stop request로 종료하고 실제 readback을 보존했다.
 자동 복원용 권한 승인은 취소됐지만 사용자가 관리자 PowerShell에서 Cleanup을
 직접 실행한 뒤 원복을 다시 확인했다. 상태는 restored_disabled_no_log_clear,
 기능은 Disabled, restart_needed=false다. Sysmon 서비스와 드라이버는 남지 않았다.
-게임은 종료하지 않았고 테스트 포트 8002도 닫혔다. 재부팅·기존 로그 삭제는 없다.
+run03과 최종 run04도 Cleanup=restored_disabled_no_log_clear, 기능 Disabled,
+restart_needed=false, 서비스·드라이버 0개를 확인했다. 재부팅·기존 로그 삭제는 없다.
+테스트 도구는 게임을 종료하지 않았다. 재시험 전 게임이 새 PID로 실행된 것은
+직접 확인하여 새 PID와 생성 시각으로 고정했고, 설치 전후에 다시 대조했다.
 
-최종 자동화 시험은 전체 ESP 246개, Dashboard backend 101개, Replay/export 26개
-통과다. 이는 양성 실게임 세션이 완료됐다는 의미는 아니다.
+최종 자동화 시험은 전체 ESP 254개, Dashboard backend 101개,
+Replay/export 36개 통과다. 실제 NORMAL 9개/양성 10개 공개 자료 회귀를 포함한다.
+자동화 시험과 실제 NORMAL/양성 세션의 서버 검증은 별도 근거로 구분한다.
 
 Shared 7필드, production PID+생성 시각 제외, Receiver/Scoring/Launcher 계약,
 원본 ESP 소스 및 threshold는 변경하지 않았다. LocalGuard YARA는 input_signature

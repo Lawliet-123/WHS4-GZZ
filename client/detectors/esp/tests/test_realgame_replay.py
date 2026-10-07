@@ -73,6 +73,108 @@ def handle_open():
 
 
 class RealgameReplayTests(unittest.TestCase):
+    def diagnostic_fixture(self, frame=Frame(), *, visible=True, enabled=True):
+        module = SimpleNamespace(FrameRenderSnapshot=Frame, CameraSnapshot=Camera,
+                                 PlayerRenderSnapshot=Player)
+        overlay = SimpleNamespace(_snapshots=SimpleNamespace(latest=lambda: frame),
+            config=SimpleNamespace(enabled=enabled), STALE_AFTER_SECONDS=2., isVisible=lambda: visible)
+        return module, overlay
+
+    def test_readiness_diagnostic_reports_only_scalars_and_not_memory_geometry(self):
+        frame = replace(Frame(), players=(Player(), Player(is_local=False)))
+        module, overlay = self.diagnostic_fixture(frame)
+        facts = capture.readiness_diagnostic(module, overlay, 10.25)
+        self.assertEqual(facts["reason"], "READY")
+        self.assertEqual(facts["local_player_count"], 1)
+        self.assertEqual(facts["remote_player_count"], 1)
+        self.assertEqual(facts["frame_age_ms"], 250)
+        self.assertTrue(facts["collection_valid"])
+        self.assertEqual(capture.worker_diagnostic(facts), facts)
+        self.assertTrue(all(value is None or type(value) in (str, int, float, bool) for value in facts.values()))
+        for forbidden in ("position", "loc", "rot", "fov", "sequence", "address", "game_pid", "path"):
+            self.assertNotIn(forbidden, facts)
+        self.assertIsNotNone(capture.verified_frame(module, overlay, 10.25))
+
+    def test_readiness_diagnostic_explains_missing_camera_local_and_collection(self):
+        cases = ((replace(Frame(), camera=None), "CAMERA_MISSING"),
+                 (replace(Frame(), players=(Player(is_local=False),)), "NO_LOCAL_PLAYER"),
+                 (replace(Frame(), stats=(("collection_valid", False),)), "COLLECTION_INVALID"),
+                 (replace(Frame(), players=()), "NO_LOCAL_PLAYER"),
+                 (replace(Frame(), camera=replace(Camera(), fov=0.)), "CAMERA_INVALID"),
+                 (replace(Frame(), players=(replace(Player(), position=(float("nan"), 2., 3.)),)), "PLAYERS_INVALID"))
+        for frame, reason in cases:
+            with self.subTest(reason=reason):
+                module, overlay = self.diagnostic_fixture(frame)
+                self.assertEqual(capture.readiness_diagnostic(module, overlay, 10.25)["reason"], reason)
+                self.assertIsNone(capture.verified_frame(module, overlay, 10.25))
+
+    def test_readiness_diagnostic_distinguishes_missing_stale_and_slow_frame(self):
+        cases = ((None, 10.25, "NO_FRAME"), (Frame(), 12., "FRAME_NOT_FRESH"),
+                 (Frame(), 9.9, "FRAME_NOT_FRESH"),
+                 (replace(Frame(), collection_ms=2000.), 10.25, "COLLECTION_SLOW"))
+        for frame, now, reason in cases:
+            with self.subTest(reason=reason, now=now):
+                module, overlay = self.diagnostic_fixture(frame)
+                self.assertEqual(capture.readiness_diagnostic(module, overlay, now)["reason"], reason)
+                self.assertIsNone(capture.verified_frame(module, overlay, now))
+
+    def test_readiness_diagnostic_preserves_hidden_and_disabled_rejection(self):
+        for visible, enabled, reason in ((False, True, "OVERLAY_HIDDEN"), (True, False, "ESP_DISABLED")):
+            with self.subTest(reason=reason):
+                module, overlay = self.diagnostic_fixture(visible=visible, enabled=enabled)
+                self.assertEqual(capture.readiness_diagnostic(module, overlay, 10.25)["reason"], reason)
+                self.assertIsNone(capture.verified_frame(module, overlay, 10.25))
+
+    def test_readiness_diagnostic_sanitizes_error_text_and_custom_exception_types(self):
+        class PrivateException(Exception):
+            pass
+        private = r"C:\Users\private\secret: Bearer sample-not-a-real-token address=0x1234"
+        for error, expected in (("MemoryReadError: " + private, "MemoryReadError"),
+                                (private, "str"), (ValueError(private), "ValueError"),
+                                (PrivateException(private), "Other")):
+            with self.subTest(error_type=expected):
+                module, overlay = self.diagnostic_fixture(replace(Frame(), error=error))
+                facts = capture.readiness_diagnostic(module, overlay, 10.25)
+                self.assertEqual(facts["reason"], "FRAME_ERROR")
+                self.assertEqual(facts["frame_error_type"], expected)
+                self.assertNotIn(private, json.dumps(facts))
+                self.assertEqual(capture.worker_diagnostic(facts), facts)
+                self.assertIsNone(capture.verified_frame(module, overlay, 10.25))
+
+    def test_readiness_diagnostic_catches_snapshot_failure_without_exception_body(self):
+        module, overlay = self.diagnostic_fixture()
+        overlay._snapshots.latest = Mock(side_effect=RuntimeError("private-native-error-address"))
+        facts = capture.readiness_diagnostic(module, overlay, 10.25)
+        self.assertEqual(facts["reason"], "DIAGNOSTIC_ERROR")
+        self.assertEqual(facts["frame_error_type"], "RuntimeError")
+        self.assertNotIn("private-native-error-address", json.dumps(facts))
+
+    def test_readiness_relay_ignores_private_fields_and_rejects_bad_scalars(self):
+        module, overlay = self.diagnostic_fixture()
+        facts = capture.readiness_diagnostic(module, overlay, 10.25)
+        record = {**facts, "username": "private", "exception": "private", "camera_position": [1, 2, 3]}
+        self.assertEqual(capture.worker_diagnostic(record), facts)
+        for key, value in (("local_player_count", True), ("remote_player_count", -1),
+                           ("collection_ms", float("nan")), ("frame_age_ms", float("inf")),
+                           ("frame_fresh", "True"), ("reason", "C:\\private"),
+                           ("frame_error_type", "private-native-error")):
+            with self.subTest(key=key):
+                self.assertIsNone(capture.worker_diagnostic({**facts, key: value}))
+
+    def test_constructor_stage_and_readiness_cross_hidden_worker_pipe_safely(self):
+        module, overlay = self.diagnostic_fixture()
+        facts = capture.readiness_diagnostic(module, overlay, 10.25)
+        output = Mock()
+        stage = {"kind": "esp_initialization_stage", "stage": "original_constructor_started", "elapsed_ms": 0}
+        lines = [json.dumps({**stage, "path": "C:\\private"}) + "\n", json.dumps(facts) + "\n"]
+        result = capture.relay_worker_diagnostics(io.StringIO("".join(lines)), output=output)
+        self.assertEqual(result, {"forwarded": 2, "ignored": 0})
+        self.assertEqual(output.call_args_list[0].kwargs, stage)
+        self.assertEqual(output.call_args_list[1].kwargs, facts)
+        for update in ({"stage": "C:\\private"}, {"elapsed_ms": True}, {"elapsed_ms": -1},
+                       {"elapsed_ms": 3600001}):
+            self.assertIsNone(capture.worker_diagnostic({**stage, **update}))
+
     def test_warmup_budget_is_finite_bounded_and_does_not_change_capture_duration(self):
         self.assertEqual(capture.warmup_budget(90), 90)
         args = capture.parser().parse_args(["--game-pid", "1"])
