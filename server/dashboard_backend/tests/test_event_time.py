@@ -27,6 +27,49 @@ def event(evidence=None):
 
 
 class DashboardEventTimeTests(unittest.TestCase):
+    def test_launcher_clock_preserves_original_and_list_detail_for_both_modules(self):
+        parent = self.root
+        for module in ("hide_anywhere", "kernel_sentinel"):
+            with self.subTest(module=module):
+                original = event({"timestamp_basis": "launcher_session_start", "session_start_unix_ms": 1791367718186})
+                original.update(module=module, timestamp_ms=246771)
+                key = str(uuid.uuid4())
+                record = StoredDetection(1, key, original)
+                # Distinct database per subtest.
+                self.root = parent / module
+                self.root.mkdir()
+                index = self.make_index([record])
+                index.sync()
+                detail = index.detail(key)
+                self.assertEqual(detail["time_basis"], "session_relative")
+                self.assertEqual(detail["observed_at_utc"], "2026-10-07T10:12:44.957+00:00")
+                self.assertIsNone(detail["received_at_utc"])
+                self.assertEqual(detail["evidence"], original["evidence"])
+                self.assertEqual(detail["timestamp_ms"], 246771)
+                self.assertEqual(index.events({}, after=0, through=1, limit=100)[0], [detail])
+
+    def test_conflicting_or_invalid_declarations_do_not_infer_clock(self):
+        for basis in ("unix_epoch_ms", "unknown", "UTC", None, True, [], {}):
+            projected = DashboardIndex.event_clock(event({"time_basis": basis,
+                "timestamp_basis": "launcher_session_start", "session_start_unix_ms": 1791367718186}))
+            self.assertEqual(projected, {"time_basis": "unknown"})
+        self.assertEqual(DashboardIndex.event_clock(event({"time_basis": "session_relative", "timestamp_basis": "bad"})), {"time_basis": "unknown"})
+
+    def test_missing_invalid_or_out_of_range_start_has_no_observed_time(self):
+        for start in (None, True, 0, -1, "1791367718186", 1.5, 9007199254740992, 9007199254740991):
+            result = DashboardIndex.event_clock(event({"timestamp_basis": "launcher_session_start", "session_start_unix_ms": start}))
+            self.assertEqual(result, {"time_basis": "session_relative"})
+        for elapsed in (True, -1, 1.5, 9007199254740992):
+            original = event({"timestamp_basis": "launcher_session_start", "session_start_unix_ms": 1791367718186})
+            original["timestamp_ms"] = elapsed
+            self.assertNotIn("observed_at_utc", DashboardIndex.event_clock(original))
+
+    def test_consistent_dual_declaration_and_legacy_without_start(self):
+        original = event({"time_basis": "session_relative", "timestamp_basis": "launcher_session_start", "session_start_unix_ms": 1791367718186})
+        self.assertIn("observed_at_utc", DashboardIndex.event_clock(original))
+        self.assertEqual(DashboardIndex.event_clock(event()), {"time_basis": "unknown"})
+        self.assertEqual(DashboardIndex.event_clock(event({"timestamp_basis": "launcher_session_start"})), {"time_basis": "session_relative"})
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -90,15 +133,16 @@ class DashboardEventTimeTests(unittest.TestCase):
             headers = {"Authorization": "Bearer test-detection", "Idempotency-Key": key, "X-GZZ-Protocol-Version": "1"}
             with patch("shared.storage.datetime") as clock:
                 clock.now.return_value = datetime(2026, 10, 6, 15, 0, tzinfo=timezone.utc)
-                response = client.post("/api/detection", json=event({"time_basis": "session_relative"}), headers=headers)
+                response = client.post("/api/detection", json=event({"timestamp_basis": "launcher_session_start", "session_start_unix_ms": 1791367718186}), headers=headers)
             self.assertEqual(response.json(), {"event_id": key, "status": "stored"})
-            self.assertEqual(client.post("/api/detection", json=event({"time_basis": "session_relative"}), headers=headers).json()["status"], "duplicate")
+            self.assertEqual(client.post("/api/detection", json=event({"timestamp_basis": "launcher_session_start", "session_start_unix_ms": 1791367718186}), headers=headers).json()["status"], "duplicate")
             dashboard_headers = {"Authorization": "Bearer test-dashboard"}
             listed = client.get("/api/dashboard/events", headers=dashboard_headers).json()["items"][0]
             detail = client.get(f"/api/dashboard/events/{key}", headers=dashboard_headers).json()
         self.assertEqual(listed, detail)
         self.assertEqual(detail["received_at_utc"], "2026-10-06T15:00:00+00:00")
         self.assertEqual(detail["time_basis"], "session_relative")
+        self.assertEqual(detail["observed_at_utc"], "2026-10-07T10:10:02.186+00:00")
         self.assertEqual(set(writer.iter_stored()[0].result), set(event()))
 
 
