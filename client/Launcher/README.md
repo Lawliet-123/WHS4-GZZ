@@ -363,12 +363,28 @@ python client/detectors/whistle-spoofing/main.py --only whistle_rpc
   "session_id": "run_002", "stopping": false,
   "modules": {"memory_integrity": 34400, "external_access": 33640},
   "entries": {"external_access": {"pid": 33640, "create_time": 134051234599990000,
-              "started_by": "watchdog", "restartable": true, "restarts": [1790680000.1]}}
+              "started_by": "watchdog", "restartable": true, "restarts": [1790680000.1],
+              "last_exit": {"code": 2, "at": 1790680000.0},
+              "next_restart_at": 1790680002.1, "stop_reason": null}}
 }
 ```
 
 `modules` 는 예전 형식 그대로다(살아 있는 것만). 새로 쓰는 쪽은 `entries` 의
 `create_time` 까지 보면 PID 재사용을 가려낼 수 있다. 전체 모양은 `registry.py` 맨 위.
+
+**죽은 항목이 왜 안 도는지** — PID 가 죽은 항목만 보고는 곧 되살아날 것과 끝난 것을
+구분할 수 없었다. 2026-10-07 에 세 칸을 더했다(기존 칸은 그대로 둔다).
+
+| 칸 | 뜻 |
+|---|---|
+| `last_exit` | 마지막으로 끝났을 때의 `{code, at}`. `null` 이면 아직 안 끝났다. 강제로 끈 경우 코드는 우리가 만든 값이라 안 적는다 |
+| `next_restart_at` | 되살릴 수 있는 가장 이른 시각. `0` 이면 지금 바로. 더 안 되살리면 `0` 으로 지운다 |
+| `stop_reason` | `exited` 스스로 끝남 / `finished` 주기 검사 한 바퀴 정상 종료 / `gave_up` 재시작 한도 초과 / `crash_limit` 계속 비정상 종료 / `stopped_by_launcher` 세션 종료 / `killed` 강제 종료. `null` 이면 멈춘 게 아니다 |
+
+읽는 쪽은 **살아 있는지를 먼저 `is_alive` 로 본다.** 이 세 칸은 죽어 있을 때 이유를
+말해 줄 뿐 생존 여부를 대신하지 않는다. 세션이 끝나면 `entries` 는 통째로 비워지므로,
+`stopped_by_launcher` 는 끄는 중에만 보인다. 시험: `tests/test_registry_stop_reason.py`
+(4번 `anti_debug/registry_reader.py` 로 실제로 읽어 보는 것까지 포함).
 
 적히는 pid 는 **실제로 검사 코드가 도는 프로세스**다. 런처를 venv 파이썬으로 돌려도 같다
 (2026-10-06 성민님 #124 확인 요청으로 고침. 전에는 venv 의 중간 실행기 pid 가 적혀서
