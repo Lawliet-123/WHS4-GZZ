@@ -26,7 +26,8 @@ def prepare_test_environment(source, sha256):
     script=root/'scripts/PrepareTestEnvironment.ps1'
     # This is the public certificate extracted from the user-supplied signed SYS.
     thumbprint='AC82C79E947F598200D81C59819EA312A9CDA87C'
-    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-File',str(script),
+    # Apply only to this child PowerShell; do not persist an execution-policy change.
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script),
         '-SysPath',str(source),'-ExpectedSha256',sha256,
         '-CertificatePath',str(root/'artifacts/KernelSentinel-test.cer'),
         '-CertificateThumbprint',thumbprint,'-EffectiveTestSigning',str(test_signing_active()).lower()],check=False)
@@ -58,7 +59,7 @@ def ensure_driver(path=None, sha256=None, *, prepare_test=False):
     if prepare_test:
         prepare_test_environment(source, sha256)
     script = Path(__file__).resolve().parents[1] / 'scripts' / 'EnsureDriver.ps1'
-    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(script),
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script),
                              '-SysPath', str(source), '-ExpectedSha256', sha256], check=False)
     if result.returncode:
         raise RuntimeError(f'Approved driver setup failed (exit {result.returncode})')

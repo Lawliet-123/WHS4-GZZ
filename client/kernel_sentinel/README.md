@@ -11,11 +11,46 @@ TrustedPublisher 등록**을 수행합니다. 기존 "보안 설정을 자동 �
 재부팅이 필요하면 REBOOT_REQUIRED로 수집을 중단합니다. 작업을 저장하고 Windows를
 재부팅한 뒤 새 세션으로 다시 실행하세요. 강제 재부팅은 없습니다.
 Secure Boot가 BCD 변경을 거부하면 중단하며 Secure Boot/Defender/BitLocker/메모리
-무결성/실행 정책을 자동 변경하지 않습니다. 옵션을 제거하면 기존 엄격한 설치 경로로 돌아갑니다.
+무결성/영구 실행 정책을 자동 변경하지 않습니다. 준비·설치용 자식 PowerShell에만 임시 Bypass를 적용합니다. 옵션을 제거하면 기존 엄격한 설치 경로로 돌아갑니다.
 
 실행 위치는 저장소의 `client/kernel_sentinel`입니다. 원본 드라이버/센서 소스는
 KernelSentinel 0.2.3이며, 이번 변경은 Python 연동과 승인 드라이버 자동 설치입니다.
 기존 `KernelSentinelValidation-github` 실험 자료는 삭제하지 않습니다.
+
+## 최초 실행에서 PowerShell 실행 정책으로 차단될 때
+
+준비/설치 스크립트가 `PSSecurityException`, "스크립트를 실행할 수 없습니다" 등의
+오류로 차단될 수 있습니다. 최신 호출부는 준비와 설치용 자식 PowerShell에만
+`-ExecutionPolicy Bypass`를 전달합니다. Launcher 등록부를 수정할 필요는 없으며,
+사용자의 CurrentUser/LocalMachine 실행 정책은 변경하지 않습니다. SYS 고정 해시와
+서명·인증서 검증은 기존대로 수행합니다.
+
+수정 전 버전이나 직접 실행에서는 **관리자 PowerShell의 같은 창**에서 다음을
+실행한 뒤 기존 Launcher/준비 명령을 실행하세요.
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+# 이어서 같은 창에서 기존 Launcher/준비 명령 실행
+```
+
+이 설정은 현재 PowerShell 세션에만 적용되며 창을 닫으면 사라집니다. 직접 다른
+PowerShell을 호출하는 명령에 `-ExecutionPolicy RemoteSigned`가 있다면 이 값이
+별도 자식 정책을 지정하므로 아래처럼 해당 호출을 바꿔야 합니다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File <준비_스크립트.ps1> <기존_인자>
+```
+
+조직의 MachinePolicy/UserPolicy가 적용된 PC에서는 Process/호출 인자로 이를
+덮어쓸 수 없습니다. 계속 차단되면 `Get-ExecutionPolicy -List`를 확인하고 관리자에게
+승인된 실행 방법을 요청하세요. 그룹 정책을 자동 변경하지 않습니다.
+
+`TEST_SIGNING_REBOOT_REQUIRED`는 정책 차단과 다른 상태입니다. 해당 메시지면 작업을
+저장하고 Windows를 재부팅한 뒤 새 세션으로 다시 실행하세요. 사용자 보고에서는
+재부팅 후 정상 실행됐지만, 다른 PC에서의 설치/로드 성공까지 검증된 것은 아닙니다.
+
+공식 정책 범위/우선순위:
+https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_execution_policies
 
 ## 준비 및 최초 설정
 
@@ -110,10 +145,11 @@ Shared send 전에 로컬 공통 파일을 flush하고, Shared가 canonical UUID
 합성 센서 입력 → Shared 실제 대기열 → loopback HTTP Receiver → Scoring DB 저장도 검증했습니다.
 Windows WDK 빌드·SYS 서명·자동 설치 실행·실게임·Windows Ctrl+Break는 여기서 검증하지 않았습니다.
 
-서버에는 아직 `kernel_sentinel` 전용 Scoring profile/policy가 없습니다. 원점수는 저장되지만
-`UNKNOWN_MODULE` 등 미해결 상태가 될 수 있습니다. 점수 상한·관측 범위·0점/실패·이력 처리의
-합의 후 B 담당자가 정책을 등록해야 합니다. 최종 Dashboard 치트 판정 E2E 완료로 보고하지 마세요.
-SelfDefense PID/생성 시각 기반 예외도 이번 패키지에 추가하지 않았습니다.
+별도 서버 수정본에는 `kernel_sentinel`의 소스 기준 잠정 Scoring 정책이 추가되었습니다.
+적용 여부와 해석은 `server/scoring/policies/KERNEL_SENTINEL_POLICY.md`를 참고하세요.
+서버 수정본을 적용하지 않았다면 `UNKNOWN_MODULE` 등 미해결 상태가 남을 수 있습니다.
+실제 Windows 전체 Launcher·운영 서버의 최종 판정 E2E 완료를 주장하지 않습니다.
+승인된 방어 모듈 접근 분류와 남은 확인 사항은 `docs/APPROVED_ACCESS_VALIDATION.md`를 참고하세요.
 
 ## 회귀 테스트
 
