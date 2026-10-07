@@ -6,7 +6,7 @@ import json
 import sqlite3
 import threading
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -94,16 +94,42 @@ class DashboardIndex:
         return value
 
     @staticmethod
+    def event_clock(event) -> dict:
+        """Project declared clocks only; original Event and receipt stay untouched."""
+        evidence = event["evidence"]
+        declarations = []
+        if "time_basis" in evidence:
+            declarations.append(evidence["time_basis"])
+        if "timestamp_basis" in evidence:
+            declarations.append(
+                "session_relative" if evidence["timestamp_basis"] == "launcher_session_start"
+                else None
+            )
+        allowed = ("session_relative", "unix_epoch_ms")
+        if (not declarations or any(value not in allowed for value in declarations)
+                or any(value != declarations[0] for value in declarations)):
+            return {"time_basis": "unknown"}
+        basis = declarations[0]
+        result = {"time_basis": basis}
+        start, elapsed = evidence.get("session_start_unix_ms"), event["timestamp_ms"]
+        # Safe integer bounds also match the browser's exact integer arithmetic.
+        if (basis == "session_relative" and type(start) is int and type(elapsed) is int
+                and 0 < start <= 9007199254740991
+                and 0 <= elapsed <= 9007199254740991
+                and start + elapsed <= 9007199254740991):
+            try:
+                observed = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=start + elapsed)
+                result["observed_at_utc"] = observed.isoformat(timespec="milliseconds")
+            except OverflowError:
+                pass
+        return result
+
+    @staticmethod
     def event(row) -> dict:
         event = json.loads(row["payload"])
-        basis = event["evidence"].get("time_basis")
-        # Only explicit producer declarations are interpretable. Do not guess
-        # from detector name, value magnitude, current time, or session IDs.
-        if basis not in ("session_relative", "unix_epoch_ms"):
-            basis = "unknown"
         return {
             **event, "id": row["id"], "sequence": row["sequence"],
-            "event_kind": row["kind"], "time_basis": basis,
+            "event_kind": row["kind"], **DashboardIndex.event_clock(event),
             "received_at_utc": row["received_at_utc"],
             "evidence_image": None, "log_excerpt": None,
         }
