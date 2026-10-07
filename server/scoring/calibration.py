@@ -4,6 +4,9 @@
 각 detector의 raw 점수를 중앙 Scoring에서 어떤 기준으로 해석할지
 버전이 명시된 calibration 설정으로만 보존한다.
 
+Non-replay exceptions carry their own explicit version: kernel-source-provisional-v1
+is source-audited integration policy, not an empirically validated replay threshold.
+
 replay-v1:
 - 현재 팀 ReplayAnalyzer 데이터로 확정한 첫 공식 calibration 버전
 - 이후 추가 replay 결과로 기준이 변경되면 replay-v2 등 새 버전으로 갱신한다.
@@ -90,6 +93,10 @@ class ModuleCalibration:
 
 
 _ITEMS = (
+    ModuleCalibration(
+        "kernel_sentinel", "threshold", 3, version="kernel-source-provisional-v1",
+        note="Source-audited provisional threshold; not replay validated. Structured evidence gates apply; raw is preserved.",
+    ),
     # Replay calibration v1 확정값
     ModuleCalibration(
         "aimbot",
@@ -304,6 +311,7 @@ def resolve_calibration(
     *,
     raw_score: float,
     evidence: Mapping[str, object],
+    reasons: tuple[str, ...] | list[str] = (),
 ) -> ModuleCalibration | None:
     """Event evidence까지 반영한 실제 calibration을 반환한다.
 
@@ -314,6 +322,15 @@ def resolve_calibration(
 
     if base is None:
         return None
+
+    if module == "kernel_sentinel":
+        from .kernel_sentinel_rules import classify, VERSION
+        result = classify(raw_score, evidence, reasons)
+        if result in ("normal", "strong", "unavailable"):
+            return base
+        return ModuleCalibration("kernel_sentinel", "advisory" if result == "advisory" else "pending",
+                                 None, version=VERSION,
+                                 note="Source-derived provisional evidence classification: " + result)
 
     if module == "external_access":
         submodule = evidence.get("submodule")
