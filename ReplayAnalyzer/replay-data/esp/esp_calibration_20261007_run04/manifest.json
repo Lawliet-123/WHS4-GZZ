@@ -1,0 +1,97 @@
+{
+  "cheat_end_ms": 93639,
+  "cheat_start_ms": 7751,
+  "cheat_type": "ESP",
+  "event_count": 126,
+  "label": "CHEAT",
+  "player_id": "calibration_player",
+  "session_id": "esp_calibration_20261007_run04",
+  "source": {
+    "calibration_observation": {
+      "actual_remote_geometry": {
+        "basis": "first/last completed original remote geometry painter calls",
+        "continuous_visibility_claimed": false,
+        "first_frame_sequence": 7,
+        "first_observed_epoch": 1791377938.5024078,
+        "first_observed_ms": 31807,
+        "last_frame_sequence": 1849,
+        "last_observed_epoch": 1791377999.931538,
+        "last_observed_ms": 93236,
+        "maximum_observation_gap_seconds": 15.085052728652954,
+        "remote_box_lines": 646,
+        "remote_skeleton_lines": 2136,
+        "screenshot_verified": false,
+        "unique_frame_count": 85,
+        "user_behavior_end_ms": null,
+        "user_behavior_start_ms": null
+      },
+      "central_telemetry": "disposable_loopback",
+      "game_module_snapshot_delta": {
+        "added_identity_sha256": [],
+        "attribution": "NOT_ASSESSED",
+        "basis": "game loaded-module path/size identity snapshots, not on-disk integrity or injection proof",
+        "removed_identity_sha256": [],
+        "status": "UNCHANGED"
+      },
+      "human_behavior_end_ms": null,
+      "human_behavior_start_ms": null,
+      "human_behavior_status": "NOT_OBSERVED",
+      "owned_esp_process_after_off": {
+        "basis": "owned subprocess handle confirms termination",
+        "descendants": "NOT_ASSESSED",
+        "status": "ABSENT"
+      },
+      "preexisting_poc_absence": "NOT_ASSESSED",
+      "program_exit_ms": 93639,
+      "program_spawn_bounds_ms": [
+        6862,
+        6893
+      ],
+      "server_evidence_sha256": "5d840fe61870b7e6923a2baabd9809279cd558cd7e1e1ce267ce6066660fe5a9",
+      "session_end_utc": "2026-10-07T13:01:58.525Z",
+      "session_start_utc": "2026-10-07T12:58:26.695Z",
+      "shared_delivery": {
+        "acknowledged_this_run": 126,
+        "failed": 0,
+        "pending": 0,
+        "queued_unique_events": 126
+      },
+      "timestamp_ms_basis": "milliseconds since session_start_utc"
+    },
+    "events_sha256": "ab832fd65993fb596a97eae77176a1f8aa858ff914ce97a5dbbf285a5ceb69f8",
+    "kind": "existing_esp_capture",
+    "manifest_sha256": "eac202a80915ce3b24784e7bde24140213d27e528e4e1fc7dfc02af7fb277ea9",
+    "notes": [
+      "Existing captured results; this export is not a new test run.",
+      "Scores and timestamps were not recomputed with the current detector.",
+      "ON/OFF timing is supplied test metadata; missing timing remains null.",
+      "Evidence is privacy-filtered; original raw sensor logs are omitted.",
+      "NORMAL labels remain NORMAL even when captured scores cross a threshold."
+    ],
+    "producer": {
+      "name": "meccha-esp-localguard",
+      "revision": null,
+      "version": "0.2.0"
+    },
+    "realgame_validation": {
+      "first_read_ready_ms": 31807,
+      "fresh_read_heartbeat_count": 123,
+      "handle_open_observation_bounds_ms": [
+        7749,
+        7751
+      ],
+      "kind": "observed_original_esp_lifecycle",
+      "launch_precedes_on": true,
+      "maximum_heartbeat_gap_seconds": 0.579979419708252,
+      "off_basis": "observed exact child process exit",
+      "off_observation_poll_seconds": 0.1,
+      "on_basis": "successful pinned game handle opening, observed immediately after API return",
+      "remote_player_count_at_first_ready": 5,
+      "remote_rendering_claimed": true,
+      "source_requested_access": "PROCESS_ALL_ACCESS (0x1f0fff), SeDebugPrivilege attempted",
+      "source_sha256": "897dd9da21b39e738306c79b8225a8b9bd35de8a52d038c83ce4d829f39da973"
+    },
+    "schema_version": "meccha.telemetry-session.v1",
+    "session_status": "completed"
+  }
+}

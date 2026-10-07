@@ -43,6 +43,7 @@ ACCESS_BITS: tuple[tuple[int, str], ...] = (
 
 _CHANNEL_NOT_FOUND_CODES = {2, 3, 15007}
 _ACCESS_DENIED = 5
+_NO_MORE_ITEMS = 259
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +476,16 @@ class SysmonPoller:
                 request_count = min(
                     self.batch_size, self.max_events_per_poll - scanned
                 )
-                native_events = self._evt.EvtNext(query_handle, request_count)
+                try:
+                    native_events = self._evt.EvtNext(query_handle, request_count)
+                except Exception as exc:
+                    # EvtNext uses ERROR_NO_MORE_ITEMS for normal exhaustion.
+                    # Only this API call has that meaning: query/render/channel
+                    # failures, other errors and the existing scan cap remain
+                    # unavailable or truncated, never silently healthy.
+                    if _winerror(exc) == _NO_MORE_ITEMS:
+                        break
+                    raise
                 if not native_events:
                     break
                 scanned += len(native_events)

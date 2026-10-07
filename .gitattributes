@@ -1,0 +1,4 @@
+# Calibration manifests bind the exact public Server readback bytes by SHA-256.
+# Preserve those bytes across Windows checkouts without changing other datasets.
+ReplayAnalyzer/replay-data/esp/*_calibration_*/*.json text eol=lf
+ReplayAnalyzer/replay-data/esp/*_calibration_*/*.jsonl text eol=lf
