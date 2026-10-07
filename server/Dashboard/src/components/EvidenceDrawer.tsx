@@ -346,9 +346,12 @@ export function EvidenceDrawer({
               <div><dt>플레이어</dt><dd>{event.player_id}</dd></div>
               <div><dt>Launcher 클라이언트</dt><dd title="해당 대상의 최신 Heartbeat 소스. 이벤트 발신자와 동일하다는 보장은 없습니다.">{clientId ? redactEventText(event, clientId) : "미제공"}</dd></div>
               <div><dt>모듈</dt><dd>{humanizeModule(event.module)}</dd></div>
-              <div><dt>{time.elapsedLabel ? "세션 경과" : "원본 타임스탬프"}</dt><dd>{time.elapsedLabel ?? time.rawLabel}</dd></div>
-              <div><dt>관측 시각</dt><dd>{time.observedLabel ?? "미제공"}</dd></div>
+              <div><dt>원본 타임스탬프</dt><dd>{time.rawLabel}</dd></div>
+              {time.elapsedLabel && <div><dt>세션 경과</dt><dd>{time.elapsedLabel}</dd></div>}
+              <div><dt>시간 기준</dt><dd className="mono">{event.time_basis}</dd></div>
+              <div><dt>관측 시각</dt><dd title="생산자가 선언한 시계 기준. 서버 시계 검증 결과가 아닙니다.">{time.observedLabel ?? "관측 시각 미제공"}</dd></div>
               <div><dt>수신 시각</dt><dd>{time.receivedLabel ?? "미제공"}</dd></div>
+              <div><dt>서버 저장 순서</dt><dd className="mono">#{event.sequence}</dd></div>
               <div><dt>원시 점수</dt><dd>{event.raw_score}</dd></div>
               <div><dt>Event ID</dt><dd className="mono">{event.id}</dd></div>
             </dl>

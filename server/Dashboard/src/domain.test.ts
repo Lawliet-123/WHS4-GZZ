@@ -166,7 +166,7 @@ describe("Dashboard backend-v2 domain", () => {
     const buckets = buildTimelineBuckets(demoEvents.items, 8);
     expect(buckets).toHaveLength(8);
     expect(buckets.reduce((sum, item) => sum + item.total, 0)).toBe(demoEvents.items.length);
-    expect(buckets.reduce((sum, item) => sum + item.operational, 0)).toBe(1);
+    expect(buckets.reduce((sum, item) => sum + item.operational, 0)).toBe(demoEvents.items.filter((item) => item.event_kind === "operational").length);
   });
 
   it("formats elapsed time and safely shortens long client identifiers", () => {

@@ -129,4 +129,57 @@ describe("Scoring explanation projection", () => {
     expect(rows[0]!.highestObserved).toBeNull();
     expect(policyEvidenceRows(null, [latest])).toEqual([]);
   });
+
+  it("preserves canonical unknown and null clocks instead of accepting Scoring-state overrides", () => {
+    const latest = event(1, { time_basis: "unknown", observed_at_utc: null, received_at_utc: null });
+    const entry = explanation(latest, "INACTIVE");
+    Object.assign(entry.latest_event, {
+      time_basis: "session_relative", observed_at_utc: "2026-10-07T10:00:00.957Z", received_at_utc: "2026-10-07T10:00:01.000Z",
+    });
+    const row = policyEvidenceRows(snapshot([latest], [entry]), [latest])[0]!;
+    expect(row.latest?.time_basis).toBe("unknown");
+    expect(row.latest?.observed_at_utc).toBeNull();
+    expect(row.latest?.received_at_utc).toBeNull();
+  });
+
+  it("requires an original Event rather than deriving clocks from snapshot evidence or metadata", () => {
+    const latest = event(1, {
+      time_basis: "session_relative", observed_at_utc: "2026-10-07T10:00:00.957Z", received_at_utc: "2026-10-07T10:00:01.000Z",
+      evidence: { time_basis: "session_relative", timestamp_basis: "launcher_session_start", session_start_unix_ms: 1791367718186 },
+    });
+    const row = policyEvidenceRows(snapshot([latest], [explanation(latest, "INACTIVE")]), [])[0]!;
+    expect(row.latest?.timestamp_ms).toBe(latest.timestamp_ms);
+    expect(row.latest?.time_basis).toBe("unknown");
+    expect(row.latest?.observed_at_utc).toBeNull();
+    expect(row.latest?.received_at_utc).toBeNull();
+  });
+
+  it("does not borrow canonical clocks when the original sequence or score conflicts", () => {
+    const latest = event(1, { time_basis: "session_relative", observed_at_utc: "2026-10-07T10:00:00.957Z" });
+    for (const change of [{ sequence: 2 }, { raw_score: 3 }]) {
+      const row = policyEvidenceRows(snapshot([latest], [explanation(latest, "INACTIVE")]), [{ ...latest, ...change }])[0]!;
+      expect(row.latest?.time_basis).toBe("unknown");
+      expect(row.latest?.observed_at_utc).toBeNull();
+    }
+  });
+
+  it("does not attach a contributor's clocks to a derived aggregate even when IDs and values coincide", () => {
+    const original = event(1, {
+      module: "external_access", evidence: { submodule: "aggregate" }, time_basis: "session_relative",
+      observed_at_utc: "2026-10-07T10:00:00.957Z", received_at_utc: "2026-10-07T10:00:01.000Z",
+    });
+    const derived = { ...original, evidence: { ...original.evidence, derived: true } };
+    const row = policyEvidenceRows(snapshot([derived]), [original])[0]!;
+    expect(row.latest?.id).toBe(original.id);
+    expect(row.latest?.sequence).toBe(original.sequence);
+    expect(row.latest?.timestamp_ms).toBe(original.timestamp_ms);
+    expect(row.latest?.raw_score).toBe(original.raw_score);
+    expect(row.latest?.time_basis).toBe("unknown");
+    expect(row.latest?.observed_at_utc).toBeNull();
+    expect(row.latest?.received_at_utc).toBeNull();
+    const ordinary = policyEvidenceRows(snapshot([original]), [original])[0]!;
+    expect(ordinary.latest?.time_basis).toBe("session_relative");
+    expect(ordinary.latest?.observed_at_utc).toBe(original.observed_at_utc);
+    expect(ordinary.latest?.received_at_utc).toBe(original.received_at_utc);
+  });
 });

@@ -54,6 +54,11 @@ function component(id: string, state: ModuleStatus["state"], playerId = "player_
 }
 
 describe("protection module catalog", () => {
+  it("groups Watchdog, Integrity and AntiDebug runtime states without hiding failed checks", () => {
+    const rollup = buildModuleRollups([], [component("self_defense", "healthy"), component("selfdefense_integrity", "failed"), component("selfdefense_anti_debug", "running")]).find((item) => item.id === "self_defense")!;
+    expect(rollup.components).toHaveLength(3);
+    expect(rollup.state).toBe("failed");
+  });
   it("contains each of the 13 Launcher services exactly once", () => {
     expect(protectionModuleCatalog.map((entry) => entry.id)).toEqual([
       "self_defense",

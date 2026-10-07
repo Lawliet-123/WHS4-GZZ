@@ -275,6 +275,8 @@ export function humanizeReason(reason: string): string {
     ASSESSMENT_INCOMPLETE: "일부 관측 또는 평가가 완료되지 않음",
     NO_ACTIVE_EVIDENCE: "현재 평가 범위에 활성 근거가 없음",
     ADVISORY_EVIDENCE_PRESENT: "참고용 근거가 함께 존재함",
+    MISSING_MEASUREMENT: "필수 관측 미수신",
+    STALE_MEASUREMENT: "필수 관측 유효기간 초과",
   };
   return Object.hasOwn(labels, reason) ? labels[reason]! : reason.replaceAll("_", " ");
 }

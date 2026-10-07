@@ -1,0 +1,46 @@
+Dashboard-A 보완 결과 / 2026-10-07
+
+구현 범위
+
+세션 경과시간은 밀리초까지, 관측 시각은 KST 날짜와 밀리초까지 표시한다.
+서버 수신 시각은 별도 라벨로 남기며 관측 시각으로 대신 사용하지 않는다.
+명시적인 시간 기준이 없거나 선언이 충돌하면 원본 timestamp를 보존한다.
+이력 항목은 정확히 연결되는 원본 이벤트 상세에서 시간 메타데이터를 확인한다.
+
+추가 점검에서 SelfDefense 운영 상태가 overview에 있어도 화면에 연결되지 않은
+누락을 발견했다. 기능과 Watchdog 대상 모듈별 최신 상태를 시스템 화면과
+플레이어 실행 상태에 연결했다. 파일 무결성과 AntiDebug Launcher 상태도
+SelfDefense 보호 계층에 포함한다. 운영 상태는 플레이어 종합 판정과 분리한다.
+raw 0인 ERROR/DETECTED/OFFLINE도 정상으로 바꾸거나 숨기지 않는다.
+필수 관측 미수신 및 유효기간 초과 판정 코드를 화면에 표시한다.
+
+검증
+
+프론트 전체 269개 테스트 통과.
+일반 빌드와 /GZZ/ 공개용 빌드 성공, git diff --check 통과.
+최신 main c782c2e의 overview.selfdefense_statuses와 시간 조회 계약을 사용한다.
+Scoring 정책, Shared 7필드, ACK, 원본 evidence/timestamp, Launcher 정책은
+변경하지 않는다. kernel_watcher -> kernel_sentinel 연결은 기존 회귀를 유지한다.
+
+공개 화면에는 명시적인 합성 데이터만 사용한다. Watchdog 정상, 파일 무결성
+ERROR, AntiDebug DETECTED의 서로 다른 운영 사례를 모두 raw 0으로 제공한다.
+이 예시는 실제 운영 서버나 실제 게임의 탐지 결과가 아니다.
+
+확인 범위와 남은 일
+
+GitHub 제출과 공개 프론트 배포는 운영 서버 배포와 별개다.
+운영 health 응답은 확인했지만 지정 Light 세션의 인증된 목록/상세 조회와
+writer ledger/dashboard index의 수신 시각은 확인하지 않았다.
+운영 담당자가 검토한 main을 배포한 뒤 같은 세션을 다시 조회해야 한다.
+null 수신 시각의 원인은 추정하지 않으며 과거 수신 시각을 임의 복원하지 않는다.
+운영 토큰, 전체 로그, 데이터베이스, 개인 raw 자료는 제출하지 않는다.
+
+공개 배포 확인
+
+프론트 소스 f6d0702를 기존 gzz-dashboard-frontend에 정적 배포했다.
+https://kkinomalo.com/GZZ/의 HTML, JS, CSS가 최신 빌드와 SHA-256 일치하며
+모두 HTTP 200이다. 기존 홈페이지도 HTTP 200을 유지한다.
+브라우저에서 기능별 운영 상태와 raw 0 ERROR/DETECTED, 밀리초 표시,
+점검 대상 필터를 확인했고 console warning/error는 없었다.
+첨부 dashboard-selfdefense-demo-20261007.jpg는 공개 합성 화면 캡처다.
+운영 서버 배포 및 실제 Light 세션 검증이 완료됐다는 의미는 아니다.

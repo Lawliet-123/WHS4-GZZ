@@ -16,6 +16,7 @@ describe("explicit SOC detection presentation", () => {
   it.each([
     ["NORMAL", "NORMAL", "success"], [" suspicious ", "SUSPICIOUS", "warning"], ["error", "ERROR", "danger"],
     ["INSUFFICIENT", "INSUFFICIENT", "warning"], ["STOPPED", "STOPPED", "neutral"],
+    ["DETECTED", "DETECTED", "danger"], ["OFFLINE", "OFFLINE", "warning"], ["CLEAN", "CLEAN", "success"],
   ])("keeps the directly reported event status %s independent of raw score", (status, label, tone) => {
     expect(eventReportedStatus(event({ raw_score: 0, evidence: { status } }))).toEqual({ label, tone });
   });

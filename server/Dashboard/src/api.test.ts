@@ -9,6 +9,7 @@ import {
   fetchSubjectStatus,
   loadSubjectDetail,
   loadSubjectDetailParts,
+  loadDashboardBundle,
 } from "./api";
 import {
   demoEventItems,
@@ -17,7 +18,7 @@ import {
   demoSnapshots,
   demoStatuses,
 } from "./mockData";
-import type { GodModeHistoryResponse, LiveConnectionInput, SnapshotResponse, SubjectStatusResponse } from "./types";
+import type { GodModeHistoryResponse, LiveConnectionInput, SelfDefenseStatus, SnapshotResponse, SubjectStatusResponse } from "./types";
 
 const connection: LiveConnectionInput = {
   baseUrl: "http://dashboard.test",
@@ -127,6 +128,44 @@ describe("subject detail API", () => {
 });
 
 describe("Dashboard response contracts", () => {
+  const selfDefense: SelfDefenseStatus = {
+    session_id: "session_001", player_id: "player_001", kind: "module_health", component: "watchdog",
+    target_module: "esp", status: "ERROR", scan_complete: false, scope: null, timestamp_ms: 200,
+    sequence: 10, event_id: "watchdog-esp", raw_score: 0, reasons: ["PROCESS_EXITED"], evidence: { status: "ERROR" },
+  };
+
+  it("accepts latest SelfDefense operational status without reinterpreting raw zero", async () => {
+    const body = { ...demoOverview, selfdefense_statuses: [selfDefense, { ...selfDefense, kind: "debugger_presence", status: "DETECTED", target_module: null, event_id: "debugger", sequence: 11 }] };
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(body))));
+    await expect(fetchOverview(connection)).resolves.toEqual(body);
+  });
+
+  it("keeps old overview APIs compatible but rejects malformed supplied operational statuses", async () => {
+    const { selfdefense_statuses: _omitted, ...legacy } = demoOverview;
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(legacy))));
+    await expect(fetchOverview(connection)).resolves.toEqual(legacy);
+    for (const changes of [{ scan_complete: "false" }, { sequence: -1 }, { reasons: null }, { raw_score: "0" }]) {
+      vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({ ...demoOverview, selfdefense_statuses: [{ ...selfDefense, ...changes }] }))));
+      await expect(fetchOverview(connection)).rejects.toMatchObject({ name: "DashboardApiError" });
+    }
+  });
+
+  it("merges paginated Watchdog targets and keeps the highest storage sequence per function", async () => {
+    const first = { ...demoOverview, selfdefense_statuses: [selfDefense], session_page: { has_more: true, next_after_session: "page-two" } };
+    const second = { ...demoOverview, selfdefense_statuses: [
+      { ...selfDefense, status: "NORMAL", scan_complete: true, event_id: "watchdog-esp-new", sequence: 12 },
+      { ...selfDefense, target_module: "hide_anywhere", event_id: "watchdog-hide", sequence: 11 },
+    ] };
+    vi.stubGlobal("fetch", vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request));
+      return Promise.resolve(jsonResponse(url.pathname.endsWith("/events") ? demoEvents : url.searchParams.has("after_session") ? second : first));
+    }));
+    const bundle = await loadDashboardBundle(connection);
+    expect(bundle.overview.selfdefense_statuses).toHaveLength(2);
+    expect(bundle.overview.selfdefense_statuses?.find((item) => item.target_module === "esp")).toMatchObject({ status: "NORMAL", sequence: 12 });
+    expect(bundle.overview.selfdefense_statuses?.find((item) => item.target_module === "hide_anywhere")).toMatchObject({ status: "ERROR", sequence: 11 });
+  });
+
   it("accepts additive receipt metadata while keeping missing legacy fields optional", async () => {
     const item = { ...demoEventItems[0]!, received_at_utc: "2026-10-06T15:00:00Z", observed_at_utc: null };
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(item))));

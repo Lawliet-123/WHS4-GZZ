@@ -19,6 +19,8 @@ import type {
  */
 
 const generatedAt = "2026-10-05T03:20:00+00:00";
+// A fixed fictional producer clock, not an inferred live session start.
+const demoSessionStartUnixMs = Date.parse("2026-10-05T03:15:00.000Z");
 
 function makeVerdict(
   sessionId: string,
@@ -110,10 +112,16 @@ const event = (
   event_kind: "detection",
   // Explicit fictional server metadata, not a guess made by UI rendering.
   time_basis: "session_relative",
+  observed_at_utc: new Date(demoSessionStartUnixMs + input.timestamp_ms).toISOString(),
   received_at_utc: generatedAt,
   evidence_image: null,
   log_excerpt: null,
   ...input,
+  evidence: {
+    ...input.evidence,
+    timestamp_basis: "launcher_session_start",
+    session_start_unix_ms: demoSessionStartUnixMs,
+  },
 });
 
 const eventItems: DashboardEvent[] = [
@@ -246,9 +254,23 @@ const eventItems: DashboardEvent[] = [
     module: "selfdefense",
     timestamp_ms: 70_000,
     raw_score: 0,
-    reasons: [],
+    reasons: ["REGISTERED_PROCESS_ALIVE"],
     event_kind: "operational",
-    evidence: { synthetic: true, kind: "module_health", status: "RUNNING" },
+    evidence: { synthetic: true, kind: "module_health", component: "watchdog", target_module: "esp", status: "NORMAL", scan_complete: true, scope: "registered_anticheat_process" },
+  }),
+  // Operational fixtures demonstrate an unavailable baseline and a debugger
+  // finding. They are not gameplay observations or player cheat evidence.
+  event(10, {
+    session_id: "demo_esp_001", player_id: "player_042", module: "selfdefense",
+    timestamp_ms: 70_100, raw_score: 0, event_kind: "operational",
+    reasons: ["BASELINE_UNAVAILABLE"],
+    evidence: { synthetic: true, kind: "file_integrity", component: "integrity", target_module: null, status: "ERROR", scan_complete: false, scope: "approved_release" },
+  }),
+  event(11, {
+    session_id: "demo_esp_001", player_id: "player_042", module: "selfdefense",
+    timestamp_ms: 70_200, raw_score: 0, event_kind: "operational",
+    reasons: ["NATIVE_DEBUGGER_PRESENT"],
+    evidence: { synthetic: true, kind: "debugger_presence", component: "anti_debug", target_module: null, status: "DETECTED", scan_complete: true, scope: "registered_anticheat_processes" },
   }),
 ];
 
@@ -597,13 +619,13 @@ export const demoOverview: OverviewResponse = {
     events: eventItems.length,
     sessions: 4,
     players: 4,
-    operational_events: 1,
+    operational_events: eventItems.filter((item) => item.event_kind === "operational").length,
     review: null,
     high: null,
   },
   sessions: [
     { id: "demo_aimbot_001", player_ids: [longAimbotPlayerId], module_ids: ["aimbot"], duration_ms: null, max_observed_timestamp_ms: 84_438, status: "UNKNOWN", score: null },
-    { id: "demo_esp_001", player_ids: ["player_042"], module_ids: ["esp", "external_access", "selfdefense"], duration_ms: null, max_observed_timestamp_ms: 70_000, status: "UNKNOWN", score: null },
+    { id: "demo_esp_001", player_ids: ["player_042"], module_ids: ["esp", "external_access", "selfdefense"], duration_ms: null, max_observed_timestamp_ms: 70_200, status: "UNKNOWN", score: null },
     { id: "demo_noclip_001", player_ids: ["player_013"], module_ids: ["noclip"], duration_ms: null, max_observed_timestamp_ms: 91_000, status: "UNKNOWN", score: null },
     { id: "demo_normal_001", player_ids: ["player_007"], module_ids: ["aimbot"], duration_ms: null, max_observed_timestamp_ms: 18_000, status: "UNKNOWN", score: null },
   ],
@@ -631,6 +653,16 @@ export const demoOverview: OverviewResponse = {
     session_id: status.session_id,
     player_id: status.player_id,
     ...status.launcher,
+  })),
+  selfdefense_statuses: eventItems.filter((item) => item.module === "selfdefense" && typeof item.evidence.kind === "string").map((item) => ({
+    session_id: item.session_id, player_id: item.player_id, kind: item.evidence.kind as string,
+    component: typeof item.evidence.component === "string" ? item.evidence.component : null,
+    target_module: typeof item.evidence.target_module === "string" ? item.evidence.target_module : null,
+    status: typeof item.evidence.status === "string" ? item.evidence.status : null,
+    scan_complete: typeof item.evidence.scan_complete === "boolean" ? item.evidence.scan_complete : null,
+    scope: typeof item.evidence.scope === "string" ? item.evidence.scope : null,
+    timestamp_ms: item.timestamp_ms, sequence: item.sequence, event_id: item.id,
+    raw_score: item.raw_score, reasons: item.reasons, evidence: item.evidence,
   })),
   events_endpoint: "/api/dashboard/events",
   index: { through_sequence: eventItems.length, catching_up: false },

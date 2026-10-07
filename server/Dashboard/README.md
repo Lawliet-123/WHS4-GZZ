@@ -8,6 +8,12 @@ Receiver가 받은 공통 Event, Scoring의 최종 판정, Launcher가 보고한
 
 종합 현황의 판정 도넛·탐지기별 관측 막대를 선택하면 필터된 목록으로 이동한다. 세션 페이지에서는 한 세션의 수신 순번별 관측을 그래프로 확인한다. 그래프는 실제 로드된 응답만 집계하며 원점수를 합산하거나 시간 기준을 추정하지 않는다.
 
+## 화면 테마
+
+상단의 테마 버튼 하나를 누를 때마다 라이트·다크가 번갈아 적용된다. 버튼에는 글자 없이 현재 모드를 나타내는 해·달 아이콘만 표시하고, 툴팁과 접근성 이름은 다음 전환 방향을 안내한다. 표, 그래프, 필터, 조사 패널, 연결 창에도 같은 테마가 적용된다. 최초에는 OS 설정을 따르고, 직접 선택한 뒤에는 그 선택을 우선한다. 선택은 브라우저의 `localStorage` 키 `meccha-dashboard-theme`에 저장되어 새로고침 후에도 유지된다. 저장소가 차단된 경우에도 현재 화면의 전환은 동작하지만 선택을 다시 불러올 수는 없다.
+
+테마는 프론트 기능으로 서버 요청이나 계정 설정 API를 추가하지 않는다. DEMO와 LIVE에서 모두 사용할 수 있으며, 테마 전환은 탐지·판정·필터·연결 상태를 변경하지 않는다. 위험 색상 의미는 두 모드에서 동일하다.
+
 ## 실행
 
 설치된 Vite 기준 Node.js 20.19 이상(20.x) 또는 22.12 이상이 필요하다. 이번 검증에는 Node.js 24.18을 사용했다.
@@ -143,9 +149,11 @@ Authorization: Bearer <GZZ_DASHBOARD_TOKEN>
 - `모듈 신호`는 최신 raw 높은 순 / 불러온 이력 최고 raw 높은 순 정렬을 제공한다. 최고 raw는 화면에 적재한 Event 범위의 관측값이며 서버 전체 이력 최고점이나 현재 활성 위험도라고 부르지 않는다.
 - `GodMode 이력` 탭은 GodMode 전용 이력이다. 모든 탐지기의 공통 이력으로 표시하지 않는다.
 - Launcher 연결 요약을 누르면 `시스템 → 점검 대상만`으로 이동한다. 세션·플레이어·클라이언트와 실패/WARN/SKIPPED·지연·미보고·전송 오류를 확인하고 해당 플레이어 실행 상태로 이동할 수 있다. 정상 종료와 실패, 현재 상태와 마지막 Launcher 보고를 구분한다.
-- 시간은 확인된 `time_basis=session_relative`에만 `T+`를 붙인다. 새 Event의 최초 writer 저장 시각은 `received_at_utc`로 전달하고 화면에서 `수신 … KST`로 표시한다. 이는 관측 시각이 아니며 다른 Event·Heartbeat·갱신 시각에서 세션 시작점을 추측하지 않는다. 기존 Event에 시각이 없으면 `실제 시각 미제공`이다.
+- 시간은 확인된 `time_basis=session_relative`에만 `경과 04:06.771`처럼 분·초·밀리초를 표시한다. `observed_at_utc`는 `관측 2026-10-07 19:12:44.957 KST`, 최초 writer 저장 시각인 `received_at_utc`는 별도 `수신 … KST` 라벨로 표시한다. 관측 시각이 없으면 수신 시각 유무와 관계없이 `관측 시각 미제공`을 유지한다. `sequence`는 서버 저장 순서다.
 
-실제 관측 시각은 명시적 `unix_epoch_ms` 또는 선택적 `observed_at_utc`가 있을 때만 표시할 수 있다. 현재 backend는 `observed_at_utc`를 생성하지 않는다. 기존 탐지기의 `timestamp_ms` 기준이 선언되지 않은 자료에 T+와 실제 관측 시각을 모두 제공하려면 생산자 쪽 시간 계약을 추가로 맞춰야 한다.
+시간 메타데이터는 [Dashboard-A 시간 표시 계약](../dashboard_backend/docs/launcher-event-time.md)을 따른다. Server가 유효한 Launcher 세션 시작 선언과 정수 기준시각·경과시간을 확인하면 `observed_at_utc`를 계산한다. 이는 생산자 시계 기준이며 서버 시계 검증 결과가 아니다. 프론트는 Server의 `time_basis=unknown`을 evidence·ID·모듈·숫자 크기로 다시 해석하지 않으며 기준시각을 새로 계산하지 않는다. 명시적 `unix_epoch_ms`만 원본 값을 epoch로 표시한다. 목록·상세·타임라인·판정 근거는 같은 `eventTime`/`EventTimeLabel`을 사용한다. 시간 메타데이터가 없는 GodMode history 응답은 원본 Event 상세 조회로 보완하고 조회 실패 시 추정하지 않는다.
+
+운영 확인은 병합된 main의 배포 SHA를 확인한 뒤 `normal_full_Light_20261007_190838` / `Light`의 `hide_anywhere`, `kernel_sentinel` 목록·상세에서 기준·관측·원본 evidence/timestamp·sequence를 비교한다. 공개 `/GZZ/`는 합성 데이터만 사용하는 정적 DEMO로 이 검증을 대신하지 않는다. `received_at_utc=null`만으로 writer 또는 index 누락을 단정하거나 과거 수신 시각을 복원하지 않는다. 토큰·전체 로그는 공유하지 않는다.
 
 최종 판정의 출처는 여전히 최상위 `final_verdict`다. 정책 설명이 있어도 Final Verdict 공급자가 없으면 `UNKNOWN`을 유지한다. Scoring snapshot·이력·판정 조회는 하나의 원자적 watermark가 아니므로 수신 중에는 시점 차이가 생길 수 있다. 정책 설명만으로 최종 판정을 덮어쓰지 않으며 다음 polling에서 갱신한다.
 

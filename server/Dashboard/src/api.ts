@@ -139,6 +139,22 @@ function validateEvent(value: unknown, endpoint: string, path: string, status: n
   nullableStringAt(event.log_excerpt, endpoint, `${path}.log_excerpt`, status);
 }
 
+function validateSelfDefenseStatus(value: unknown, endpoint: string, path: string, status: number): void {
+  const item = objectAt(value, endpoint, path, status);
+  for (const key of ["session_id", "player_id", "kind", "event_id"]) {
+    stringAt(item[key], endpoint, `${path}.${key}`, status, false);
+  }
+  for (const key of ["component", "target_module", "status", "scope"]) {
+    nullableStringAt(item[key], endpoint, `${path}.${key}`, status);
+  }
+  if (item.scan_complete !== null) booleanAt(item.scan_complete, endpoint, `${path}.scan_complete`, status);
+  nonNegativeIntegerAt(item.sequence, endpoint, `${path}.sequence`, status);
+  finiteNumberAt(item.timestamp_ms, endpoint, `${path}.timestamp_ms`, status);
+  finiteNumberAt(item.raw_score, endpoint, `${path}.raw_score`, status);
+  stringArrayAt(item.reasons, endpoint, `${path}.reasons`, status);
+  objectAt(item.evidence, endpoint, `${path}.evidence`, status);
+}
+
 function validateFinalVerdict(value: unknown, endpoint: string, path: string, status: number): void {
   const verdict = objectAt(value, endpoint, path, status);
   stringAt(verdict.version, endpoint, `${path}.version`, status, false);
@@ -290,6 +306,11 @@ function decodeOverview(value: unknown, status: number): OverviewResponse {
     stringAt(launcher.player_id, endpoint, `launcher_statuses[${index}].player_id`, status, false);
     validateLauncher(launcher, endpoint, `launcher_statuses[${index}]`, status);
   });
+  if (overview.selfdefense_statuses !== undefined) {
+    arrayAt(overview.selfdefense_statuses, endpoint, "selfdefense_statuses", status).forEach((value, index) => {
+      validateSelfDefenseStatus(value, endpoint, `selfdefense_statuses[${index}]`, status);
+    });
+  }
   stringAt(overview.events_endpoint, endpoint, "events_endpoint", status, false);
   validateIndex(overview.index, endpoint, "index", status);
   return overview as unknown as OverviewResponse;
@@ -649,6 +670,15 @@ function mergeOverviewPages(firstPage: OverviewResponse, pages: OverviewResponse
   const launcherStatuses = new Map(
     firstPage.launcher_statuses.map((item) => [`${item.session_id}:${item.player_id}`, item]),
   );
+  const hasSelfDefense = [firstPage, ...pages].some((page) => page.selfdefense_statuses !== undefined);
+  const selfDefenseStatuses = new Map<string, NonNullable<OverviewResponse["selfdefense_statuses"]>[number]>();
+  for (const page of [firstPage, ...pages]) {
+    for (const item of page.selfdefense_statuses ?? []) {
+      const key = JSON.stringify([item.session_id, item.player_id, item.kind, item.kind === "module_health" ? item.target_module : null]);
+      const previous = selfDefenseStatuses.get(key);
+      if (!previous || item.sequence > previous.sequence) selfDefenseStatuses.set(key, item);
+    }
+  }
 
   for (const page of pages) {
     for (const item of page.sessions) {
@@ -687,6 +717,7 @@ function mergeOverviewPages(firstPage: OverviewResponse, pages: OverviewResponse
     assessments: [...assessments.values()],
     module_statuses: [...moduleStatuses.values()],
     launcher_statuses: mergedLauncherStatuses,
+    ...(hasSelfDefense ? { selfdefense_statuses: [...selfDefenseStatuses.values()] } : {}),
     session_page: lastPage.session_page,
   };
 }

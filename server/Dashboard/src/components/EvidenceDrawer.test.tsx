@@ -27,6 +27,32 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("EvidenceDrawer event clocks", () => {
+  it("uses the same millisecond projection as the list while keeping raw timestamp and storage order", () => {
+    render(<EvidenceDrawer event={{ ...event, sequence: 37, timestamp_ms: 246_771,
+      time_basis: "session_relative", observed_at_utc: "2026-10-07T10:12:44.957Z",
+      received_at_utc: "2026-10-07T10:12:45.012Z" }} onClose={() => undefined} />);
+    expect(screen.getByText("원본 타임스탬프").parentElement?.textContent).toContain("timestamp 246771 ms");
+    expect(screen.getByText("세션 경과").parentElement?.textContent).toContain("경과 04:06.771");
+    expect(screen.getByText("관측 시각").parentElement?.textContent).toContain("2026-10-07 19:12:44.957 KST");
+    expect(screen.getByText("수신 시각").parentElement?.textContent).toContain("2026-10-07 19:12:45.012 KST");
+    expect(screen.getByText("서버 저장 순서").parentElement?.textContent).toContain("#37");
+    expect(screen.getByText("관측 2026-10-07 19:12:44.957 KST")).toBeTruthy();
+    expect(screen.getByText("수신 2026-10-07 19:12:45.012 KST")).toBeTruthy();
+  });
+
+  it("does not reinterpret unknown server basis from valid-looking evidence", () => {
+    render(<EvidenceDrawer event={{ ...event, evidence: {
+      timestamp_basis: "launcher_session_start", session_start_unix_ms: 1_791_367_718_186,
+      time_basis: "unix_epoch_ms",
+    }, observed_at_utc: "2026-10-07T10:12:44.957Z", received_at_utc: null }} onClose={() => undefined} />);
+    expect(screen.getByText("시간 기준").parentElement?.textContent).toContain("unknown");
+    expect(screen.getByText("관측 시각").parentElement?.textContent).toContain("관측 시각 미제공");
+    expect(screen.queryByText("세션 경과")).toBeNull();
+    expect(screen.queryByText(/KST/)).toBeNull();
+  });
+});
+
 describe("EvidenceDrawer accessibility", () => {
   it("presents a positive raw score as an observation, not a server verdict", () => {
     render(<EvidenceDrawer event={event} onClose={() => undefined} />);
