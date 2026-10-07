@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 /logs/
 .venv-dashboard-integration/
+.venv-esp-calibration/

@@ -1,0 +1,67 @@
+ESP calibration 실제 확인 결과 / 2026-10-07
+
+이번 자료는 최신 main c782c2e 기반의 실제 게임 -> 운영 ESP 수집기 -> Shared
+durable sender -> fresh local C 서버 -> 저장 Event -> 실제 Scoring 조회 자료다.
+공개 Vercel DEMO 및 운영 HTTPS 서버의 자료는 아니다.
+
+정상 세션
+
+session_id: normal_calibration_20261007_run01
+player_id: calibration_player
+세션 시작: 2026-10-07T12:09:43.847Z / 21:09:43.847 KST
+세션 종료: 2026-10-07T12:11:43.878Z / 21:11:43.878 KST
+사용자 확인: 테스트용 핵을 모두 끄고 승인된 비공개방에서 정상 플레이 중.
+직접 행동 시작/종료 시각은 자동 관측하지 않았으므로 null을 유지한다.
+
+Event 48개: raw 1은 38개, raw 2는 10개.
+process_access 12개, window_overlap 36개이며 전부 핵의 직접 근거가 아니다.
+정상에서 높은 점수가 나온 기록도 삭제·재분류하거나 0으로 바꾸지 않는다.
+Shared queued 48 / ACK 48 / pending 0 / failed 0.
+실제 저장된 48개 Event의 UUID, 공통 7필드, 저장 sequence, 목록/상세를 대조했다.
+Scoring은 INCONCLUSIVE / assessment_complete=false를 반환했다.
+score와 confidence는 null이며 ESP calibration pending을 그대로 유지한다.
+Event의 시간 기준은 UNKNOWN인 경우 추정하지 않고 원본으로 남긴다.
+
+공개 제출 파일
+
+ReplayAnalyzer/replay-data/esp/normal_calibration_20261007_run01/manifest.json
+ReplayAnalyzer/replay-data/esp/normal_calibration_20261007_run01/events.jsonl
+ReplayAnalyzer/replay-data/esp/normal_calibration_20261007_run01/calibration-evidence.json
+
+위 3개 파일의 개인정보·전체 경로·인증값 검사를 통과했고 raw/SQLite/setup은
+포함하지 않는다. public payload와 서버 readback, proof 해시, 48 ACK를 확인하는
+회귀 테스트 9개를 추가했다. 원본 capture 해시는 참조이며 공개 JSONL 해시와
+동일하다고 주장하지 않는다. 늦게 도착한 sensor timestamp도 저장 순서 그대로다.
+
+양성 세션 상태
+
+esp_calibration_20261007_run01은 PoC 실행 이전 warmup 관측 부족으로 실패했다.
+성공한 CHEAT Replay로 내보내지 않았다. 첫 warmup은 Sysmon의 과거 512개 기록을
+읽은 뒤 충분한 관측을 확립하지 못했다. 정확한 원인은 native probe로 확정하지 않았다.
+재시험을 위해 과거 기록을 준비 단계에서만 prime하고 bounded warmup을 보완했다.
+숨겨진 worker의 진행·오류 종류/단계는 개인정보 없는 JSON 진단으로 전달한다.
+collector/sender의 종료 검증 후에만 새 Replay를 공개하고 중복 close를 제거했다.
+
+별도로 EvtNext가 정상 열거 종료(259)를 실패로 처리해 이미 읽은 Event를 버리는
+오류를 모의 API로 재현하고 최소 수정했다. EvtNext의 259만 종료로 처리하며
+다른 API/오류와 truncated는 계속 실패/관측 부족이다. 이것을 실제 warmup 실패의
+확정 원인으로 표현하지 않는다. 근거:
+https://learn.microsoft.com/en-us/windows/win32/api/winevt/nf-winevt-evtnext
+
+esp_calibration_20261007_run02 재시험은 Windows 권한 승인이 취소되어 실행되지 않았다.
+실제 ESP ON 기능 관측 -> Server 저장 -> Scoring 양성 자료는 아직 미완료다.
+없는 ON/OFF, remote draw, 실제 행동 시각, 잔존 확인을 만들어 넣지 않는다.
+
+실행 안전 및 정리
+
+기존 게임과 소유하지 않은 프로세스는 종료하지 않았다. 각 수집 세션은 별도
+로컬 저장소를 사용했고 기존 운영 DB와 접속키는 사용하지 않았다.
+두 disposable loopback 서버는 stop request로 종료했다.
+일시 활성화한 Sysmon은 복원 승인이 취소되어 아직 원복 완료가 아니다.
+관리자 PowerShell에서 realgame_builtin_sysmon.ps1 Cleanup을 실행해 원래 Disabled
+상태로 복원해야 한다. 이 도구는 재부팅하거나 기존 로그를 지우지 않는다.
+복원이 확인되기 전 완료로 표시하지 않는다.
+
+Shared 7필드, production PID+생성 시각 제외, Receiver/Scoring/Launcher 계약,
+원본 ESP 소스 및 threshold는 변경하지 않았다. LocalGuard YARA는 input_signature
+담당의 별도 자료이며 이 DLL/ESP 시험을 production YARA positive로 제출하지 않는다.

@@ -170,6 +170,68 @@ class _MissingEventLog(_FakeEventLog):
 
 
 class SysmonPollingTests(unittest.TestCase):
+    def test_evt_next_exhaustion_is_available_and_retains_preceding_records(self) -> None:
+        class Exhausted(_FakeEventLog):
+            def EvtNext(self, query, count):
+                result = super().EvtNext(query, count)
+                if not result:
+                    error = OSError("synthetic normal enumeration exhaustion")
+                    error.winerror = 259
+                    raise error
+                return result
+        poller = SysmonPoller(evt_module=Exhausted([[event_xml(2), event_xml(1)]]))
+        result = poller.poll()
+        self.assertTrue(result.status.available)
+        self.assertEqual(result.status.code, "ready")
+        self.assertEqual([event.record_id for event in result.events], [1, 2])
+        self.assertEqual(result.scanned_count, 2)
+        self.assertFalse(result.truncated)
+        self.assertEqual(poller.last_record_id, 2)
+
+    def test_empty_evt_next_exhaustion_is_successful_empty_observation(self) -> None:
+        class Empty(_FakeEventLog):
+            def EvtNext(self, query, count):
+                error = OSError(259, "synthetic enumeration exhausted")
+                raise error
+        result = SysmonPoller(evt_module=Empty([[]])).poll()
+        self.assertTrue(result.status.available)
+        self.assertEqual(result.events, ())
+        self.assertEqual(result.scanned_count, 0)
+        self.assertFalse(result.truncated)
+
+    def test_other_evt_next_errors_and_259_from_other_apis_remain_unavailable(self) -> None:
+        for operation, code in (("next", 5), ("next", 1460), ("query", 259), ("render", 259), ("channel", 259)):
+            class Failed(_FakeEventLog):
+                def fail(self):
+                    error = OSError("synthetic genuine API failure")
+                    error.winerror = code
+                    raise error
+                def EvtOpenChannelConfig(self, channel):
+                    if operation == "channel": self.fail()
+                    return super().EvtOpenChannelConfig(channel)
+                def EvtQuery(self, *values):
+                    if operation == "query": self.fail()
+                    return super().EvtQuery(*values)
+                def EvtNext(self, *values):
+                    if operation == "next": self.fail()
+                    return super().EvtNext(*values)
+                def EvtRender(self, *values):
+                    if operation == "render": self.fail()
+                    return super().EvtRender(*values)
+            with self.subTest(operation=operation, code=code):
+                result = SysmonPoller(evt_module=Failed([[event_xml(1)]])).poll()
+                self.assertFalse(result.status.available)
+                self.assertEqual(result.status.error_code, code)
+                self.assertEqual(result.events, ())
+
+    def test_scan_cap_stays_truncated_even_if_next_call_would_be_exhausted(self) -> None:
+        result = SysmonPoller(evt_module=_FakeEventLog([[event_xml(3), event_xml(2), event_xml(1)]]),
+                              max_events_per_poll=2).poll()
+        self.assertTrue(result.status.available)
+        self.assertTrue(result.truncated)
+        self.assertEqual(result.scanned_count, 2)
+        self.assertEqual([event.record_id for event in result.events], [2, 3])
+
     def test_reports_disabled_and_missing_channel_explicitly(self) -> None:
         disabled = get_sysmon_status(_FakeEventLog([], enabled=False))
         self.assertEqual(disabled.code, "disabled")

@@ -1,6 +1,7 @@
-"""Bounded local ESP capture for an explicitly authorized private test room.
+"""Bounded ESP capture for an explicitly authorized private test room.
 
-No game launch, injection, memory writes, installation or network transmission.
+No game launch, injection, memory writes or installation. Network transmission
+is opt-in and restricted to the disposable loopback realgame_server setup.
 The unmodified ESP requests pymem's ALL_ACCESS handle/SeDebugPrivilege defaults.
 Only successful, observed sessions are exported; failures remain local.
 """
@@ -40,6 +41,76 @@ def emit(kind: str, **fields: object) -> None:
     print(json.dumps({"kind": kind, **fields}, allow_nan=False, sort_keys=True), flush=True)
 
 
+def worker_diagnostic(record: object) -> dict | None:
+    """Project fixed diagnostic fields only; never relay traceback/body/path text."""
+    if type(record) is not dict:
+        return None
+    kind = record.get("kind")
+    scalar_fields = {
+        "warmup_complete": ("healthy_poll_count",),
+        "warmup_progress": ("poll_count", "healthy_poll_count", "elapsed_ms", "budget_ms"),
+        "esp_handle_open_observed": ("timestamp_ms",),
+        "esp_verified_on": ("timestamp_ms", "first_read_ready_ms", "local_player_count", "remote_player_count"),
+        "esp_remote_geometry_observed": ("timestamp_ms",),
+        "esp_verified_off": ("timestamp_ms",),
+        "replay_exported": ("event_count", "attributable_esp_event_count"),
+    }
+    if kind in scalar_fields:
+        result = {"kind": kind}
+        for key in scalar_fields[kind]:
+            value = record.get(key)
+            if type(value) is not int or not 0 <= value <= 9007199254740991:
+                return None
+            result[key] = value
+        return result
+    if kind in {"capture_failed", "capture_rejected"}:
+        result = {"kind": kind}
+        for key in ("error_type", "failure_stage"):
+            value = record.get(key)
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", value):
+                return None
+            result[key] = value
+        return result
+    if kind == "collector_health":
+        if type(record.get("healthy")) is not bool or type(record.get("sensors")) is not dict:
+            return None
+        confidence = record.get("observation_confidence")
+        if confidence is not None and (type(confidence) not in (int, float)
+                or not math.isfinite(confidence) or not 0 <= confidence <= 100):
+            return None
+        statuses = {"waiting", "online", "offline", "unavailable", "error", "disabled", "unknown"}
+        result = {"kind": kind, "healthy": record["healthy"], "observation_confidence": confidence,
+                  "status": record.get("status") if record.get("status") in VALID_STATUS | {"INSUFFICIENT"} else "UNKNOWN",
+                  "sensors": {name: value if value in statuses else "unknown"
+                              for name, value in record["sensors"].items() if name in SENSORS}}
+        return result
+    return None
+
+
+def relay_worker_diagnostics(stream, *, output=emit) -> dict:
+    """Drain a bounded line at a time, suppressing arbitrary native stderr."""
+    counts = {"forwarded": 0, "ignored": 0}
+    partial = False
+    while True:
+        line = stream.readline(8193)
+        if not line:
+            return counts
+        if partial or len(line) > 8192:
+            if not partial:
+                counts["ignored"] += 1
+            partial = not line.endswith("\n")
+            continue
+        try:
+            projected = worker_diagnostic(json.loads(line))
+        except (ValueError, TypeError):
+            projected = None
+        if projected is None:
+            counts["ignored"] += 1
+            continue
+        output(**projected)
+        counts["forwarded"] += 1
+
+
 def checked_call(function, *values, **options):
     try:
         return function(*values, **options)
@@ -69,6 +140,21 @@ def isolated_environment(run_dir: Path, windows_root: str, python: Path) -> dict
             "PATH": os.pathsep.join((str(python.parent), str(windows / "System32"), str(windows))),
             "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONIOENCODING": "utf-8", **{key: str(value) for key, value in locations.items()}}
+
+
+def direct_python_command(command: list[str], environment: dict[str, str]) -> list[str]:
+    """Preserve venv packages without a Windows redirector changing the child PID."""
+    if os.name != "nt" or sys.prefix == sys.base_prefix:
+        return command
+    base = getattr(sys, "_base_executable", "")
+    same = lambda left, right: os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+    if (not command or not base or not same(command[0], sys.executable)
+            or same(base, sys.executable) or not os.path.isfile(base)):
+        raise ValueError("A direct owned Python interpreter is required for exact child PID observations")
+    # Same method as the production Launcher and stdlib multiprocessing. Python
+    # consumes this launch marker; no inherited live configuration is copied.
+    environment["__PYVENV_LAUNCHER__"] = sys.executable
+    return [base, *command[1:]]
 
 
 def select_game(processes: object, game_pid: int, expected_created: float | None = None):
@@ -123,9 +209,9 @@ def platform_preflight(game_pid: int, expected_created: float | None = None):
     return select_game(find_processes_by_name(GAME_EXE), game_pid, expected_created)
 
 
-def verified_frame(module, overlay, now: float) -> dict[str, object] | None:
+def verified_frame(module, overlay, now: float, *, frame=None) -> dict[str, object] | None:
     """Extract scalar readiness only from a real, fresh original render snapshot."""
-    frame = overlay._snapshots.latest()
+    frame = overlay._snapshots.latest() if frame is None else frame
     if not isinstance(frame, module.FrameRenderSnapshot) or not overlay.isVisible() or not overlay.config.enabled:
         return None
     if frame.error is not None or not isinstance(frame.camera, module.CameraSnapshot):
@@ -193,6 +279,135 @@ def lifecycle_timings(proof: dict) -> tuple[int, int, int]:
     return on, round((ready_epoch - t0) * 1000), off
 
 
+def validate_remote_paint(record: dict, child_pid: int, game_pid: int, t0: float, latest: float) -> dict:
+    facts = validate_ready(dict(record, kind="esp_read_ready"), child_pid, game_pid, t0, latest)
+    if record.get("kind") != "esp_remote_paint" or record.get("completed_paint") is not True:
+        raise ValueError("An actual completed remote geometry paint is required")
+    for key in ("remote_box_lines", "remote_skeleton_lines", "remote_player_draw_count"):
+        if type(record.get(key)) is not int or not 0 <= record[key] <= 100000:
+            raise ValueError("Invalid actual remote draw counts")
+    if (facts["remote_player_count"] < record["remote_player_draw_count"]
+            or record["remote_player_draw_count"] < 1
+            or record["remote_box_lines"] + record["remote_skeleton_lines"] < 1):
+        raise ValueError("Remote geometry was not drawn")
+    return {**facts, **{key: record[key] for key in (
+        "remote_box_lines", "remote_skeleton_lines", "remote_player_draw_count")}}
+
+
+def record_remote_activity(proof: dict, facts: dict) -> None:
+    """Track unique observed paint bounds, not user action or continuous visibility."""
+    activity = proof.get("remote_activity")
+    if activity is not None:
+        if facts["observed_at_epoch"] < activity["last_observed_epoch"]:
+            raise ValueError("Remote activity timestamps regressed")
+        if facts["frame_sequence"] < activity["last_frame_sequence"]:
+            raise ValueError("Remote activity frame sequence regressed")
+        if facts["frame_sequence"] == activity["last_frame_sequence"]:
+            return
+        gap = facts["observed_at_epoch"] - activity["last_observed_epoch"]
+        activity["maximum_observation_gap_seconds"] = max(activity["maximum_observation_gap_seconds"], gap)
+        activity.update(last_observed_epoch=facts["observed_at_epoch"], last_frame_sequence=facts["frame_sequence"],
+                        unique_frame_count=activity["unique_frame_count"] + 1)
+        for key in ("remote_box_lines", "remote_skeleton_lines"):
+            activity[key] += facts[key]
+    else:
+        proof["remote_activity"] = {
+            "first_observed_epoch": facts["observed_at_epoch"], "last_observed_epoch": facts["observed_at_epoch"],
+            "first_frame_sequence": facts["frame_sequence"], "last_frame_sequence": facts["frame_sequence"],
+            "unique_frame_count": 1, "maximum_observation_gap_seconds": 0.,
+            "remote_box_lines": facts["remote_box_lines"], "remote_skeleton_lines": facts["remote_skeleton_lines"],
+            "basis": "first/last completed original remote geometry painter calls",
+            "continuous_visibility_claimed": False, "screenshot_verified": False,
+            "user_behavior_start_ms": None, "user_behavior_end_ms": None}
+
+
+def utc_timestamp(epoch: float) -> str:
+    if type(epoch) not in (float, int) or not math.isfinite(epoch) or epoch <= 0:
+        raise ValueError("Observed UTC time is invalid")
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def module_inventory(game_pid: int) -> dict:
+    """Observe the exact game's loaded modules; retain no names, paths or addresses."""
+    from client.LocalGuard.external_access.module_integrity.module_sensor import enumerate_process_modules
+    try:
+        modules = enumerate_process_modules(game_pid)
+        if not modules or any(not module.path for module in modules):
+            raise ValueError("Module identity unavailable")
+        identities = sorted({hashlib.sha256((ntpath.normcase(module.path) + "\0" + str(module.image_size))
+                                            .encode("utf-8")).hexdigest() for module in modules})
+        return {"status": "OBSERVED", "observed_at_utc": utc_timestamp(time.time()), "identities": identities}
+    except Exception as error:
+        return {"status": "UNKNOWN", "error_type": type(error).__name__, "identities": []}
+
+
+def module_residue(before: dict, after: dict) -> dict:
+    if before.get("status") != "OBSERVED" or after.get("status") != "OBSERVED":
+        return {"status": "UNKNOWN", "attribution": "NOT_ASSESSED"}
+    added = sorted(set(after["identities"]) - set(before["identities"]))
+    removed = sorted(set(before["identities"]) - set(after["identities"]))
+    return {"status": "UNCHANGED" if not added and not removed else "CHANGED", "attribution": "NOT_ASSESSED",
+            "added_identity_sha256": added, "removed_identity_sha256": removed,
+            "basis": "game loaded-module path/size identity snapshots, not on-disk integrity or injection proof"}
+
+
+def exact_process_residue(child, created: float, *, creation_time_provider=None) -> dict:
+    """Use the owned subprocess handle, not a bare PID, to prove its exit."""
+    from anti_esp.windows_api import get_process_creation_time
+    try:
+        birth = (creation_time_provider or get_process_creation_time)(child.pid)
+        reused = birth is not None and not math.isclose(birth, created, abs_tol=1e-6, rel_tol=0)
+        if child.poll() is not None:
+            return {"status": "PID_REUSED_NOT_OWNED" if reused else "ABSENT",
+                    "basis": "owned subprocess handle confirms termination", "descendants": "NOT_ASSESSED"}
+        return {"status": "PRESENT" if birth is not None and not reused else "UNKNOWN"}
+    except (OSError, ValueError):
+        return {"status": "UNKNOWN"}
+
+
+class CalibrationSink:
+    """Own a fresh Shared sender; queue receipts are never treated as Server ACKs."""
+    def __init__(self, setup: dict, run_dir: Path, *, client_factory=None):
+        from shared.client import DetectionClient
+        from shared.config import ClientConfig
+        config = ClientConfig(server_url=setup["endpoint"], api_token=setup["detection_token"],
+            outbox_path=run_dir / "shared-calibration-outbox.sqlite3", allow_insecure_loopback=True,
+            use_environment_proxy=False, timeout_seconds=2, retry_max_seconds=4)
+        self.client = (client_factory or DetectionClient)(config)
+        self.expected_events = {}
+        self._lock = threading.Lock()
+
+    def queue(self, payload: dict, outbox_id: str) -> bool:
+        from anti_esp.shared_transport import SharedEventSink, validate_common_event
+        from shared.errors import SharedError
+        event = json.loads(json.dumps(validate_common_event(payload), allow_nan=False))
+        event_id = SharedEventSink._event_id(outbox_id)
+        with self._lock:
+            if event_id in self.expected_events and self.expected_events[event_id] != event:
+                raise ValueError("Stable ESP Event ID has conflicting payloads")
+            try:
+                self.client.send_detection(event, event_id=event_id)
+            except SharedError:
+                return False
+            self.expected_events[event_id] = event
+        return True
+
+    def verify_delivery(self) -> dict:
+        flushed = self.client.flush(timeout=10)
+        status = self.client.status()
+        with self._lock:
+            expected = len(self.expected_events)
+        if (flushed is not True or status.pending != 0 or status.failed != 0
+                or status.acknowledged_this_run < expected):
+            raise ValueError("Actual Shared delivery is incomplete; local pending data retained")
+        return {"pending": status.pending, "failed": status.failed,
+                "acknowledged_this_run": status.acknowledged_this_run, "queued_unique_events": expected}
+
+    def close(self) -> None:
+        if not self.client.close(timeout=5):
+            raise ValueError("Owned Shared sender did not stop")
+
+
 def esp_child(args) -> int:
     game = platform_preflight(args.game_pid, args.expected_created)
     if hashlib.sha256(ESP_SOURCE.read_bytes()).hexdigest() != ESP_SHA256:
@@ -203,6 +418,12 @@ def esp_child(args) -> int:
     spec.loader.exec_module(module)
     original_init, original_paint = module.Overlay.__init__, module.Overlay.paintEvent
     original_pymem = module.pymem.Pymem
+    spec_observer = importlib.util.spec_from_file_location("realgame_paint_observer",
+        Path(__file__).with_name("realgame_paint_observer.py"))
+    observer_module = importlib.util.module_from_spec(spec_observer)
+    sys.modules[spec_observer.name] = observer_module
+    spec_observer.loader.exec_module(observer_module)
+    paint_observer = observer_module.CompletedPaintObserver(module)
     from anti_esp.windows_api import find_processes_by_name
     class PinnedPymem(original_pymem):
         def __init__(self, process_name=None, *values, **options):
@@ -235,17 +456,28 @@ def esp_child(args) -> int:
     module.pymem.Pymem = PinnedPymem
     ready = False
     last_heartbeat = 0.
+    last_remote = 0.
+    last_remote_sequence = -1
 
     def measured_paint(overlay, event):
-        nonlocal ready
-        original_paint(overlay, event)
-        if ready:
+        nonlocal ready, last_remote, last_remote_sequence
+        observation = paint_observer.paint(overlay, event, original_paint)
+        if observation is None:
             return
-        facts = verified_frame(module, overlay, time.monotonic())
+        now = time.monotonic()
+        facts = verified_frame(module, overlay, now, frame=observation.frame)
         if facts is not None and overlay.esp.pm.process_id == game.pid:
-            ready = True
-            emit("esp_read_ready", source_sha256=ESP_SHA256, pid=os.getpid(), game_pid=game.pid,
-                 observed_at_epoch=time.time(), **facts)
+            if not ready:
+                ready = True
+                emit("esp_read_ready", source_sha256=ESP_SHA256, pid=os.getpid(), game_pid=game.pid,
+                     observed_at_epoch=time.time(), **facts)
+            if (observation.remote_player_draw_count > 0 and facts["frame_sequence"] > last_remote_sequence
+                    and now - last_remote >= 0.5):
+                emit("esp_remote_paint", source_sha256=ESP_SHA256, pid=os.getpid(), game_pid=game.pid,
+                    observed_at_epoch=time.time(), completed_paint=True, **facts,
+                    remote_box_lines=observation.remote_box_lines, remote_skeleton_lines=observation.remote_skeleton_lines,
+                    remote_player_draw_count=observation.remote_player_draw_count)
+                last_remote, last_remote_sequence = now, facts["frame_sequence"]
 
     def bounded_init(overlay, *values, **options):
         original_init(overlay, *values, **options)
@@ -398,8 +630,16 @@ def annotate_completed(session_dir: Path, manifest: dict, proof: dict) -> None:
     scenario = proof.get("scenario")
     if metadata.get("requested_scenario") != scenario:
         raise ValueError("Requested scenario differs from validated proof")
+    if proof.get("central_telemetry", "off") != "off" and proof.get("server_readback_verified") is not True:
+        raise ValueError("Central capture requires verified actual Server readback")
     if scenario == "esp":
         on, first_ready, off = lifecycle_timings(proof)
+        if proof.get("remote_rendering_required") is True:
+            activity = proof.get("remote_activity") or {}
+            if (type(activity.get("unique_frame_count")) is not int or activity["unique_frame_count"] < 2
+                    or not proof["ready"]["observed_at_epoch"] <= activity.get("first_observed_epoch", -1)
+                        <= activity.get("last_observed_epoch", -1) <= proof["esp_exit_epoch"]):
+                raise ValueError("Actual distinct remote geometry observation is required")
         metadata.update(cheat_on_ms=on, first_read_ready_ms=first_ready, cheat_off_ms=off)
     elif scenario == "normal":
         if proof.get("handle_open") is not None or proof.get("ready") is not None or proof.get("esp_exit_epoch") is not None:
@@ -420,16 +660,102 @@ def annotate_completed(session_dir: Path, manifest: dict, proof: dict) -> None:
         "fresh_read_heartbeat_count": proof.get("fresh_read_heartbeat_count", 0),
         "maximum_heartbeat_gap_seconds": proof.get("maximum_heartbeat_gap_seconds"),
         "remote_player_count_at_first_ready": proof["ready"]["remote_player_count"] if proof.get("ready") else None,
-        "remote_rendering_claimed": False}
+        "remote_rendering_claimed": bool(proof.get("remote_activity"))}
+    if "acquisition_end_epoch" in proof:
+        t0, ended = proof["session_t0_epoch"], proof["acquisition_end_epoch"]
+        if (not all(type(value) in (int, float) and math.isfinite(value) for value in (t0, ended))
+                or ended < t0 or (scenario == "esp" and proof["esp_exit_epoch"] > ended)):
+            raise ValueError("Acquisition end precedes session start")
+        if scenario == "esp" and not (
+                t0 <= proof["program_spawn_before_epoch"] <= proof["handle_open"]["observed_at_epoch"]
+                and proof["program_spawn_before_epoch"] <= proof["esp_spawn_epoch"] <= proof["esp_exit_epoch"]):
+            raise ValueError("Observed program lifecycle bounds are inconsistent")
+        activity = proof.get("remote_activity")
+        metadata["calibration_observation"] = {
+            "session_start_utc": utc_timestamp(t0), "session_end_utc": utc_timestamp(ended),
+            "timestamp_ms_basis": "milliseconds since session_start_utc",
+            "program_spawn_bounds_ms": [round((proof[key] - t0) * 1000) for key in
+                ("program_spawn_before_epoch", "esp_spawn_epoch")] if proof.get("ready") else None,
+            "program_exit_ms": metadata["cheat_off_ms"],
+            "actual_remote_geometry": {**activity,
+                "first_observed_ms": round((activity["first_observed_epoch"] - t0) * 1000),
+                "last_observed_ms": round((activity["last_observed_epoch"] - t0) * 1000)} if activity else None,
+            "human_behavior_start_ms": None, "human_behavior_end_ms": None,
+            "human_behavior_status": "NOT_OBSERVED",
+            "owned_esp_process_after_off": proof.get("process_residue", {"status": "NOT_STARTED"}),
+            "game_module_snapshot_delta": proof.get("module_residue", {"status": "UNKNOWN"}),
+            "preexisting_poc_absence": "NOT_ASSESSED", "central_telemetry": proof["central_telemetry"],
+            "shared_delivery": proof.get("shared_delivery"),
+            "server_evidence_sha256": proof.get("server_evidence_sha256")}
     updated = dict(manifest, test_metadata=metadata)
     temporary = session_dir / (".manifest-realgame-" + uuid4().hex + ".tmp")
     write_json(temporary, updated)
     temporary.replace(session_dir / "manifest.json")
 
 
+def save_owned_proof(run_dir: Path, proof: dict) -> None:
+    temporary = run_dir / (".lifecycle-proof-" + uuid4().hex + ".tmp")
+    write_json(temporary, proof)
+    temporary.replace(run_dir / "lifecycle-proof.json")
+
+
+def publish_replay(session_dir: Path, output_root: Path, run_dir: Path, server_document, *, exporter) -> Path:
+    """Enrich a new private staging directory before atomic, no-overwrite publication."""
+    staging = run_dir / "replay-staging"
+    staging.mkdir(exist_ok=False)
+    candidate = exporter(session_dir, staging)
+    replay_path = candidate / "manifest.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    metadata = json.loads((session_dir / "manifest.json").read_text(encoding="utf-8"))["test_metadata"]
+    replay["source"]["realgame_validation"] = metadata["timing_provenance"]
+    replay["source"]["calibration_observation"] = metadata["calibration_observation"]
+    if server_document is not None:
+        # Preserve the exporter's exact JSON serialization so the public file
+        # matches the SHA-256 linked by the validated manifest.
+        body = json.dumps(server_document, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8") + b"\n"
+        if metadata["calibration_observation"].get("server_evidence_sha256") != hashlib.sha256(body).hexdigest():
+            raise ValueError("Public Server evidence does not match its validated file hash")
+        with (candidate / "calibration-evidence.json").open("xb") as stream:
+            stream.write(body)
+    temporary = candidate / (".manifest-realgame-" + uuid4().hex + ".tmp")
+    write_json(temporary, replay)
+    temporary.replace(replay_path)
+    output_root.mkdir(parents=True, exist_ok=True)
+    destination = output_root / session_dir.name
+    if destination.exists():
+        raise ValueError("Replay destination already exists")
+    # This command requires Windows, where rename refuses existing destinations.
+    # Partial enriched candidates never appear under the public replay-data root.
+    candidate.rename(destination)
+    return destination
+
+
 def warmup_settings(settings, run_dir: Path, session_id: str):
     return replace(settings, database_path=run_dir / "warmup.sqlite3",
         telemetry=replace(settings.telemetry, session_id=session_id, scenario="unvalidated_warmup"))
+
+
+def warmup_budget(value) -> float:
+    if type(value) not in (float, int) or not math.isfinite(value) or not 1 <= value <= 180:
+        raise ValueError("Warmup timeout must be bounded in 1..180 seconds")
+    return float(value)
+
+
+def warmup_poller(factory):
+    # A new capture begins only after warmup. Prime retained Event 10 RecordIDs
+    # without replaying pre-session records through file fingerprint/signature
+    # scoring. The same production poller emits subsequent new records normally.
+    # Partial/truncated prime results remain insufficient; no log is cleared.
+    return factory(include_existing=False)
+
+
+def close_capture_resource(resource, proof: dict, key: str) -> None:
+    """Close an owned resource exactly once successfully, retry only failures."""
+    if key not in {"collector_closed", "shared_sender_closed"}:
+        raise ValueError("Unknown owned capture resource")
+    if proof.get(key) is not True:
+        resource.close()
+        proof[key] = True
 
 
 def capture_worker(args) -> int:
@@ -446,14 +772,16 @@ def capture_worker(args) -> int:
     def exact_game_provider(name):
         return (select_game(find_processes_by_name(name), game.pid, game.created_at),)
     # Warmup is persisted separately and is never eligible for Replay labels.
-    poller = SysmonPoller(include_existing=True)
+    warmup_timeout = warmup_budget(args.warmup_timeout)
+    poller = warmup_poller(SysmonPoller)
     warmup_id = args.session_id + "_warmup"
     warmup_writer = SessionTelemetryWriter(run_dir / "warmup", session_id=warmup_id,
         game_executable=GAME_EXE, player_id=args.player_id, test_metadata={"scenario": "unvalidated_warmup"})
     warmup = checked_call(AntiEspController, warmup_settings(settings, run_dir, warmup_id),
         telemetry_writer=warmup_writer, process_provider=exact_game_provider, poller=poller,
-        anticheat_pid_provider=lambda: (), team_event_sink=None)
+        team_event_sink=None)
     warmup_started = time.monotonic()
+    last_warmup_progress = -1
     try:
         warmup.start()
         while True:
@@ -461,9 +789,16 @@ def capture_worker(args) -> int:
             if warmup.fatal_error is not None:
                 raise ValueError("Production warmup collector failed")
             summary = json.loads(warmup_writer.manifest_path.read_text("utf-8")).get("observation_summary", {})
+            elapsed = time.monotonic() - warmup_started
+            if int(elapsed) != last_warmup_progress:
+                emit("warmup_progress", poll_count=int(summary.get("poll_count", 0)),
+                     healthy_poll_count=int(summary.get("healthy_poll_count", 0)),
+                     elapsed_ms=round(elapsed * 1000), budget_ms=round(warmup_timeout * 1000))
+                emit("collector_health", **safe_health(warmup))
+                last_warmup_progress = int(elapsed)
             if safe_health(warmup)["healthy"] and summary.get("healthy_poll_count", 0) >= 2:
                 break
-            if time.monotonic() - warmup_started > 30:
+            if elapsed > warmup_timeout:
                 raise ValueError("Production collector did not establish healthy warmup coverage")
             time.sleep(0.1)
     except BaseException as error:
@@ -473,21 +808,39 @@ def capture_worker(args) -> int:
     finally:
         warmup.close()
     emit("warmup_complete", healthy_poll_count=summary["healthy_poll_count"], replay_eligible=False)
+    sink = http = None
+    if args.server_setup is not None:
+        from client.Launcher.realgame_e2e import read_setup
+        from server.dashboard_backend.calibration_export import create_http, collect_evidence, export_evidence
+        http = create_http(args.server_setup)
+        # A new capture must not adopt previously stored events for its identity.
+        collect_evidence(http, args.session_id, args.player_id, expected_events={}, time_budget_seconds=20)
+        sink = CalibrationSink(read_setup(args.server_setup), run_dir)
+    modules_before = module_inventory(game.pid)
     t0, started = time.time(), time.monotonic()
     deadline = started + args.duration
-    writer = SessionTelemetryWriter(run_dir / "sessions", session_id=args.session_id,
-        game_executable=GAME_EXE, player_id=args.player_id,
-        test_metadata={"scenario": "unvalidated_realgame", "requested_scenario": args.scenario,
-                       "cheat_on_ms": None, "cheat_off_ms": None})
-    controller = checked_call(AntiEspController, settings, telemetry_writer=writer, session_started_at=t0,
-                                   process_provider=exact_game_provider, poller=poller,
-                                   anticheat_pid_provider=lambda: (), team_event_sink=None)
+    try:
+        writer = SessionTelemetryWriter(run_dir / "sessions", session_id=args.session_id,
+            game_executable=GAME_EXE, player_id=args.player_id,
+            test_metadata={"scenario": "unvalidated_realgame", "requested_scenario": args.scenario,
+                           "cheat_on_ms": None, "cheat_off_ms": None})
+        # Retain the production birth-checked Launcher PID exclusions. Only the
+        # unregistered owned PoC, not our other collectors, should be detected.
+        controller = checked_call(AntiEspController, settings, telemetry_writer=writer, session_started_at=t0,
+            process_provider=exact_game_provider, poller=poller, team_event_sink=sink.queue if sink else None)
+    except BaseException:
+        if sink is not None:
+            sink.close()
+        raise
     child = None
     messages = queue.Queue()
     proof = {"schema_version": "meccha.realgame-esp-lifecycle.v1", "session_id": args.session_id,
              "scenario": args.scenario, "session_t0_epoch": t0, "handle_open": None, "ready": None, "esp_exit_epoch": None,
-             "forced_termination": False, "central_telemetry": "off", "source_sha256": ESP_SHA256,
+             "forced_termination": False, "central_telemetry": "disposable_loopback" if sink else "off",
+             "source_sha256": ESP_SHA256, "remote_activity": None,
              "fresh_read_heartbeat_count": 0, "maximum_heartbeat_gap_seconds": 0.}
+    require_remote = bool(args.server_setup) or args.require_remote_rendering
+    proof["remote_rendering_required"] = require_remote
     last_health = None
     active_until = None
     ready_deadline = None
@@ -510,25 +863,33 @@ def capture_worker(args) -> int:
                         "--approved-private-test-room",
                         "--run-dir", str(run_dir), "--game-pid", str(game.pid), "--expected-created", str(game.created_at),
                         "--deadline", str(deadline + 5)]
-                    child = subprocess.Popen(command, cwd=run_dir, env=dict(os.environ), stdout=subprocess.PIPE,
+                    proof["program_spawn_before_epoch"] = time.time()
+                    child_environment = dict(os.environ)  # Already the worker's allowlisted owned environment.
+                    command = direct_python_command(command, child_environment)
+                    child = subprocess.Popen(command, cwd=run_dir, env=child_environment, stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL, text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
                     def read_messages():
                         for line in child.stdout:
                             if len(line) <= 4096:
                                 try:
                                     record = json.loads(line)
-                                    if isinstance(record, dict) and record.get("kind") in {"esp_handle_open", "esp_read_ready", "esp_read_health"}:
+                                    if isinstance(record, dict) and record.get("kind") in {
+                                            "esp_handle_open", "esp_read_ready", "esp_read_health", "esp_remote_paint"}:
                                         messages.put(record)
                                 except (ValueError, TypeError):
                                     pass
                     threading.Thread(target=read_messages, daemon=True).start()
                     proof["esp_pid"] = child.pid
                     proof["esp_spawn_epoch"] = time.time()
+                    from anti_esp.windows_api import get_process_creation_time
+                    proof["esp_created_at"] = get_process_creation_time(child.pid)
+                    if proof["esp_created_at"] is None:
+                        raise ValueError("Owned ESP process creation time is unavailable")
                     ready_deadline = min(deadline - args.esp_seconds - 5, now + args.readiness_timeout)
                 elif now - started > 20:
                     raise ValueError("Collector did not become healthy before ESP launch")
-            if child is not None and proof["ready"] is None:
-                while proof["ready"] is None:
+            if child is not None and proof["esp_exit_epoch"] is None:
+                while True:
                     try:
                         record = messages.get_nowait()
                     except queue.Empty:
@@ -540,48 +901,65 @@ def capture_worker(args) -> int:
                         emit("esp_handle_open_observed", timestamp_ms=measured_timings(t0,
                             record["observed_at_epoch"], record["observed_at_epoch"])[0])
                     elif record.get("kind") == "esp_read_ready":
-                        if proof["handle_open"] is None:
+                        if proof["handle_open"] is None or proof["ready"] is not None:
                             raise ValueError("Read readiness arrived without an actual handle opening")
                         proof["ready"] = validate_ready(record, child.pid, game.pid, t0, time.time())
                         if proof["ready"]["observed_at_epoch"] < proof["handle_open"]["observed_at_epoch"]:
                             raise ValueError("Read readiness precedes actual handle opening")
-                        active_until = time.monotonic() + args.esp_seconds
+                        if not require_remote:
+                            active_until = time.monotonic() + args.esp_seconds
                         emit("esp_verified_on", timestamp_ms=measured_timings(t0,
                             proof["handle_open"]["observed_at_epoch"], record["observed_at_epoch"])[0],
                             first_read_ready_ms=round((record["observed_at_epoch"] - t0) * 1000),
                             local_player_count=record["local_player_count"], remote_player_count=record["remote_player_count"])
+                    elif record.get("kind") == "esp_remote_paint":
+                        if proof["ready"] is None:
+                            raise ValueError("Remote paint arrived before original ESP readiness")
+                        facts = validate_remote_paint(record, child.pid, game.pid, t0, time.time())
+                        if facts["observed_at_epoch"] < proof["ready"]["observed_at_epoch"]:
+                            raise ValueError("Remote paint preceded original ESP readiness")
+                        record_remote_activity(proof, facts)
+                        if active_until is None:
+                            active_until = time.monotonic() + args.esp_seconds
+                            emit("esp_remote_geometry_observed", timestamp_ms=round((facts["observed_at_epoch"] - t0) * 1000),
+                                 basis="completed_original_painter_calls", screenshot_verified=False)
+                    elif record.get("kind") == "esp_read_health":
+                        if proof["ready"] is None:
+                            raise ValueError("Read heartbeat arrived before original ESP readiness")
+                        if record.get("fresh") is True:
+                            facts = validate_ready(dict(record, kind="esp_read_ready"), child.pid, game.pid, t0, time.time())
+                            previous = proof.get("last_fresh_epoch", proof["ready"]["observed_at_epoch"])
+                            if facts["observed_at_epoch"] < previous:
+                                raise ValueError("Read heartbeat timestamps regressed")
+                            gap = facts["observed_at_epoch"] - previous
+                            proof["maximum_heartbeat_gap_seconds"] = max(proof["maximum_heartbeat_gap_seconds"], gap)
+                            proof["last_fresh_epoch"] = facts["observed_at_epoch"]
+                            proof["fresh_read_heartbeat_count"] += 1
                     else:
-                        raise ValueError("Read heartbeat arrived before original ESP readiness")
-                if proof["ready"] is None and (child.poll() is not None or now >= ready_deadline):
-                    raise ValueError("Actual ESP camera/local-player/overlay readiness was not established")
+                        raise ValueError("Unexpected original ESP lifecycle message")
+                if active_until is None and (child.poll() is not None or now >= ready_deadline):
+                    raise ValueError("Required original ESP read/remote geometry readiness was not established")
             if child is not None and proof["ready"] is not None and proof["esp_exit_epoch"] is None:
                 if not health["healthy"]:
                     raise ValueError("Collector became insufficient during actual ESP interval")
-                while True:
-                    try:
-                        heartbeat = messages.get_nowait()
-                    except queue.Empty:
-                        break
-                    if heartbeat.get("kind") != "esp_read_health":
-                        raise ValueError("Duplicate original ESP lifecycle handshake")
-                    if heartbeat.get("kind") == "esp_read_health" and heartbeat.get("fresh") is True:
-                        facts = validate_ready(dict(heartbeat, kind="esp_read_ready"), child.pid, game.pid, t0, time.time())
-                        gap = max(0., facts["observed_at_epoch"] - proof.get("last_fresh_epoch", proof["ready"]["observed_at_epoch"]))
-                        proof["maximum_heartbeat_gap_seconds"] = max(proof["maximum_heartbeat_gap_seconds"], gap)
-                        proof["last_fresh_epoch"] = facts["observed_at_epoch"]
-                        proof["fresh_read_heartbeat_count"] += 1
                 if (time.time() - proof.get("last_fresh_epoch", proof["ready"]["observed_at_epoch"]) > 2
                         or proof["maximum_heartbeat_gap_seconds"] > 2):
                     raise ValueError("Actual ESP stopped producing fresh camera/local-player frames")
                 if child.poll() is not None:
                     raise ValueError("ESP exited before the bounded active interval")
-                if now >= active_until:
+                if active_until is not None and now >= active_until:
                     exited, forced = stop_own_child(child, run_dir / "esp-stop")
                     proof.update(esp_exit_epoch=exited, forced_termination=forced, esp_exit_code=child.returncode)
                     if forced or child.returncode != 0:
                         raise ValueError("Original ESP did not stop gracefully")
                     if proof["fresh_read_heartbeat_count"] < 2:
                         raise ValueError("Continuous actual read coverage was not established")
+                    if require_remote and (proof.get("remote_activity") or {}).get("unique_frame_count", 0) < 2:
+                        raise ValueError("Distinct original remote geometry paints were not established")
+                    proof["process_residue"] = exact_process_residue(child, proof["esp_created_at"])
+                    if proof["process_residue"]["status"] not in {"ABSENT", "PID_REUSED_NOT_OWNED"}:
+                        raise ValueError("Owned ESP process residue could not be ruled out")
+                    proof["module_residue"] = module_residue(modules_before, module_inventory(game.pid))
                     emit("esp_verified_off", timestamp_ms=lifecycle_timings(proof)[2])
             time.sleep(0.1)
         if not safe_health(controller)["healthy"]:
@@ -590,26 +968,37 @@ def capture_worker(args) -> int:
             raise ValueError("The actual bounded ESP interval was not completed")
         exact_game_provider(GAME_EXE)
         stage = "close"
-        controller.close()
+        close_capture_resource(controller, proof, "collector_closed")
+        proof["acquisition_end_epoch"] = time.time()
+        if args.scenario == "normal":
+            proof["module_residue"] = module_residue(modules_before, module_inventory(game.pid))
         stage = "validate_capture"
         manifest, matching = validate_capture(session_dir, args.session_id, args.player_id, args.scenario,
                                               child.pid if child else None, game.pid, game.created_at)
         proof.update(status="validated", attributable_esp_event_count=matching,
                      original_manifest_sha256=hashlib.sha256((session_dir / "manifest.json").read_bytes()).hexdigest())
+        server_document = None
+        if sink is not None:
+            stage = "verify_delivery"
+            proof["shared_delivery"] = sink.verify_delivery()
+            if manifest["event_count"] != len(sink.expected_events):
+                raise ValueError("Not every local ESP Event was queued to Shared")
+            close_capture_resource(sink, proof, "shared_sender_closed")
+            stage = "verify_server_storage"
+            server_document = collect_evidence(http, args.session_id, args.player_id,
+                expected_events=sink.expected_events, time_budget_seconds=45)
+            evidence_path = export_evidence(server_document, run_dir / "server-evidence")
+            proof["server_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            proof["server_readback_verified"] = True
+            proof["server_observation_completed_utc"] = utc_timestamp(time.time())
         stage = "annotate_completed"
+        if proof.get("collector_closed") is not True or (sink is not None and proof.get("shared_sender_closed") is not True):
+            raise ValueError("Owned capture resources must stop before publication")
         annotate_completed(session_dir, manifest, proof)
         proof["status"] = "completed"
-        write_json(run_dir / "lifecycle-proof.json", proof)
+        save_owned_proof(run_dir, proof)
         stage = "export_session"
-        destination = export_session(session_dir, Path(args.output_root))
-        replay_path = destination / "manifest.json"
-        replay = json.loads(replay_path.read_text(encoding="utf-8"))
-        # Export only the controlled scalar annotation, never the local proof/raw.
-        replay["source"]["realgame_validation"] = json.loads(
-            (session_dir / "manifest.json").read_text(encoding="utf-8"))["test_metadata"]["timing_provenance"]
-        temporary = destination / (".manifest-realgame-" + uuid4().hex + ".tmp")
-        write_json(temporary, replay)
-        temporary.replace(replay_path)
+        destination = publish_replay(session_dir, Path(args.output_root), run_dir, server_document, exporter=export_session)
         success = True
         emit("replay_exported", session_id=args.session_id, label="CHEAT" if args.scenario == "esp" else "NORMAL",
              event_count=manifest["event_count"], attributable_esp_event_count=matching, output=str(destination), raw_uploaded=False)
@@ -621,17 +1010,35 @@ def capture_worker(args) -> int:
              reason=str(error) if isinstance(error, ValueError) else "Local capture failed")
         return 2
     finally:
-        if child is not None and child.poll() is None:
-            marker = run_dir / "esp-stop"
-            if not marker.exists():
-                exited, forced = stop_own_child(child, marker)
-                proof.update(esp_exit_epoch=exited, forced_termination=forced, esp_exit_code=child.returncode)
-            else:
-                child.kill()
-                child.wait(timeout=6)
-        controller.close()
-        if not success and not (run_dir / "lifecycle-proof.json").exists():
-            write_json(run_dir / "lifecycle-proof.json", proof)
+        cleanup_errors = []
+        try:
+            if child is not None and child.poll() is None:
+                marker = run_dir / "esp-stop"
+                if not marker.exists():
+                    exited, forced = stop_own_child(child, marker)
+                    proof.update(esp_exit_epoch=exited, forced_termination=forced, esp_exit_code=child.returncode)
+                else:
+                    child.kill()
+                    child.wait(timeout=6)
+        except Exception as error:
+            cleanup_errors.append(type(error).__name__)
+        try:
+            close_capture_resource(controller, proof, "collector_closed")
+        except Exception as error:
+            cleanup_errors.append(type(error).__name__)
+        try:
+            if sink is not None:
+                close_capture_resource(sink, proof, "shared_sender_closed")
+        except Exception as error:
+            cleanup_errors.append(type(error).__name__)
+        if cleanup_errors:
+            proof.update(status="failed", cleanup_error_types=cleanup_errors)
+        elif not success:
+            proof["status"] = "failed"
+        if not success or cleanup_errors:
+            save_owned_proof(run_dir, proof)
+        if cleanup_errors:
+            raise ValueError("Owned capture cleanup was incomplete")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -643,9 +1050,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--duration", type=float, default=120)
     result.add_argument("--esp-seconds", type=float, default=60)
     result.add_argument("--readiness-timeout", type=float, default=30)
+    result.add_argument("--warmup-timeout", type=float, default=90,
+        help="bounded pre-session sensor warmup (1..180 seconds); insufficient is never normal")
     result.add_argument("--player-id", default="local_realgame")
     result.add_argument("--output-root", type=Path, default=REPO / "ReplayAnalyzer/replay-data/esp")
     result.add_argument("--session-id", default=None)
+    result.add_argument("--server-setup", type=Path,
+        help="opt-in: only the disposable empty loopback realgame_server setup is accepted")
+    result.add_argument("--require-remote-rendering", action="store_true",
+        help="require distinct completed remote geometry paints; implicit with --server-setup")
     result.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--esp-child", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--run-dir", type=Path, help=argparse.SUPPRESS)
@@ -660,6 +1073,7 @@ def main(argv=None) -> int:
         raise ValueError("Explicit authorization for an identified private test room must be acknowledged")
     if args.esp_child:
         return esp_child(args)
+    warmup_budget(args.warmup_timeout)
     if args.worker:
         return capture_worker(args)
     if not 5 <= args.duration <= 3600 or not 1 <= args.readiness_timeout <= 120:
@@ -671,6 +1085,10 @@ def main(argv=None) -> int:
     game = checked_call(platform_preflight, args.game_pid)
     if hashlib.sha256(ESP_SOURCE.read_bytes()).hexdigest() != ESP_SHA256:
         raise ValueError("The supplied ESP source fingerprint changed")
+    if args.server_setup is not None:
+        from server.dashboard_backend.calibration_export import create_http
+        create_http(args.server_setup)  # Validate only; does not perform a request.
+        args.server_setup = args.server_setup.resolve()
     session = args.session_id or (args.scenario + "_realgame_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_") + uuid4().hex[:12])
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", session):
         raise ValueError("Session identifier is invalid")
@@ -693,12 +1111,31 @@ def main(argv=None) -> int:
         "--game-pid", str(game.pid), "--expected-created", str(game.created_at), "--run-dir", str(run_dir),
         "--session-id", session, "--player-id", args.player_id, "--duration", str(args.duration),
         "--esp-seconds", str(args.esp_seconds), "--readiness-timeout", str(args.readiness_timeout),
+        "--warmup-timeout", str(args.warmup_timeout),
         "--output-root", str(args.output_root.resolve())]
-    emit("capture_prepared", session_id=session, scenario=args.scenario, local_artifacts=str(run_dir), central_telemetry="off")
-    child = checked_call(subprocess.Popen, command, cwd=run_dir, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
+    if args.server_setup is not None:
+        command += ["--server-setup", str(args.server_setup)]
+    if args.require_remote_rendering:
+        command += ["--require-remote-rendering"]
+    emit("capture_prepared", session_id=session, scenario=args.scenario, local_artifacts=str(run_dir),
+         central_telemetry="disposable_loopback" if args.server_setup else "off")
+    command = direct_python_command(command, environment)
+    child = checked_call(subprocess.Popen, command, cwd=run_dir, env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    readers = []
+    diagnostics = {}
+    for label, stream in (("stdout", child.stdout), ("stderr", child.stderr)):
+        def drain(label=label, stream=stream):
+            diagnostics[label] = relay_worker_diagnostics(stream)
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        readers.append(reader)
     job = checked_call(own_process_job, child)
     try:
-        return child.wait(timeout=args.duration + 60)
+        result = child.wait(timeout=args.duration + args.warmup_timeout + 150)
+        emit("worker_exited", exit_code=result)
+        return result
     except BaseException:
         # The worker's own child is independently bounded by its absolute deadline.
         child.kill()
@@ -707,6 +1144,10 @@ def main(argv=None) -> int:
     finally:
         import win32api
         win32api.CloseHandle(job)
+        for reader in readers:
+            reader.join(timeout=2)
+        for label, counts in diagnostics.items():
+            emit("worker_diagnostic_summary", stream=label, **counts)
 
 
 if __name__ == "__main__":

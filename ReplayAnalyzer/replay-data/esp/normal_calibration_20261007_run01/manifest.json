@@ -1,0 +1,73 @@
+{
+  "cheat_end_ms": null,
+  "cheat_start_ms": null,
+  "cheat_type": null,
+  "event_count": 48,
+  "label": "NORMAL",
+  "player_id": "calibration_player",
+  "session_id": "normal_calibration_20261007_run01",
+  "source": {
+    "calibration_observation": {
+      "actual_remote_geometry": null,
+      "central_telemetry": "disposable_loopback",
+      "game_module_snapshot_delta": {
+        "added_identity_sha256": [],
+        "attribution": "NOT_ASSESSED",
+        "basis": "game loaded-module path/size identity snapshots, not on-disk integrity or injection proof",
+        "removed_identity_sha256": [],
+        "status": "UNCHANGED"
+      },
+      "human_behavior_end_ms": null,
+      "human_behavior_start_ms": null,
+      "human_behavior_status": "NOT_OBSERVED",
+      "owned_esp_process_after_off": {
+        "status": "NOT_STARTED"
+      },
+      "preexisting_poc_absence": "NOT_ASSESSED",
+      "program_exit_ms": null,
+      "program_spawn_bounds_ms": null,
+      "server_evidence_sha256": "1779a573067f5bdda3e4331fdd82c39776964a26fc25e1e54e9b908bb306298e",
+      "session_end_utc": "2026-10-07T12:11:43.878Z",
+      "session_start_utc": "2026-10-07T12:09:43.847Z",
+      "shared_delivery": {
+        "acknowledged_this_run": 48,
+        "failed": 0,
+        "pending": 0,
+        "queued_unique_events": 48
+      },
+      "timestamp_ms_basis": "milliseconds since session_start_utc"
+    },
+    "events_sha256": "cdc6ccbcbb0274dc6778a58fe38139dacfa2a1abc011b0d91ebed0f7f58ec1f3",
+    "kind": "existing_esp_capture",
+    "manifest_sha256": "973ad5b74d358af2e6f08ac6bcbfba11ff49c2b463fc6e9be6f782c9b0e4a640",
+    "notes": [
+      "Existing captured results; this export is not a new test run.",
+      "Scores and timestamps were not recomputed with the current detector.",
+      "ON/OFF timing is supplied test metadata; missing timing remains null.",
+      "Evidence is privacy-filtered; original raw sensor logs are omitted.",
+      "NORMAL labels remain NORMAL even when captured scores cross a threshold."
+    ],
+    "producer": {
+      "name": "meccha-esp-localguard",
+      "revision": null,
+      "version": "0.2.0"
+    },
+    "realgame_validation": {
+      "first_read_ready_ms": null,
+      "fresh_read_heartbeat_count": 0,
+      "handle_open_observation_bounds_ms": null,
+      "kind": "no_esp_spawned",
+      "launch_precedes_on": false,
+      "maximum_heartbeat_gap_seconds": 0.0,
+      "off_basis": null,
+      "off_observation_poll_seconds": 0.1,
+      "on_basis": null,
+      "remote_player_count_at_first_ready": null,
+      "remote_rendering_claimed": false,
+      "source_requested_access": null,
+      "source_sha256": null
+    },
+    "schema_version": "meccha.telemetry-session.v1",
+    "session_status": "completed"
+  }
+}
