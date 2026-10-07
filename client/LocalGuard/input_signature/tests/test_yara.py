@@ -46,26 +46,31 @@ class Tests(unittest.TestCase):
         transmitted.pop('_matched_strings_for_console')
         self.assertEqual(self.forwarded, [transmitted])
     def test_failure_no_zero(self):
-        """접근 거부는 검사 실패로 기록하고 정상 0점으로 바꾸지 않는다."""
+        """접근 거부는 정상 0점이 아닌 명시적 ERROR Event로 전달한다."""
         def fail(**kw): raise PermissionError('denied')
         event = scan_once(SimpleNamespace(match=fail),self.process,self.session,self.raw)
         self.assertIsNone(event)
-        self.assertEqual(self.session.counts,{})
+        self.assertEqual(self.session.counts['localguard_yara'], 1)
         self.assertIn('scan_error',self.raw.getvalue())
-        self.assertEqual(self.forwarded, [])
+        self.assertEqual(len(self.forwarded), 1)
+        self.assertEqual(self.forwarded[0]['raw_score'], 0)
+        self.assertEqual(self.forwarded[0]['evidence']['status'], 'ERROR')
+        self.assertIs(self.forwarded[0]['evidence']['measurement_valid'], False)
+        self.assertNotIn('denied', json.dumps(self.forwarded[0]))
     def test_timeout_no_zero(self):
-        """YARA 시간 제한에 걸린 검사는 불완전하므로 점수를 내지 않는다."""
+        """시간 제한에 걸린 검사는 정상 0점이 아닌 ERROR로 보낸다."""
         import yara
         def fail(**kw): raise yara.TimeoutError('timeout')
         self.assertIsNone(scan_once(SimpleNamespace(match=fail),self.process,self.session,self.raw))
-        self.assertEqual(self.forwarded, [])
+        self.assertEqual(self.forwarded[0]['evidence']['status'], 'ERROR')
+        self.assertIs(self.forwarded[0]['evidence']['measurement_valid'], False)
     def test_yara_warning_not_success(self):
         """YARA 부분 검사 경고가 있으면 겉보기 빈 일치도 정상으로 취급하지 않는다."""
         def partial(**kw):
             kw['warnings_callback'](1,'too many matches')
             return []
         self.assertIsNone(scan_once(SimpleNamespace(match=partial),self.process,self.session,self.raw))
-        self.assertEqual(self.forwarded, [])
+        self.assertEqual(self.forwarded[0]['evidence']['status'], 'ERROR')
     def test_identity_change_no_score(self):
         """스캔 중 PID의 대상이 바뀌면 해당 결과를 버린다."""
         calls = []
@@ -74,6 +79,7 @@ class Tests(unittest.TestCase):
             if len(calls)>1: raise RuntimeError('process changed')
         self.process.check=check
         self.assertIsNone(scan_once(SimpleNamespace(match=lambda **kw:[]),self.process,self.session,self.raw))
+        self.assertEqual(self.forwarded[0]['evidence']['status'], 'ERROR')
     def test_no_matched_bytes_in_log(self):
         """매칭한 원시 메모리 문자열은 raw 로그나 공통 Event에 노출되지 않는다."""
         import yara

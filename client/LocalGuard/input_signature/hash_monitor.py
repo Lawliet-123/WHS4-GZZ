@@ -85,6 +85,20 @@ class HashMonitor:
                 ['Known executable SHA-256 matched: ' + ','.join(item['catalogue_ids'])
                  for item in public_matches],
                 1 if matches else 0, timestamp_ms=end)
+        else:
+            # 부분 검사에서 일치가 없었다는 사실은 정상 0점이 아니다. 서버도
+            # 마지막 성공 표본을 정상으로 갱신하지 않도록 측정 불가를 명시한다.
+            self.session.emit(
+                'localguard_executable_hash', self.session.manifest['player_id'],
+                {'status': 'ERROR', 'measurement_valid': False,
+                 'scope': result['scope'], 'scan_start_ms': start,
+                 'scan_duration_ms': end - start,
+                 'coverage_complete': False,
+                 'owner_unavailable_count': result['owner_unavailable_count'],
+                 'skipped_count': len(result['skipped']),
+                 'matched_executables': [],
+                 'catalogue_sha256': result['catalogue_sha256']},
+                ['Executable hash scan incomplete'], 0, timestamp_ms=end)
         self.heartbeat.update_component(
             'localguard_file_hash', 'running' if result['complete'] else 'degraded',
             pid=os.getpid(), stale_after_ms=self.stale_after_ms,
@@ -103,16 +117,28 @@ class HashMonitor:
                 self.raw = raw
                 while not self.stop_event.is_set():
                     began = time.monotonic()
+                    start_ms = self.session.elapsed()
                     try:
                         self._run_once()
                     except InterruptedError:
                         break
                     except Exception as exc:
+                        end = self.session.elapsed()
                         json_line(raw, {'type': 'hash_scan_error',
-                                        'timestamp_ms': self.session.elapsed(),
+                                        'timestamp_ms': end,
                                         'error_type': type(exc).__name__,
                                         'score_evaluated': False})
                         self.session.error('executable_hash_scan_failed')
+                        self.session.emit(
+                            'localguard_executable_hash', self.session.manifest['player_id'],
+                            {'status': 'ERROR', 'measurement_valid': False,
+                             'scope': 'running_game_account_same_session_executable_disk_sha256',
+                             'scan_start_ms': start_ms,
+                             'scan_duration_ms': end - start_ms,
+                             'coverage_complete': False,
+                             'error_type': type(exc).__name__},
+                            ['Executable hash scan unavailable: ' + type(exc).__name__],
+                            0, timestamp_ms=end)
                         self.heartbeat.update_component(
                             'localguard_file_hash', 'degraded', pid=os.getpid(),
                             stale_after_ms=self.stale_after_ms,

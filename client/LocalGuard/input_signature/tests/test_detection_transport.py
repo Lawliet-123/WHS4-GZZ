@@ -14,13 +14,14 @@ import tempfile
 import threading
 import unittest
 from contextlib import redirect_stderr
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from replay_events import ReplaySession
 from yara_scanner import (configure_detection_forwarding, stop_detection_forwarding,
-                          flush_client)
+                          flush_client, scan_once)
 from shared.schema import EVENT_FIELDS, encode_event
 
 
@@ -208,6 +209,14 @@ class DetectionTransportTests(unittest.TestCase):
                     'localguard_executable_hash', 'local_player',
                     {'measurement_valid': True, 'coverage_complete': True,
                      'matched_executables': []}, [], 0)
+                failed = scan_once(
+                    SimpleNamespace(match=lambda **_kw: (_ for _ in ()).throw(
+                        PermissionError('private path must not leave this PC'))),
+                    SimpleNamespace(pid=123, check=lambda: None),
+                    self.session, io.StringIO())
+                self.assertIsNone(failed)
+                error_yara = json.loads((self.session.path / 'events.jsonl').read_text(
+                    encoding='utf-8').splitlines()[-1])
                 self.assertTrue(flush_client(timeout=3))
                 stop_detection_forwarding(active)
                 active = False
@@ -218,9 +227,12 @@ class DetectionTransportTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-        self.assertEqual(len(received), 3)
+        self.assertEqual(len(received), 4)
         self.assertCountEqual([body for _, _, body in received],
-                              [positive, zero_yara, zero_hash])
+                              [positive, zero_yara, zero_hash, error_yara])
+        self.assertEqual(error_yara['evidence']['status'], 'ERROR')
+        self.assertIs(error_yara['evidence']['measurement_valid'], False)
+        self.assertNotIn('private path', json.dumps(error_yara))
         for path, headers, body in received:
             self.assertEqual(path, '/api/detection')
             self.assertEqual(headers['authorization'], 'Bearer test-token')
