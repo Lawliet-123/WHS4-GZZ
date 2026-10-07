@@ -1,0 +1,12 @@
+{
+  "filename": "KernelSentinel.sys",
+  "sha256": "312a1bb6ccfe218fd509a117170c71f09f4f7217f95edd4ffcab63bbd8c1355a",
+  "inf_driver_version": "09/27/2026,19.34.37.648",
+  "architecture": "amd64",
+  "signer_subject_observed": "WDKTestCert PC,134341394004093270",
+  "source": "User supplied SYS/INF/CAT on 2026-10-07",
+  "approval_status": "No organizational approval or Windows load validation asserted",
+  "requirements": "Valid Authenticode on target PC, administrator, OS kernel signing policy permits load",
+  "windows_source_target": "Windows 10 2004+ x64; thread-layout sensor requires build 19045",
+  "validated_windows_builds": []
+}

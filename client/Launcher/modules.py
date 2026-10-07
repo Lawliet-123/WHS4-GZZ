@@ -219,19 +219,23 @@ MODULES: List[Module] = [
         name="kernel_watcher",
         owner="5번 (찬준)",
         argv=[PY, "-m", "agent.main", "watch",
+              "--install-driver",
+              "--prepare-test-environment",
               "--pid", "{game_pid}", "--mode", "observe",
               "--config", "config/policy.json",
               "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}", "--telemetry", "{telemetry}",
               "--out", "runs/{session}"] + kernel_thread_options(),
-        cwd=os.path.join(REPO, "client", "KernelSentinelValidation-github", "KernelSentinel"),
+        cwd=os.path.join(REPO, "client", "kernel_sentinel"),
         mode=CONTINUOUS,
         needs_game=True,
         needs_admin=True,
         # The collector creates --out exclusively; same-session restart fails.
         restart=False,
-        session_log_dir="client/KernelSentinelValidation-github/KernelSentinel/runs",
-        # --t0 and Shared server transport are not implemented in this agent.
-        note="KernelSentinel observe 로컬 수집 (승인 .sys 필요; 공통 t0·중앙 전송 미지원)",
+        session_log_dir="client/kernel_sentinel/runs",
+        env={"PYTHONPATH": REPO},
+        stop_grace_s=20.0,
+        note="KernelSentinel observe (승인 .sys 필요; Launcher 공통 t0·Shared 전송)",
     ),
 
     # ── 게임이 떠 있어야 하는 것 ────────────────────────────────────────

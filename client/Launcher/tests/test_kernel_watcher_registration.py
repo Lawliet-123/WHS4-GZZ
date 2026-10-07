@@ -36,8 +36,7 @@ class KernelWatcherRegistrationTests(unittest.TestCase):
         self.assertEqual(
             watcher.cwd,
             os.path.join(
-                modules.REPO, "client", "KernelSentinelValidation-github",
-                "KernelSentinel",
+                modules.REPO, "client", "kernel_sentinel",
             ),
         )
         self.assertEqual(
@@ -47,13 +46,14 @@ class KernelWatcherRegistrationTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(watcher.cwd, "config", "policy.json")))
         self.assertEqual(
             watcher.session_log_dir,
-            "client/KernelSentinelValidation-github/KernelSentinel/runs",
+            "client/kernel_sentinel/runs",
         )
 
-    def test_resolved_command_is_observe_only_and_local_only(self):
+    def test_resolved_command_passes_clock_transport_and_auto_install(self):
         watcher = modules.by_name()["kernel_watcher"]
         argv = watcher.resolved({
             "game_pid": 9876, "session": "normal_001", "player": "player_042",
+            "t0": 1000, "telemetry": "managed",
         })
         self.assertEqual(argv[1:4], ["-m", "agent.main", "watch"])
         self.assertEqual(argv[argv.index("--pid") + 1], "9876")
@@ -66,8 +66,9 @@ class KernelWatcherRegistrationTests(unittest.TestCase):
             self.assertEqual(argv[argv.index("--thread-interval") + 1], "0")
         else:
             self.assertNotIn("--thread-interval", argv)
-        self.assertNotIn("--t0", argv)
-        self.assertNotIn("--telemetry", argv)
+        self.assertEqual(argv[argv.index("--t0") + 1], "1000")
+        self.assertEqual(argv[argv.index("--telemetry") + 1], "managed")
+        self.assertIn("--install-driver", argv)
 
     def test_thread_sensor_is_disabled_outside_its_supported_build(self):
         with mock.patch.object(
