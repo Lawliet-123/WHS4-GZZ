@@ -57,10 +57,13 @@ esp_calibration_20261007_run02 재시험은 Windows 권한 승인이 취소되�
 기존 게임과 소유하지 않은 프로세스는 종료하지 않았다. 각 수집 세션은 별도
 로컬 저장소를 사용했고 기존 운영 DB와 접속키는 사용하지 않았다.
 두 disposable loopback 서버는 stop request로 종료했다.
-일시 활성화한 Sysmon은 복원 승인이 취소되어 아직 원복 완료가 아니다.
-관리자 PowerShell에서 realgame_builtin_sysmon.ps1 Cleanup을 실행해 원래 Disabled
-상태로 복원해야 한다. 이 도구는 재부팅하거나 기존 로그를 지우지 않는다.
-복원이 확인되기 전 완료로 표시하지 않는다.
+자동 복원용 권한 승인은 취소됐지만 사용자가 관리자 PowerShell에서 Cleanup을
+직접 실행한 뒤 원복을 다시 확인했다. 상태는 restored_disabled_no_log_clear,
+기능은 Disabled, restart_needed=false다. Sysmon 서비스와 드라이버는 남지 않았다.
+게임은 종료하지 않았고 테스트 포트 8002도 닫혔다. 재부팅·기존 로그 삭제는 없다.
+
+최종 자동화 시험은 전체 ESP 246개, Dashboard backend 101개, Replay/export 26개
+통과다. 이는 양성 실게임 세션이 완료됐다는 의미는 아니다.
 
 Shared 7필드, production PID+생성 시각 제외, Receiver/Scoring/Launcher 계약,
 원본 ESP 소스 및 threshold는 변경하지 않았다. LocalGuard YARA는 input_signature
