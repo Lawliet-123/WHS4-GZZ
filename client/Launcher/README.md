@@ -136,7 +136,7 @@ optional_paths=[("--lua-mod-dir", r"{game_bin}\ue4ss\Mods\GZZPaintObserver")],
 |---|---|
 | `mode=CONTINUOUS` | 자기가 알아서 계속 돈다. 런처는 살아 있는지만 본다 |
 | `mode=ONESHOT` + `every_s` | 한 번 돌고 끝난다. 런처가 그 주기로 다시 부른다 |
-| `final_run=[...]` | (주기 검사만) 세션이 끝날 때 그 인자를 붙여 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 스냅샷 검사는 넣지 않는다(게임이 꺼진 뒤 OFFLINE 이 세션 중 탐지를 덮는다). 지금은 휘파람 `["--only", "whistle_rpc"]` |
+| `final_run=[...]` | (주기 검사만) 세션이 끝날 때 그 인자를 붙여 한 번 더 돌린다. 지난 검사 뒤 쌓인 것을 다음 검사에 읽는 모듈용 — 안 그러면 마지막 주기 구간이 빠진다. 스냅샷 검사는 넣지 않는다(게임이 꺼진 뒤 OFFLINE 이 세션 중 탐지를 덮는다). 지금 쓰는 모듈은 없다 — 휘파람이 쓰던 `["--only", "whistle_rpc"]` 는 whistle_rpc 를 기본 실행에서 빼면서 같이 뺐다 |
 | `needs_game=False` | 게임보다 **먼저** 뜬다 (SelfDefense 등) |
 | `needs_admin=True` | 관리자 권한이 없으면 건너뛴다 |
 | `telemetry_off_args=[...]` | 중앙 전송 설정이 없을 때(`{telemetry}` 가 `off`)만 argv 끝에 붙는다. 설정이 없으면 시작을 거부하는 모듈의 `--local-only` 같은 것 |
@@ -341,6 +341,15 @@ client/Launcher/logs/<모듈>.log
 나머지를 계속 띄운다. 현재 SelfDefense Watchdog·Integrity와 KernelSentinel
 수집기 소스는 저장소에 있다. 다만 파일이 존재하는 것과 필요한 기준·드라이버가
 준비되어 실제 검사가 성립하는 것은 별개의 조건이다.
+
+같은 이유로 **휘파람의 `whistle_rpc` 는 기본 실행에서 빠져 있다.** 그 검사는 게임 안에
+넣은 관측용 후크가 남긴 로그를 읽는데, 런처는 그 DLL 을 주입하지 않는다(주입은 수동
+단계라 배포본에 없다). 넣어 두면 배포본으로 돌리는 모든 PC 에서 ERROR 가 나고 모듈
+전체가 검사 실패가 된다. 후크를 설치한 PC 에서는 러너를 직접 부른다:
+
+```
+python client/detectors/whistle-spoofing/main.py --only whistle_rpc
+```
 
 ---
 

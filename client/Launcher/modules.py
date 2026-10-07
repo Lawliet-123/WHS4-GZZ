@@ -294,18 +294,31 @@ MODULES: List[Module] = [
     Module(
         name="whistle_spoofing",
         owner="휘파람 (랑언)",
+        # **whistle 만 돌린다.** 같은 러너에 whistle_rpc 도 있지만 그건 게임 안에 넣은
+        # 관측용 후크(ac_whistle DLL)가 남긴 로그를 읽는다. 런처는 그 DLL 을 주입하지
+        # 않는다 — 주입은 수동 단계라 배포본에 없다. 그래서 배포본으로 돌리면 어느
+        # PC 에서든 whistle_rpc 가 ERROR 로 끝나고, 모듈 전체가 검사 실패(WARN)가 된다
+        # (10/7 은지님 배포 보고, 재민님 전체 런처 시험에서도 같은 WARN).
+        #
+        # 후크를 넣은 PC 에서는 러너를 직접 부르면 된다. 등록부에서 빼는 게 아니라
+        # 기본 실행에서만 뺀다:
+        #     python client/detectors/whistle-spoofing/main.py --only whistle_rpc
+        #
+        # 휘파람 본체 탐지는 whistle 이 전부 맡는다(#117 핵 세션·#118 기준 60점).
+        # whistle_rpc 는 호출 시점을 보는 보조 경로라 빠져도 탐지에 구멍이 생기지 않는다.
         argv=[PY, "client/detectors/whistle-spoofing/main.py",
               "--session", "{session}", "--player", "{player}",
-              "--log-name", "{session}", "--t0", "{t0}", "--window", "{window}"],
+              "--log-name", "{session}", "--t0", "{t0}", "--window", "{window}",
+              "--only", "whistle"],
         mode=ONESHOT,
         every_s=30.0,
         session_log_dir="client/detectors/whistle-spoofing/logs/detection",
-        # whistle_rpc 는 후크 로그에서 지난 검사 뒤에 새로 쓰인 줄만 읽는다. 끝에 한 번
-        # 더 안 돌리면 마지막 검사 뒤 30초 미만 구간의 위반이 빠진다(10/3 은지님 검토).
-        # **whistle_rpc 만** 돌린다. whistle 은 그 순간 메모리를 보는 스냅샷이라, 게임이
-        # 꺼진 뒤 돌리면 OFFLINE 이 세션 중 탐지를 덮는다. memory_integrity 도 같은 이유로 뺐다.
-        final_run=["--only", "whistle_rpc"],
-        note="휘파람 후킹 흔적 + 도발 RPC",
+        # final_run 은 whistle_rpc 전용이었다. whistle_rpc 는 후크 로그에서 지난 검사
+        # 뒤에 새로 쓰인 줄만 읽어서, 끝에 한 번 더 돌려야 마지막 구간이 안 빠졌다
+        # (10/3 은지님 검토). 기본 실행에서 whistle_rpc 를 빼면서 같이 뺀다. whistle 은
+        # 그 순간 메모리를 보는 스냅샷이라, 게임이 꺼진 뒤 돌리면 OFFLINE 이 세션 중
+        # 탐지를 덮는다 — 넣으면 안 된다(memory_integrity 도 같은 이유로 없다).
+        note="휘파람 후킹 흔적 (도발 RPC 는 후크 설치 시 수동 실행)",
     ),
     Module(
         name="aimbot",
