@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { aggregateLauncherState } from "./App";
 import { demoEvents, demoOverview, demoSnapshots, demoStatuses } from "./mockData";
 import { dashboardPageHref, type DashboardPage } from "./navigation";
+import { THEME_STORAGE_KEY } from "./theme";
 import type { DashboardEvent, GodModeHistoryResponse, SelfDefenseStatus } from "./types";
 
 beforeEach(() => {
@@ -64,6 +65,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  window.localStorage.removeItem(THEME_STORAGE_KEY);
+  delete document.documentElement.dataset.theme;
+  document.documentElement.style.removeProperty("color-scheme");
 });
 
 function historyFixtures(count = 1) {
@@ -168,6 +172,11 @@ describe("dashboard interactions", () => {
     expect(screen.queryByRole("button", { name: "연결" })).toBeNull();
     expect(screen.queryByLabelText("Dashboard 토큰")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("group", { name: "화면 테마" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "라이트 테마" }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    fireEvent.click(screen.getByRole("button", { name: "다크 테마" }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
     act(() => vi.advanceTimersByTime(10_000));
     expect(fetchMock).not.toHaveBeenCalled();
   });

@@ -9,6 +9,7 @@ import { EventTimeLabel } from "./components/EventTimeLabel";
 import { ModuleSignals, VerdictEvidence } from "./components/PolicyEvidence";
 import { LauncherIssues } from "./components/LauncherIssues";
 import { SelfDefenseStates, selfDefenseEvent } from "./components/SelfDefenseStates";
+import { ThemeToggle } from "./components/ThemeToggle";
 import {
   connectionMeta,
   defaultFilters,
@@ -999,6 +1000,7 @@ export default function App() {
         <header className="topbar">
           <div className="topbar-title"><button className="menu-button" type="button" onClick={() => setMenuOpen(true)} aria-label="메뉴 열기" aria-expanded={menuOpen} aria-controls="dashboard-sidebar"><Icon name="menu" /></button><div><span>MECCHA</span><span className="topbar-divider">/</span><strong>{pageTitle}</strong></div></div>
           <div className="topbar-actions">
+            <ThemeToggle />
             <StatusBadge tone={mode === "demo" ? "info" : transportStale ? "warning" : "success"}>{mode === "demo" ? "DEMO" : transportStale ? "LIVE · 지연" : "LIVE"}</StatusBadge>
             <time className="last-query" dateTime={lastQueryAt.toISOString()} aria-label={`마지막 갱신 ${lastQueryAt.toLocaleString("ko-KR")}`}>{new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(lastQueryAt)}</time>
             {mode === "live" && <label className="auto-toggle"><input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} /><span aria-hidden="true" /><b>5초 갱신</b></label>}
