@@ -11,6 +11,10 @@
 - 합성 Event에 고정된 가상 세션 시작 선언을 넣어 화면을 확인했다. 실제 저장 로그·환경 파일·인증 정보는 포함하지 않았다.
 - 프론트 253개 테스트와 일반·공개 빌드, backend 80개 및 Shared 최초 수신 시각 테스트 4개를 통과했다. 운영 배포 SHA 및 지정된 Light 세션의 저장 자료 확인은 별도 검증 범위다.
 
+같은 날 공개 `/GZZ/`를 프론트 단독으로 재배포했고 HTML·JS·CSS의 HTTP 200과 로컬 빌드 SHA-256 일치를 확인했다. 공개 이벤트 목록·상세의 경과·관측·수신 밀리초 표시도 확인했다. 기존 홈페이지는 정상 응답하며 backend·도메인 설정은 변경하지 않았다.
+
+운영 확인은 읽기 전용으로 제한했다. WHS 게임보안 Discord의 2026-10-07 20:16 공지에는 FastAPI 배포 SHA `b547fd2`가 기록되어 있으며 이 커밋은 backend 시간 projector를 포함한다. 이는 담당자의 배포 보고이지 런타임 SHA를 직접 조회한 결과는 아니다. 운영 `/health`는 HTTP 200이지만 인증 없는 지정 Light 세션 조회는 HTTP 401이므로 실제 Event 목록·상세·writer/index 값 비교는 미확인이다. 운영 화면의 정적 재빌드도 이번 공개 DEMO 배포와 별개다. 수신 시각 null의 원인을 추정하거나 과거 수신 시각을 복원하지 않았다.
+
 ## dashboard-feedback-deployed.jpg / dashboard-feedback-verdict-deployed.jpg
 
 2026-10-07 공개 [kkinomalo.com/GZZ/](https://kkinomalo.com/GZZ/)에서 촬영한 피드백 반영 화면이다. 소스 `6fb1f15`의 프론트 단독 DEMO 빌드이며 실제 중앙 서버·게임 결과가 아니다.
