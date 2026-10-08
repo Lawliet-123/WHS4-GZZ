@@ -34,7 +34,11 @@ class _RegistryTempDir(unittest.TestCase):
     """등록부를 임시 폴더로 옮긴다. 돌고 있는 런처의 등록부를 건드리지 않는다."""
 
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
+        # ignore_cleanup_errors: 윈도에서 자식이 죽은 직후에도 OS 가 로그 파일
+        # 핸들을 잠깐 더 쥐고 있어 폴더 삭제가 WinError 32 로 실패할 때가 있다
+        # (전체 묶음으로 돌릴 때 재현). 임시 폴더가 남는 건 시험 결과와 무관한데,
+        # 그걸로 시험이 빨간불이 되면 진짜 실패를 묻는다.
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         for name, value in (("LOG_DIR", root), ("PID_FILE", root / "anticheat_pids.json"),

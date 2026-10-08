@@ -31,6 +31,7 @@
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import os
 import platform
 import re
@@ -127,12 +128,82 @@ def existing_sessions(picked, session):
     return found
 
 
+# 없으면 그 모듈이 **아예 못 도는** 패키지. (import 이름, pip 이름)
+#
+# **런처를 띄운 바로 그 파이썬**에 있어야 한다. 모듈은 PY = sys.executable 로
+# 돌기 때문이다(modules.py). 2026-10-07 전체 E2E 에서 세 사람이 각각 다른
+# 모듈에서 막혔는데 뿌리가 전부 이거였다 — 찬준님 memory_integrity·whistle 은
+# pymem, 동효님 input_signature 는 yara. 실패가 모듈 안에서 "검사 실패" 로만
+# 나와서, 각자 로그를 파헤친 뒤에야 원인을 알았다. 시작할 때 미리 말해 준다.
+#
+# ## 무엇을 넣는가 — 기준이 "import 하는가" 가 아니다
+#
+# **런처가 실제로 띄우는 명령줄에서 닿고, try/except ImportError 로 감싸지지
+# 않은 것만** 넣는다. 이 경고의 값어치는 전부 "뜨면 진짜다" 에 있다. 한 줄만
+# 거짓이어도 다음에 또 무시당한다 — 바로 그 무시 때문에 10/7 밤을 날렸다.
+#
+# 처음엔 폴더의 import 를 훑어서 esp(PyQt5·pywin32)와 kernel_watcher(psutil)도
+# 넣었는데, 검토에서 셋 다 거짓으로 드러났다.
+#   - esp: 런처는 run.py 를 **--headless** 로만 띄운다(modules.py). PyQt5 는
+#     run_gui() 안에서만 import 되어 그 줄에 영원히 안 닿고, win32api 는 런처가
+#     부르지 않는 scripts/realgame_replay.py 에만 있다. 실제로 PyQt5·win32* 를
+#     전부 막고 --headless 로 돌려도 정상 종료한다(실측).
+#   - kernel_watcher: psutil 은 approved_access.py 의 `if command:` 안쪽 지연
+#     import 인데 런처 경로는 command=False 로 부른다. 그 모듈 소유자가
+#     requirements-approval.txt 에 "없어도 접근을 면제하지 않는다" 고 적어 뒀다.
+#   - 둘 다 없으면 수집 범위가 줄 뿐 모듈은 끝까지 돈다. "검사 실패로 끝납니다"
+#     와 한 문장에 섞으면 안 된다.
+#
+# 반대로 **함수 안 import 라고 빼면 안 된다.** yara 는 yara_scanner.load_rules()
+# 안에서 import 되지만 실행 경로가 반드시 닿고 감싸여 있지도 않다 — 10/7 에
+# 동효님을 실제로 막은 바로 그 패키지다.
+#
+# 빠뜨려도 런처는 그대로 돌아간다. 이건 막는 장치가 아니라 알려 주는 장치다.
+MODULE_REQUIREMENTS = {
+    "memory_integrity": (("pymem", "pymem"),),
+    "whistle_spoofing": (("pymem", "pymem"),),
+    "input_signature": (("yara", "yara-python"),),
+}
+
+
+def _installed(import_name):
+    try:
+        return importlib.util.find_spec(import_name) is not None
+    except (ImportError, ValueError):
+        # 깨진 설치(메타데이터만 남은 경우 등)도 '없음' 으로 본다.
+        return False
+
+
+def missing_requirements(states):
+    """띄울 모듈 중 패키지가 없어 실패할 것들. {pip 이름: [모듈, ...]}
+
+    **띄우지 않는 모듈은 따지지 않는다.** --only 로 하나만 돌릴 때 남의 모듈
+    패키지까지 설치하라고 하면 그 경고는 금방 무시당한다.
+    """
+    want = {}
+    for st in states:
+        if st.status in (MISSING, SKIPPED):
+            continue                      # 어차피 안 뜨는 모듈이다
+        for import_name, pip_name in MODULE_REQUIREMENTS.get(st.name, ()):
+            if not _installed(import_name):
+                want.setdefault(pip_name, []).append(st.name)
+    return want
+
+
 def preflight(pm, only, *, allow_game_path_prompt=None):
     ui.line("=" * 76)
     ui.line("  MECCHA 안티치트 런처")
     ui.line("=" * 76)
     if not is_admin():
         ui.line("  ! 관리자 권한이 아닙니다. 커널 모듈은 건너뜁니다.")
+    need = missing_requirements(pm.states.values())
+    if need:
+        ui.line("")
+        ui.line("  ! 이 파이썬에 없는 패키지가 있습니다. 아래 모듈은 검사 실패로 끝납니다:")
+        for pip_name in sorted(need):
+            ui.line(f"    - {pip_name:<14} {', '.join(sorted(set(need[pip_name])))}")
+        ui.line(f"    설치: \"{sys.executable}\" -m pip install {' '.join(sorted(need))}")
+        ui.line("    (런처를 띄운 바로 이 파이썬에 깔아야 합니다. 다른 가상환경에 깔면 안 됩니다)")
     missing = [s for s in pm.states.values() if s.status == MISSING]
     if missing:
         ui.line("")

@@ -4,6 +4,30 @@ from ctypes import wintypes
 
 
 # ============================================================
+# 예외
+# ============================================================
+
+class ProcessNotRunning(RuntimeError):
+    """검사 대상(게임)이 떠 있지 않다.
+
+    **우리 검사가 깨진 것과 구분한다.** 둘 다 RuntimeError 로 던지면 탐지기가
+    한 덩어리로 잡아서 ERROR(검사 실패)로 보고하는데, 게임이 안 켜진 건 볼 대상이
+    없는 것이지 검사가 고장난 게 아니다. 같은 표에서 말이 갈려 읽는 사람이
+    탐지기 고장으로 읽었다(10/7 찬준님 보고).
+
+    런처 모듈 칸은 이걸로 안 바뀐다. 종료코드 2 가 ERROR 와 OFFLINE 을 함께
+    덮기 때문이고, 그건 검사를 못 한 세션을 CLEAN 으로 넘기지 않으려는 의도된
+    계약이다. 바뀌는 건 표의 기호·사유와 팀 스키마 status 다.
+
+    pymem 을 쓰는 탐지기(injection·value_tamper·overlay_hook)는 이미
+    `pymem.exception.ProcessNotFound` 로 같은 구분을 하고 있다. ctypes 로 직접
+    여는 이 클래스에는 그게 없어서 맞춘다.
+
+    RuntimeError 를 그대로 물려받는다. 이걸 잡던 기존 코드는 안 바뀐다.
+    """
+
+
+# ============================================================
 # Windows constants
 # ============================================================
 
@@ -258,7 +282,8 @@ class ProcessMemory:
         )
 
         if self.pid is None:
-            raise RuntimeError(
+            # 게임이 안 켜져 있다. 검사 실패가 아니라 "볼 대상이 없음" 이다.
+            raise ProcessNotRunning(
                 f"Process not found: {self.process_name}"
             )
 
