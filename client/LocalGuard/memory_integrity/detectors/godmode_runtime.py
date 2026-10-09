@@ -1,6 +1,6 @@
 
 from core.result import DetectorResult, Evidence
-from core.process_memory import ProcessMemory
+from core.process_memory import ProcessMemory, ProcessNotRunning
 from core.pawn_locator import PawnLocator
 from rules.godmode.memory_rules import GodModeMemoryRules
 
@@ -161,6 +161,13 @@ def scan():
             )
 
             return result
+
+    except ProcessNotRunning:
+        # 게임이 안 켜진 것은 검사 실패가 아니다. 같은 모듈의 pymem 탐지기들과
+        # 같은 문구를 쓴다 — 한 표에 같이 찍히므로 말이 갈리면 안 된다.
+        return result.unavailable(
+            "게임이 실행 중이 아닙니다"
+        )
 
     except Exception as error:
         return result.fail(

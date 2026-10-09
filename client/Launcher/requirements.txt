@@ -1,0 +1,22 @@
+﻿# 런처가 띄우는 모듈들이 쓰는 외부 패키지.
+#
+# **런처를 띄울 바로 그 파이썬에 설치한다.** 모듈은 런처와 같은 파이썬으로
+# 실행되기 때문이다(modules.py 의 PY = sys.executable). 가상환경을 쓰면 그
+# 가상환경에, 시스템 파이썬으로 런처를 켜면 시스템 쪽에 깔아야 한다.
+#
+#     "<런처를 띄울 python.exe>" -m pip install -r client/Launcher/requirements.txt
+
+# ── 없으면 그 모듈이 아예 못 돈다 ──────────────────────────────────────
+# 런처가 시작할 때 이 셋 중 없는 것을 먼저 알려준다(main.py MODULE_REQUIREMENTS).
+pymem          # memory_integrity, whistle_spoofing — 게임 메모리 읽기
+yara-python    # input_signature — 프로세스 메모리 시그니처 검사
+
+# ── 없어도 모듈은 돈다. 수집 범위만 줄어든다 ───────────────────────────
+# 그래서 런처가 이것들로는 경고하지 않는다. 섞어서 알리면 위 둘 경고까지
+# 같이 무시당한다.
+psutil         # kernel_watcher — 실행 스크립트 확인(approved_access). 없으면 접근 면제를 못 해 줄 뿐이다
+pywin32        # esp — Sysmon 이벤트 읽기. 없으면 sysmon 수집만 빠진다(code=pywin32_missing)
+PyQt5          # esp 화면 모드 전용. 런처는 --headless 로만 띄워서 쓰지 않는다
+
+# input_signature 는 자기 폴더에 버전을 고정해 두었다. 그쪽 시험까지 맞추려면
+# client/LocalGuard/input_signature/requirements.txt 를 따른다 (yara-python==4.5.4).
