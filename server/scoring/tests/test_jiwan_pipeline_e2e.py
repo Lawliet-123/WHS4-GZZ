@@ -470,17 +470,31 @@ class JiwanPipelineE2ETests(unittest.TestCase):
         self.assertNotIn("SYNTHETIC-PRIVATE-HOST", json.dumps(events))
         snapshot = self.dashboard_snapshot()
         self.assertEqual(snapshot["modules"][0]["raw_score"], 2)
-        self.assertEqual(snapshot["status"], "INCONCLUSIVE")
+        self.assertEqual(snapshot["status"], "NO_ACTIVE_EVIDENCE")
         self.assertTrue(snapshot["assessment_available"])
         self.assertEqual(snapshot["data_state"], "available")
         self.assertIsNone(snapshot["score"])
         self.assertIsNone(snapshot["confidence"])
-        self.assertEqual(snapshot["final_verdict"]["status"], "INCONCLUSIVE")
-        self.assertIn("esp", snapshot["final_verdict"]["unresolved_modules"])
-        self.assertIn("ASSESSMENT_INCOMPLETE", snapshot["reason_codes"])
+        self.assertEqual(
+            snapshot["final_verdict"]["status"],
+            "NO_ACTIVE_EVIDENCE",
+        )
+        self.assertNotIn(
+            "esp",
+            snapshot["final_verdict"]["unresolved_modules"],
+        )
+        self.assertIn(
+            "esp",
+            snapshot["final_verdict"]["advisory_modules"],
+        )
+        self.assertIn("NO_ACTIVE_EVIDENCE", snapshot["reason_codes"])
+        self.assertIn("ADVISORY_EVIDENCE_PRESENT", snapshot["reason_codes"])
         overview = self.dashboard_get("overview", session_id=SESSION, player_id=PLAYER)
         self.assertTrue(overview["capabilities"]["final_assessment"])
-        self.assertEqual(overview["assessments"][0]["status"], "INCONCLUSIVE")
+        self.assertEqual(
+            overview["assessments"][0]["status"],
+            "NO_ACTIVE_EVIDENCE",
+        )
         self.assertIsNone(overview["assessments"][0]["score"])
 
         # ESP is event based: an empty or failed observation creates no NORMAL

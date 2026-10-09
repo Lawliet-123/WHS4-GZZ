@@ -245,6 +245,24 @@ class RiskCalibrationIntegrationTests(unittest.TestCase):
         self.assertEqual(below.unresolved_policy_modules, ())
         self.assertEqual(at_threshold.unresolved_policy_modules, ())
 
+    def test_esp_replay_is_resolved_as_advisory(self):
+        result = build(
+            entry(
+                "esp",
+                raw_score=3,
+                emission="positive_only",
+                policy_state="POLICY_NOT_CALIBRATED",
+            )
+        )
+
+        signal = result.signals[0]
+
+        self.assertEqual(signal.calibration_version, "replay-v1")
+        self.assertEqual(signal.calibration_mode, "advisory")
+        self.assertIsNone(signal.calibration_threshold)
+        self.assertIsNone(signal.threshold_met)
+        self.assertEqual(result.unresolved_policy_modules, ())
+
     def test_executable_hash_snapshot_threshold_is_applied(self):
         normal = build(
             entry(

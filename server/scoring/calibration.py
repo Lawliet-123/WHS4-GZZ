@@ -157,7 +157,18 @@ _ITEMS = (
             "FP=0, FN=0 with avg detection latency about 5.67s."
         ),
     ),
-    ModuleCalibration("esp", "pending", None),
+    ModuleCalibration(
+        "esp",
+        "advisory",
+        None,
+        note=(
+            "Replay v1: fresh real-game NORMAL/ESP ON calibration confirms "
+            "the ESP evidence stream is observable, but historical NORMAL "
+            "sessions also contain raw_score 3. No raw-score-only threshold "
+            "currently separates NORMAL and ESP reliably, so ESP evidence "
+            "remains advisory."
+        ),
+    ),
     ModuleCalibration(
         "whistle",
         "threshold",
