@@ -95,14 +95,15 @@ class CalibrationTests(unittest.TestCase):
         self.assertIsNone(calibration.meets_threshold(0))
         self.assertIsNone(calibration.meets_threshold(100))
 
-    def test_pending_modules_are_not_forced_clean_or_positive(self):
-        for module in ("esp",):
-            with self.subTest(module=module):
-                calibration = require_calibration(module)
-                self.assertEqual(calibration.mode, "pending")
-                self.assertFalse(calibration.calibrated)
-                self.assertIsNone(calibration.meets_threshold(0))
-                self.assertIsNone(calibration.meets_threshold(100))
+    def test_esp_is_resolved_as_advisory(self):
+        calibration = require_calibration("esp")
+
+        self.assertEqual(calibration.version, "replay-v1")
+        self.assertEqual(calibration.mode, "advisory")
+        self.assertIsNone(calibration.threshold)
+        self.assertFalse(calibration.calibrated)
+        self.assertIsNone(calibration.meets_threshold(1))
+        self.assertIsNone(calibration.meets_threshold(3))
 
     def test_optional_runtime_modules_are_advisory(self):
         for module in ("whistle_rpc", "aimbot_runtime"):
